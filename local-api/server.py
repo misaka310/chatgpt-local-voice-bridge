@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Qwen3/ComfyUI-only local voice bridge API."""
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "referenceAudioPath": "./reference/voice.wav",
     "referenceTextPath": "./reference/voice.txt",
     "comfyui": {
-        "baseUrl": "http://127.0.0.1:8188",
+        "baseUrl": "http://127.0.0.1:8190",
         "workflowPath": "./workflows/qwen3_clone_api.json",
         "inputDir": "C:/ComfyUI/input",
         "outputDir": "C:/ComfyUI/output",
@@ -226,7 +226,7 @@ class RuntimeConfig:
 
     @property
     def comfyui_base_url(self) -> str:
-        return str(self.comfyui.get("baseUrl", "http://127.0.0.1:8188")).rstrip("/")
+        return str(self.comfyui.get("baseUrl", "http://127.0.0.1:8190")).rstrip("/")
 
     @property
     def comfyui_workflow_path(self) -> Path:
@@ -659,3 +659,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

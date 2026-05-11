@@ -1,26 +1,50 @@
 ﻿# 起動方法
 
-## 手動起動
+## 通常起動（推奨）
 
-```powershell
-cd <repo-root>
-.\scripts\start-local-api.ps1
+リポジトリ直下で次を実行します。
+
+```cmd
+run-qwen-stack.cmd
+```
+
+この起動導線では以下を自動実行します。
+
+- `D:\05_ComfyUI_ZImage\run.bat` から ComfyUI を起動（未起動時のみ）
+- `http://127.0.0.1:8190/system_stats` 応答待機
+- `python local-api/server.py` で local-api 起動（未起動時のみ）
+- `http://127.0.0.1:8765/health` 応答待機
+- `/health` の `engine=comfyui_qwen3` を確認
+
+補足:
+
+- `.cmd` は `ExecutionPolicy Bypass` をその実行1回だけ利用します
+- PowerShell実行ポリシー回避のための指定で、管理者権限への昇格ではありません
+- 起動ターミナルを開いている間だけ監視を継続します
+- `Ctrl+C` またはターミナルを閉じると、このスクリプトが起動したプロセスのみ停止します
+- 既存で起動済みの ComfyUI / local-api は停止しません
+
+## scripts配下から起動したい場合
+
+```cmd
+scripts\start-qwen-stack.cmd
 ```
 
 ## 疎通確認
 
 ```powershell
-cd <repo-root>
 .\scripts\smoke-local-api.ps1
 ```
 
-ComfyUI が `8190` で起動している環境では、`local-api/config.local.json` の
-`comfyui.baseUrl` を `http://127.0.0.1:8190` に設定してください。
-
-## 停止
+## local-api 単体起動（必要時のみ）
 
 ```powershell
-cd <repo-root>
+.\scripts\start-local-api.ps1
+```
+
+停止:
+
+```powershell
 .\scripts\stop-local-api.ps1
 ```
 

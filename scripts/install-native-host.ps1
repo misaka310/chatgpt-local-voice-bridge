@@ -1,4 +1,4 @@
-param(
+﻿param(
   [Parameter(Mandatory = $true)]
   [string]$ExtensionId,
   [string]$HostName = "com.chatgpt.local_voice_bridge"
@@ -12,14 +12,14 @@ $TemplatePath = Join-Path $NativeDir "manifest.template.json"
 $HostCmdPath = Join-Path $NativeDir "host.cmd"
 $ManifestPath = Join-Path $NativeDir "manifest.generated.json"
 
-if (!(Test-Path $TemplatePath)) {
-  throw "manifest.template.json が見つかりません: $TemplatePath"
+if (-not (Test-Path -LiteralPath $TemplatePath)) {
+  throw "manifest.template.json not found: $TemplatePath"
 }
-if (!(Test-Path $HostCmdPath)) {
-  throw "host.cmd が見つかりません: $HostCmdPath"
+if (-not (Test-Path -LiteralPath $HostCmdPath)) {
+  throw "host.cmd not found: $HostCmdPath"
 }
 if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
-  throw "python コマンドが見つかりません。PythonをインストールしてPATHを設定してください。"
+  throw "python command was not found. Install Python and add it to PATH."
 }
 
 $template = Get-Content -Raw -Encoding UTF8 $TemplatePath
