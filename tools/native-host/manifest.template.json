@@ -1,0 +1,9 @@
+{
+  "name": "com.chatgpt.local_voice_bridge",
+  "description": "Native host for ChatGPT Local Voice Bridge",
+  "path": "__HOST_PATH__",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://__EXTENSION_ID__/"
+  ]
+}

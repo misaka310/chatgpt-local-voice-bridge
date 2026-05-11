@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ChatGPT Local Voice Bridge Options</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 760px; margin: 32px auto; padding: 0 16px; line-height: 1.6; }
+    label { display: block; margin: 16px 0 6px; font-weight: 700; }
+    input[type="text"], input[type="number"] { width: 100%; box-sizing: border-box; padding: 8px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    button { padding: 8px 12px; cursor: pointer; }
+    .status { margin-top: 12px; min-height: 1.5em; }
+    code { background: #f3f3f3; padding: 2px 4px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>ChatGPT Local Voice Bridge</h1>
+  <p>ChatGPT Webの応答を検知して、冒頭previewのみをローカルTTS APIへ送ります。</p>
+
+  <label><input id="enabled" type="checkbox" /> 自動読み上げを有効にする</label>
+
+  <label for="apiUrl">Local API URL (/v1/speak)</label>
+  <input id="apiUrl" type="text" />
+
+  <label for="healthUrl">Health URL (/health)</label>
+  <input id="healthUrl" type="text" />
+
+  <div class="row">
+    <div>
+      <label for="previewMaxLines">冒頭行数の上限</label>
+      <input id="previewMaxLines" type="number" min="1" max="6" />
+    </div>
+    <div>
+      <label for="previewMaxChars">冒頭文字数の上限</label>
+      <input id="previewMaxChars" type="number" min="40" max="400" />
+    </div>
+  </div>
+
+  <div class="row">
+    <div>
+      <label for="previewMinChars">送信判定の最小文字数</label>
+      <input id="previewMinChars" type="number" min="20" max="240" />
+    </div>
+    <div>
+      <label for="previewStableMs">安定判定ミリ秒</label>
+      <input id="previewStableMs" type="number" min="200" max="4000" />
+    </div>
+  </div>
+
+  <p>
+    初期値は「最大3行・120文字の冒頭previewのみ送信」です。
+    返答全文は自動送信しません。
+  </p>
+
+  <button id="save">保存</button>
+  <button id="test">API疎通テスト</button>
+  <div class="status" id="status"></div>
+
+  <script src="options.js"></script>
+</body>
+</html>

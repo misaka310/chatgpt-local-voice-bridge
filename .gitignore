@@ -1,0 +1,74 @@
+# dependencies
+node_modules/
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# build outputs
+dist/
+build/
+out/
+*.zip
+*.spec
+
+# local runtime
+local-api/runtime/
+local-api/.venv/
+local-api/config.local.json
+local-api/logs/
+local-api/generated_audio/
+
+# generated audio
+local-api/audio/
+local-api/output/
+public/audio/generated/
+
+# private reference audio/text
+local-api/reference/*.wav
+local-api/reference/*.mp3
+local-api/reference/*.flac
+local-api/reference/*.m4a
+local-api/reference/*.ogg
+local-api/reference/*.aac
+local-api/reference/*.txt
+!local-api/reference/README.md
+!local-api/reference/.gitkeep
+
+# local config / secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# models / heavy assets
+models/
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.onnx
+
+# ChatGPT exports / private data
+conversations.json
+conversations-*.json
+chat.html
+exports/
+
+# logs / temporary files
+*.log
+*.tmp
+*.bak
+*.swp
+.DS_Store
+Thumbs.db
+
+# editor
+.vscode/
+.idea/
