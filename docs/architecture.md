@@ -8,9 +8,11 @@ Chrome extension
   - 1応答1回の自動送信
   - 音声再生キュー
   ↓
-local-api /v1/speak
-  - windows_sapi / mock_wav / comfyui_qwen3
-  - /audio/<file> を返却
+local-api /v1/speak (Qwen3専用)
+  - workflow読込
+  - text/ref_text/load_audio/save_prefix 注入
+  - ComfyUI /prompt -> /history
+  - runtime/audioへコピー
 ```
 
 ## ポイント
@@ -18,3 +20,4 @@ local-api /v1/speak
 - Playwright常駐監視は採用しない
 - 返答全文の自動送信はしない
 - 拡張からAPI起動する場合はNative Messaging host経由
+- Windows SAPI/mock導線は持たない

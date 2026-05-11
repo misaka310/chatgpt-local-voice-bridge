@@ -1,22 +1,17 @@
 #!/usr/bin/env python3
-"""Local voice bridge API for ChatGPT Web + Chrome extension."""
+"""Qwen3/ComfyUI-only local voice bridge API."""
 
 from __future__ import annotations
 
 import copy
 import hashlib
 import json
-import math
 import mimetypes
 import os
 import shutil
-import struct
-import subprocess
 import sys
-import tempfile
 import time
 import uuid
-import wave
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -32,44 +27,23 @@ CONFIG_PATH = ROOT / "config.json"
 CONFIG_LOCAL_PATH = ROOT / "config.local.json"
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac"}
-TOKEN_OUTPUT_BASENAME = "{{OUTPUT_BASENAME}}"
 QWEN_TEXT_FIELD = "text"
+REF_TEXT_KEYS = ("ref_text", "reference_text", "referenceText")
+LOAD_AUDIO_KEYS = ("audio", "filename", "file", "path")
 SAVE_BASENAME_KEYS = ("filename_prefix", "filename", "output_name", "basename")
-REFERENCE_AUDIO_KEYS = (
-    "reference_audio",
-    "referenceAudio",
-    "reference_audio_path",
-    "ref_audio",
-    "audio_path",
-    "voice_path",
-    "wav_path",
-)
-REFERENCE_TEXT_KEYS = (
-    "reference_text",
-    "referenceText",
-    "reference_text_path",
-    "ref_text",
-    "transcript",
-    "prompt",
-)
 
 DEFAULT_CONFIG: dict[str, Any] = {
+    "engine": "comfyui_qwen3",
     "host": "127.0.0.1",
     "port": 8765,
     "publicBaseUrl": "",
-    "engine": "windows_sapi",
     "audioOutputDir": "./runtime/audio",
     "referenceAudioPath": "./reference/voice.wav",
     "referenceTextPath": "./reference/voice.txt",
-    "windowsSapi": {
-        "voiceName": "",
-        "rate": 0,
-        "volume": 100,
-        "timeoutSec": 120,
-    },
     "comfyui": {
         "baseUrl": "http://127.0.0.1:8188",
         "workflowPath": "./workflows/qwen3_clone_api.json",
+        "inputDir": "C:/ComfyUI/input",
         "outputDir": "C:/ComfyUI/output",
         "timeoutSec": 300,
         "pollIntervalSec": 1.0,
@@ -115,24 +89,13 @@ def normalize_legacy(raw: dict[str, Any]) -> dict[str, Any]:
     if "reference_text_path" in normalized and "referenceTextPath" not in normalized:
         normalized["referenceTextPath"] = normalized.pop("reference_text_path")
 
-    legacy_windows = normalized.pop("windows_sapi", None)
-    if isinstance(legacy_windows, dict):
-        normalized.setdefault("windowsSapi", {})
-        if "voice_name" in legacy_windows:
-            normalized["windowsSapi"]["voiceName"] = legacy_windows["voice_name"]
-        if "rate" in legacy_windows:
-            normalized["windowsSapi"]["rate"] = legacy_windows["rate"]
-        if "volume" in legacy_windows:
-            normalized["windowsSapi"]["volume"] = legacy_windows["volume"]
-        if "timeout_sec" in legacy_windows:
-            normalized["windowsSapi"]["timeoutSec"] = legacy_windows["timeout_sec"]
-
     legacy_comfy = normalized.pop("comfyui_qwen3", None)
     if isinstance(legacy_comfy, dict):
         normalized.setdefault("comfyui", {})
         mapping = {
             "base_url": "baseUrl",
             "workflow_path": "workflowPath",
+            "input_dir": "inputDir",
             "comfy_output_dir": "outputDir",
             "timeout_sec": "timeoutSec",
             "poll_interval_sec": "pollIntervalSec",
@@ -145,50 +108,44 @@ def normalize_legacy(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def parse_env_int(name: str) -> int | None:
-    value = os.getenv(name)
-    if value is None or value == "":
-        return None
-    return int(value)
+    value = str((os.getenv(name) or "")).strip()
+    return int(value) if value else None
 
 
 def parse_env_float(name: str) -> float | None:
-    value = os.getenv(name)
-    if value is None or value == "":
-        return None
-    return float(value)
+    value = str((os.getenv(name) or "")).strip()
+    return float(value) if value else None
 
 
 def apply_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
     config = copy.deepcopy(raw)
-    config.setdefault("windowsSapi", {})
     config.setdefault("comfyui", {})
 
     env_map = {
+        "LOCAL_VOICE_ENGINE": ("engine", str),
         "LOCAL_VOICE_HOST": ("host", str),
         "LOCAL_VOICE_PORT": ("port", int),
         "LOCAL_VOICE_PUBLIC_BASE_URL": ("publicBaseUrl", str),
-        "LOCAL_VOICE_ENGINE": ("engine", str),
         "LOCAL_VOICE_AUDIO_OUTPUT_DIR": ("audioOutputDir", str),
         "LOCAL_VOICE_REFERENCE_AUDIO_PATH": ("referenceAudioPath", str),
         "LOCAL_VOICE_REFERENCE_TEXT_PATH": ("referenceTextPath", str),
     }
     for env_name, (field, caster) in env_map.items():
         value = os.getenv(env_name)
-        if value is None or value == "":
-            continue
-        config[field] = caster(value)
+        if value:
+            config[field] = caster(value)
 
-    comfy_overrides = {
+    comfy_env = {
         "LOCAL_VOICE_COMFYUI_BASE_URL": ("baseUrl", str),
         "LOCAL_VOICE_COMFYUI_WORKFLOW_PATH": ("workflowPath", str),
+        "LOCAL_VOICE_COMFYUI_INPUT_DIR": ("inputDir", str),
         "LOCAL_VOICE_COMFYUI_OUTPUT_DIR": ("outputDir", str),
         "LOCAL_VOICE_COMFYUI_DEFAULT_AUDIO_EXT": ("defaultAudioExt", str),
     }
-    for env_name, (field, caster) in comfy_overrides.items():
+    for env_name, (field, caster) in comfy_env.items():
         value = os.getenv(env_name)
-        if value is None or value == "":
-            continue
-        config["comfyui"][field] = caster(value)
+        if value:
+            config["comfyui"][field] = caster(value)
 
     timeout_sec = parse_env_int("LOCAL_VOICE_COMFYUI_TIMEOUT_SEC")
     if timeout_sec is not None:
@@ -196,19 +153,6 @@ def apply_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
     poll_interval = parse_env_float("LOCAL_VOICE_COMFYUI_POLL_INTERVAL_SEC")
     if poll_interval is not None:
         config["comfyui"]["pollIntervalSec"] = poll_interval
-
-    voice_name = os.getenv("LOCAL_VOICE_SAPI_VOICE")
-    if voice_name:
-        config["windowsSapi"]["voiceName"] = voice_name
-    rate = parse_env_int("LOCAL_VOICE_SAPI_RATE")
-    if rate is not None:
-        config["windowsSapi"]["rate"] = rate
-    volume = parse_env_int("LOCAL_VOICE_SAPI_VOLUME")
-    if volume is not None:
-        config["windowsSapi"]["volume"] = volume
-    sapi_timeout = parse_env_int("LOCAL_VOICE_SAPI_TIMEOUT_SEC")
-    if sapi_timeout is not None:
-        config["windowsSapi"]["timeoutSec"] = sapi_timeout
     return config
 
 
@@ -226,14 +170,20 @@ def load_config_raw() -> dict[str, Any]:
     return merged
 
 
-def resolve_optional_path(root: Path, value: Any) -> Path | None:
+def resolve_path(root: Path, value: Any) -> Path:
     raw = str(value or "").strip()
     if not raw:
-        return None
+        raise BridgeError("path value is empty")
     path = Path(raw).expanduser()
     if not path.is_absolute():
         path = (root / path).resolve()
-    return path if path.exists() else None
+    return path
+
+
+def normalize_ext(value: str) -> str:
+    if not value:
+        return ".wav"
+    return value if value.startswith(".") else f".{value}"
 
 
 @dataclass(frozen=True)
@@ -255,37 +205,73 @@ class RuntimeConfig:
 
     @property
     def engine(self) -> str:
-        return str(self.raw.get("engine", "windows_sapi"))
+        return str(self.raw.get("engine", "comfyui_qwen3"))
 
     @property
     def audio_output_dir(self) -> Path:
-        value = str(self.raw.get("audioOutputDir", "./runtime/audio"))
-        path = Path(value).expanduser()
-        if not path.is_absolute():
-            path = (self.root / path).resolve()
-        return path
+        return resolve_path(self.root, self.raw.get("audioOutputDir", "./runtime/audio"))
 
     @property
-    def reference_audio_path(self) -> Path | None:
-        return resolve_optional_path(self.root, self.raw.get("referenceAudioPath"))
+    def reference_audio_path(self) -> Path:
+        return resolve_path(self.root, self.raw.get("referenceAudioPath", "./reference/voice.wav"))
 
     @property
-    def reference_text_path(self) -> Path | None:
-        return resolve_optional_path(self.root, self.raw.get("referenceTextPath"))
-
-    @property
-    def windows_sapi(self) -> dict[str, Any]:
-        value = self.raw.get("windowsSapi")
-        return value if isinstance(value, dict) else {}
+    def reference_text_path(self) -> Path:
+        return resolve_path(self.root, self.raw.get("referenceTextPath", "./reference/voice.txt"))
 
     @property
     def comfyui(self) -> dict[str, Any]:
         value = self.raw.get("comfyui")
         return value if isinstance(value, dict) else {}
 
+    @property
+    def comfyui_base_url(self) -> str:
+        return str(self.comfyui.get("baseUrl", "http://127.0.0.1:8188")).rstrip("/")
+
+    @property
+    def comfyui_workflow_path(self) -> Path:
+        return resolve_path(self.root, self.comfyui.get("workflowPath", "./workflows/qwen3_clone_api.json"))
+
+    @property
+    def comfyui_input_dir(self) -> Path:
+        return resolve_path(self.root, self.comfyui.get("inputDir", "C:/ComfyUI/input"))
+
+    @property
+    def comfyui_output_dir(self) -> Path:
+        return resolve_path(self.root, self.comfyui.get("outputDir", "C:/ComfyUI/output"))
+
+    @property
+    def comfyui_timeout_sec(self) -> int:
+        return int(self.comfyui.get("timeoutSec", 300))
+
+    @property
+    def comfyui_poll_interval_sec(self) -> float:
+        return float(self.comfyui.get("pollIntervalSec", 1.0))
+
+    @property
+    def default_audio_ext(self) -> str:
+        return normalize_ext(str(self.comfyui.get("defaultAudioExt", ".wav")))
+
 
 def load_config() -> RuntimeConfig:
-    return RuntimeConfig(raw=load_config_raw(), root=ROOT)
+    cfg = RuntimeConfig(raw=load_config_raw(), root=ROOT)
+    if cfg.engine != "comfyui_qwen3":
+        raise BridgeError(f"unsupported engine '{cfg.engine}'. This server supports only comfyui_qwen3.")
+    return cfg
+
+
+def ensure_required_files(config: RuntimeConfig) -> None:
+    if not config.reference_audio_path.is_file():
+        raise BridgeError(f"referenceAudioPath not found: {config.reference_audio_path}")
+    if not config.reference_text_path.is_file():
+        raise BridgeError(f"referenceTextPath not found: {config.reference_text_path}")
+    if not config.comfyui_workflow_path.is_file():
+        raise BridgeError(f"workflowPath not found: {config.comfyui_workflow_path}")
+    if not config.comfyui_input_dir.is_dir():
+        raise BridgeError(f"comfyui.inputDir not found: {config.comfyui_input_dir}")
+    if not config.comfyui_output_dir.is_dir():
+        raise BridgeError(f"comfyui.outputDir not found: {config.comfyui_output_dir}")
+    config.audio_output_dir.mkdir(parents=True, exist_ok=True)
 
 
 def json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict[str, Any]) -> None:
@@ -332,93 +318,16 @@ def safe_basename(text: str, request_id: str | None = None) -> str:
     return f"chatgpt-{safe}-{digest}"
 
 
-def ensure_output_dir(config: RuntimeConfig) -> Path:
-    out_dir = config.audio_output_dir
-    out_dir.mkdir(parents=True, exist_ok=True)
-    return out_dir
-
-
-def synthesize_windows_sapi(config: RuntimeConfig, text: str, request_id: str | None) -> Path:
-    if os.name != "nt":
-        raise BridgeError("windows_sapi engine requires Windows. Set engine to mock_wav or comfyui_qwen3.")
-
-    settings = config.windows_sapi
-    voice_name = str(settings.get("voiceName", "") or "")
-    rate = int(settings.get("rate", 0))
-    volume = int(settings.get("volume", 100))
-    timeout_sec = int(settings.get("timeoutSec", 120))
-
-    out_file = ensure_output_dir(config) / f"{safe_basename(text, request_id)}.wav"
-    script = ROOT / "scripts" / "sapi_to_wav.ps1"
-    if not script.exists():
-        raise BridgeError(f"PowerShell script not found: {script}")
-
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt", delete=False) as handle:
-        handle.write(text)
-        text_path = Path(handle.name)
-
-    command = [
-        "powershell.exe",
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        str(script),
-        "-TextFile",
-        str(text_path),
-        "-OutFile",
-        str(out_file),
-        "-Rate",
-        str(rate),
-        "-Volume",
-        str(volume),
-    ]
-    if voice_name:
-        command.extend(["-VoiceName", voice_name])
-
-    try:
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout_sec)
-    finally:
-        try:
-            text_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-    if completed.returncode != 0:
-        raise BridgeError(
-            "Windows SAPI synthesis failed: "
-            + (completed.stderr.strip() or completed.stdout.strip() or f"exit={completed.returncode}")
-        )
-    if not out_file.exists() or out_file.stat().st_size == 0:
-        raise BridgeError("Windows SAPI did not create an audio file")
-    return out_file
-
-
-def synthesize_mock_wav(config: RuntimeConfig, text: str, request_id: str | None) -> Path:
-    out_file = ensure_output_dir(config) / f"{safe_basename(text, request_id)}.wav"
-    duration_sec = min(4.0, max(0.6, len(text) / 80.0))
-    sample_rate = 22050
-    frames = int(duration_sec * sample_rate)
-    with wave.open(str(out_file), "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(sample_rate)
-        for i in range(frames):
-            tone = math.sin(2 * math.pi * 440 * i / sample_rate)
-            value = int(16000 * tone)
-            wav.writeframesraw(struct.pack("<h", value))
-    return out_file
-
-
-def normalize_ext(value: str) -> str:
-    if not value:
-        return ".wav"
-    return value if value.startswith(".") else f".{value}"
+def read_reference_text(path: Path) -> str:
+    text = path.read_text(encoding="utf-8-sig").strip()
+    if not text:
+        raise BridgeError(f"referenceTextPath is empty: {path}")
+    return text
 
 
 def replace_tokens(value: Any, basename: str) -> Any:
     if isinstance(value, str):
-        return value.replace(TOKEN_OUTPUT_BASENAME, basename)
+        return value.replace("{{OUTPUT_BASENAME}}", basename)
     if isinstance(value, list):
         return [replace_tokens(item, basename) for item in value]
     if isinstance(value, dict):
@@ -434,20 +343,22 @@ def maybe_set_first_string_field(inputs: dict[str, Any], candidate_keys: tuple[s
     return False
 
 
-def patch_reference_fields(inputs: dict[str, Any], path: Path | None, candidate_keys: tuple[str, ...]) -> bool:
-    if path is None:
-        return False
-    return maybe_set_first_string_field(inputs, candidate_keys, str(path))
+def copy_reference_to_comfy_input(reference_audio_path: Path, comfy_input_dir: Path) -> str:
+    comfy_input_dir.mkdir(parents=True, exist_ok=True)
+    target = (comfy_input_dir / "voice.wav").resolve()
+    shutil.copy2(reference_audio_path, target)
+    return target.name
 
 
-def patch_qwen_workflow(template: Any, text: str, basename: str, reference_audio: Path | None, reference_text: Path | None) -> dict[str, Any]:
+def patch_qwen_workflow(template: Any, text: str, basename: str, ref_audio_filename: str, ref_text: str) -> dict[str, Any]:
     prompt = replace_tokens(copy.deepcopy(template), basename)
     if not isinstance(prompt, dict):
         raise BridgeError("workflow JSON must be an object")
 
     text_patched = False
-    basename_patched = False
-    has_basename_token = TOKEN_OUTPUT_BASENAME in json.dumps(template, ensure_ascii=False)
+    ref_text_patched = False
+    load_audio_patched = False
+    save_audio_patched = False
 
     for node in prompt.values():
         if not isinstance(node, dict):
@@ -458,26 +369,27 @@ def patch_qwen_workflow(template: Any, text: str, basename: str, reference_audio
             continue
 
         if "Qwen3VoiceClone" in class_type and QWEN_TEXT_FIELD in inputs:
-            if not isinstance(inputs.get(QWEN_TEXT_FIELD), str) and inputs.get(QWEN_TEXT_FIELD) is not None:
-                raise BridgeError("Qwen3VoiceClone.inputs.text must be string or null")
             inputs[QWEN_TEXT_FIELD] = text
             text_patched = True
-            patch_reference_fields(inputs, reference_audio, REFERENCE_AUDIO_KEYS)
-            patch_reference_fields(inputs, reference_text, REFERENCE_TEXT_KEYS)
+            if maybe_set_first_string_field(inputs, REF_TEXT_KEYS, ref_text):
+                ref_text_patched = True
 
         if "LoadAudio" in class_type:
-            patch_reference_fields(inputs, reference_audio, ("audio", "path", "filename", "file", *REFERENCE_AUDIO_KEYS))
-
-        if "LoadText" in class_type:
-            patch_reference_fields(inputs, reference_text, ("text", "path", "filename", "file", *REFERENCE_TEXT_KEYS))
+            if maybe_set_first_string_field(inputs, LOAD_AUDIO_KEYS, ref_audio_filename):
+                load_audio_patched = True
 
         if "SaveAudio" in class_type:
-            basename_patched = maybe_set_first_string_field(inputs, SAVE_BASENAME_KEYS, basename) or basename_patched
+            if maybe_set_first_string_field(inputs, SAVE_BASENAME_KEYS, basename):
+                save_audio_patched = True
 
     if not text_patched:
         raise BridgeError("Qwen3VoiceClone.inputs.text was not found in workflow")
-    if not basename_patched and not has_basename_token:
-        raise BridgeError("SaveAudio basename was not patched; add SaveAudio field or {{OUTPUT_BASENAME}} token")
+    if not ref_text_patched:
+        raise BridgeError("Qwen3VoiceClone ref_text field was not found in workflow")
+    if not load_audio_patched:
+        raise BridgeError("LoadAudio.inputs.audio field was not found in workflow")
+    if not save_audio_patched:
+        raise BridgeError("SaveAudio filename field was not found in workflow")
     return prompt
 
 
@@ -547,7 +459,10 @@ def history_error(entry: dict[str, Any]) -> str | None:
     for message in messages:
         if isinstance(message, list) and len(message) >= 2 and isinstance(message[1], dict):
             payload = message[1]
-            details.append(str(payload.get("exception_message") or payload.get("exception_type") or payload))
+            node_id = payload.get("node_id")
+            node_type = payload.get("node_type")
+            exc_msg = payload.get("exception_message") or payload.get("exception_type") or payload
+            details.append(f"node_id={node_id} node_type={node_type} error={exc_msg}")
     return " | ".join(details) or "status=error"
 
 
@@ -572,43 +487,43 @@ def list_audio_files(path: Path) -> list[Path]:
 
 
 def synthesize_comfyui_qwen3(config: RuntimeConfig, text: str, request_id: str | None) -> Path:
-    settings = config.comfyui
-    base_url = str(settings.get("baseUrl", "http://127.0.0.1:8188")).rstrip("/")
-    workflow_path = Path(str(settings.get("workflowPath", "./workflows/qwen3_clone_api.json"))).expanduser()
-    if not workflow_path.is_absolute():
-        workflow_path = (ROOT / workflow_path).resolve()
-    comfy_output_dir = Path(str(settings.get("outputDir", "C:/ComfyUI/output"))).expanduser()
-    poll_interval = float(settings.get("pollIntervalSec", 1.0))
-    timeout_sec = int(settings.get("timeoutSec", 300))
-    default_ext = normalize_ext(str(settings.get("defaultAudioExt", ".wav")))
-
-    if not workflow_path.exists():
-        raise BridgeError(f"workflow file not found: {workflow_path}")
-    if not comfy_output_dir.exists():
-        raise BridgeError(f"ComfyUI output dir not found: {comfy_output_dir}")
+    ensure_required_files(config)
+    ref_text = read_reference_text(config.reference_text_path)
+    load_audio_filename = copy_reference_to_comfy_input(config.reference_audio_path, config.comfyui_input_dir)
 
     basename = safe_basename(text, request_id)
-    template = load_json(workflow_path)
-    prompt = patch_qwen_workflow(template, text, basename, config.reference_audio_path, config.reference_text_path)
+    template = load_json(config.comfyui_workflow_path)
+    prompt = patch_qwen_workflow(template, text, basename, load_audio_filename, ref_text)
 
-    before = {p.as_posix() for p in list_audio_files(comfy_output_dir)}
+    before = {p.as_posix() for p in list_audio_files(config.comfyui_output_dir)}
     started_at = time.time()
-    body = http_json("POST", f"{base_url}/prompt", {"prompt": prompt, "client_id": str(uuid.uuid4())}, timeout=30)
+    body = http_json(
+        "POST",
+        f"{config.comfyui_base_url}/prompt",
+        {"prompt": prompt, "client_id": str(uuid.uuid4())},
+        timeout=30,
+    )
     prompt_id = body.get("prompt_id")
     if not prompt_id:
         raise BridgeError("ComfyUI /prompt did not return prompt_id")
 
-    entry = wait_for_history(base_url, str(prompt_id), poll_interval, timeout_sec)
+    entry = wait_for_history(
+        config.comfyui_base_url,
+        str(prompt_id),
+        config.comfyui_poll_interval_sec,
+        config.comfyui_timeout_sec,
+    )
+
     generated = extract_generated_files(entry)
     source: Path | None = None
     if generated:
         first = generated[0]
-        candidate = (comfy_output_dir / first.get("subfolder", "") / first["filename"]).resolve()
-        if candidate.exists():
+        candidate = (config.comfyui_output_dir / first.get("subfolder", "") / first["filename"]).resolve()
+        if candidate.is_file():
             source = candidate
 
     if source is None:
-        after_files = list_audio_files(comfy_output_dir)
+        after_files = list_audio_files(config.comfyui_output_dir)
         new_files = [p for p in after_files if p.as_posix() not in before]
         recent_files = [p for p in after_files if p.stat().st_mtime >= started_at - 2.0]
         pool = new_files or recent_files or after_files
@@ -616,25 +531,15 @@ def synthesize_comfyui_qwen3(config: RuntimeConfig, text: str, request_id: str |
             raise BridgeError("ComfyUI did not create an audio file")
         source = max(pool, key=lambda p: p.stat().st_mtime)
 
-    suffix = source.suffix or default_ext
-    out_file = ensure_output_dir(config) / f"{basename}{suffix}"
+    suffix = source.suffix or config.default_audio_ext
+    out_file = config.audio_output_dir / f"{basename}{suffix}"
+    config.audio_output_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, out_file)
     return out_file
 
 
-def synthesize(config: RuntimeConfig, text: str, request_id: str | None) -> Path:
-    engine = config.engine
-    if engine == "windows_sapi":
-        return synthesize_windows_sapi(config, text, request_id)
-    if engine == "comfyui_qwen3":
-        return synthesize_comfyui_qwen3(config, text, request_id)
-    if engine == "mock_wav":
-        return synthesize_mock_wav(config, text, request_id)
-    raise BridgeError(f"unknown engine: {engine}")
-
-
 class Handler(BaseHTTPRequestHandler):
-    server_version = "ChatGPTLocalVoiceBridge/0.2"
+    server_version = "ChatGPTLocalVoiceBridge/0.3"
 
     def do_OPTIONS(self) -> None:  # noqa: N802
         self.send_response(HTTPStatus.NO_CONTENT)
@@ -648,6 +553,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             config = load_config()
             if parsed.path == "/health":
+                ensure_required_files(config)
                 json_response(
                     self,
                     HTTPStatus.OK,
@@ -656,8 +562,11 @@ class Handler(BaseHTTPRequestHandler):
                         "engine": config.engine,
                         "audioOutputDir": str(config.audio_output_dir),
                         "publicBaseUrl": config.public_base_url,
-                        "referenceAudioPath": str(config.reference_audio_path) if config.reference_audio_path else "",
-                        "referenceTextPath": str(config.reference_text_path) if config.reference_text_path else "",
+                        "referenceAudioPath": str(config.reference_audio_path),
+                        "referenceTextPath": str(config.reference_text_path),
+                        "workflowPath": str(config.comfyui_workflow_path),
+                        "comfyuiInputDir": str(config.comfyui_input_dir),
+                        "comfyuiOutputDir": str(config.comfyui_output_dir),
                     },
                 )
                 return
@@ -678,7 +587,7 @@ class Handler(BaseHTTPRequestHandler):
             payload = read_request_json(self)
             text = sanitize_text(payload.get("text"))
             request_id = str(payload.get("requestId") or "") or None
-            source_file = synthesize(config, text, request_id)
+            source_file = synthesize_comfyui_qwen3(config, text, request_id)
             rel_name = source_file.name
             audio_url = f"{config.public_base_url}/audio/{rel_name}"
             json_response(
@@ -729,7 +638,8 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> int:
     try:
         config = load_config()
-        ensure_output_dir(config)
+        ensure_required_files(config)
+        config.audio_output_dir.mkdir(parents=True, exist_ok=True)
     except Exception as exc:  # noqa: BLE001
         print(f"[FATAL] {exc}", file=sys.stderr)
         return 2

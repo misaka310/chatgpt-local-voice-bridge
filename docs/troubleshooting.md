@@ -1,39 +1,29 @@
 ﻿# トラブルシュート
 
-## パネルが「未起動」のまま
+## /health が失敗する
 
-1. `./scripts/start-local-api.ps1` を実行
-2. `http://127.0.0.1:8765/health` を開く
-3. パネルの `Health` を押す
+- `local-api/reference/voice.wav` が存在するか
+- `local-api/reference/voice.txt` が存在するか
+- `local-api/workflows/qwen3_clone_api.json` が存在するか
+- `comfyui.inputDir` / `comfyui.outputDir` が存在するか
+- ComfyUI が起動しているか
 
-## Start APIが失敗する
+## /v1/speak が失敗する
 
-- Native host未導入の可能性があります
-- 拡張IDを確認して再登録してください
+- `/prompt` への接続失敗: ComfyUI URL確認
+- `/history` で status=error: Qwen3 node/モデル/LoadAudio設定を確認
+- `LoadAudio.inputs.audio` の読み込み失敗: inputDir内 `voice.wav` 配置を確認
+
+## Chromeで再生されない
+
+- APIログで `POST /v1/speak` と `GET /audio/...` が200か確認
+- ChatGPTタブを1回クリックして自動再生制限を解除
+- 拡張を再読み込み
+
+## Native host Start API が失敗する
+
+- 拡張IDで再登録:
 
 ```powershell
 .\scripts\install-native-host.ps1 -ExtensionId <拡張ID>
 ```
-
-## 音声が再生されない
-
-- `./scripts/smoke-local-api.ps1` で単体疎通確認
-- APIログに `POST /v1/speak` と `GET /audio/...` が出るか確認
-- ChatGPTタブ上で1回クリックして自動再生制限を解除
-
-## Qwen3で生成できない
-
-- ComfyUIが起動しているか
-- `local-api/config.local.json` の `engine` が `comfyui_qwen3` か
-- `local-api/workflows/qwen3_clone_api.json` が存在するか
-- `local-api/reference/voice.wav` と `local-api/reference/voice.txt` が存在するか
-- `/health` が `engine=comfyui_qwen3` を返すか
-
-## mock_wav では動くが本番で失敗する
-
-`mock_wav` / `windows_sapi` は疎通確認専用です。  
-最終完了にはQwen3/ComfyUI経由の生成・再生確認が必要です。
-
-## 返答全文を読んでしまう
-
-本実装は冒頭preview（最大3行/120文字）のみ送信します。古い拡張が読み込まれている場合は、拡張を再読み込みしてください。

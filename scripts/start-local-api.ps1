@@ -19,6 +19,11 @@ New-Item -ItemType Directory -Force -Path (Join-Path $RuntimeDir "audio") | Out-
 if ($Background) {
   $pythonCmd = (Get-Command python -ErrorAction Stop).Source
   $proc = Start-Process -FilePath $pythonCmd -ArgumentList @($ServerPath) -WorkingDirectory $LocalApiDir -PassThru -WindowStyle Hidden
+  Start-Sleep -Milliseconds 900
+  $alive = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue
+  if (-not $alive) {
+    throw "Local API failed to stay running. Run .\\scripts\\start-local-api.ps1 without -Background to see the error."
+  }
   $proc.Id | Set-Content -Encoding ASCII $PidFile
   Write-Host "Local API started in background (PID=$($proc.Id))"
   Write-Host "Health: http://127.0.0.1:8765/health"

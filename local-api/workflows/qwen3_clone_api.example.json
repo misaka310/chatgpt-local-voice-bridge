@@ -1,7 +1,15 @@
-﻿{
-  "notice": "This is a non-runnable reference placeholder. Export your real ComfyUI API workflow as qwen3_clone_api.json for production.",
-  "required": [
+{
+  "notice": "Reference only. Use actual ComfyUI API workflow for production.",
+  "required_nodes": [
+    "Qwen3Loader",
+    "LoadAudio",
+    "Qwen3VoiceClone",
+    "SaveAudio"
+  ],
+  "runtime_patched_fields": [
     "Qwen3VoiceClone.inputs.text",
-    "SaveAudio node or {{OUTPUT_BASENAME}} token"
+    "Qwen3VoiceClone.inputs.ref_text",
+    "LoadAudio.inputs.audio",
+    "SaveAudio.inputs.filename_prefix"
   ]
 }

@@ -507,7 +507,7 @@
         setPanelState('起動中', 'Native host経由で起動要求を送信');
       } catch (error) {
         setPanelState('エラー', error.message || String(error));
-        setHelper('Native host未設定。手動: .\\scripts\\start-local-api.ps1', true);
+        setHelper('Native host未設定。手動でQwen3 API起動: .\\scripts\\start-local-api.ps1', true);
       }
     });
 
@@ -528,7 +528,7 @@
     document.documentElement.appendChild(panel);
 
     setPanelState('起動中', `API: ${String(settings.apiUrl || DEFAULT_SETTINGS.apiUrl)}`);
-    setHelper('読み上げ対象: 冒頭previewのみ（最大3行/120字）');
+    setHelper('読み上げ対象: 冒頭previewのみ（最大3行/120字, Qwen3/ComfyUI）');
   }
 
   async function loadSettings() {

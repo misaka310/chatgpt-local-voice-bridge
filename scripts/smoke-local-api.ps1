@@ -4,9 +4,12 @@ $health = Invoke-RestMethod -Uri "http://127.0.0.1:8765/health" -Method GET
 if (-not $health.ok) {
   throw "health check failed"
 }
+if ($health.engine -ne 'comfyui_qwen3') {
+  throw "engine is not comfyui_qwen3: $($health.engine)"
+}
 
 $payload = @{
-  text = "Local Voice Bridge smoke test. preview and audio route check."
+  text = "Qwen3 smoke test from local voice bridge."
   requestId = "smoke-$(Get-Date -Format 'yyyyMMddHHmmss')"
 }
 $body = $payload | ConvertTo-Json -Compress

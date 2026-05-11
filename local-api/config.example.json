@@ -1,20 +1,15 @@
 {
+  "engine": "comfyui_qwen3",
   "host": "127.0.0.1",
   "port": 8765,
   "publicBaseUrl": "http://127.0.0.1:8765",
-  "engine": "windows_sapi",
   "audioOutputDir": "./runtime/audio",
   "referenceAudioPath": "./reference/voice.wav",
   "referenceTextPath": "./reference/voice.txt",
-  "windowsSapi": {
-    "voiceName": "",
-    "rate": 0,
-    "volume": 100,
-    "timeoutSec": 120
-  },
   "comfyui": {
     "baseUrl": "http://127.0.0.1:8188",
     "workflowPath": "./workflows/qwen3_clone_api.json",
+    "inputDir": "C:/ComfyUI/input",
     "outputDir": "C:/ComfyUI/output",
     "timeoutSec": 300,
     "pollIntervalSec": 1.0,

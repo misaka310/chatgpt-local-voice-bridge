@@ -1,18 +1,16 @@
 ﻿# 参照音源
 
-Qwen3/ComfyUI運用時は、以下を配置します。
+配置先:
 
 ```text
-local-api/reference/
-  voice.wav
-  voice.txt
+local-api/reference/voice.wav
+local-api/reference/voice.txt
 ```
 
-- `voice.wav`: 参照音声
-- `voice.txt`: 参照音声の文字起こし
-- 実ファイルはGit管理外（`.gitignore`で除外）
+- `voice.wav`: 参照音源
+- `voice.txt`: 参照文字起こし
 
-`engine=comfyui_qwen3` のとき、workflowノードに対応キーがあればこのパスを注入します。
-既存workflowが固定参照を持つ場合は、ファイル未配置でも動作可能です。
+どちらも Git 管理しません。
 
-詳細: [local-api/reference/README.md](../local-api/reference/README.md)
+`server.py` は生成前に `voice.wav` を `comfyui.inputDir` へコピーし、
+`voice.txt` の内容を `Qwen3VoiceClone.inputs.ref_text` に注入します。
