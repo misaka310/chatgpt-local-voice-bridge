@@ -39,3 +39,5 @@ Pythonへハードコードしません。
 ## 設定例
 
 `local-api/config.qwen3.example.json` を参照してください。
+ComfyUIが 8190 ポート運用の場合は、`config.local.json` で
+`comfyui.baseUrl` を `http://127.0.0.1:8190` に上書きします。

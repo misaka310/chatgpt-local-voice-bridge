@@ -14,6 +14,9 @@ cd <repo-root>
 .\scripts\smoke-local-api.ps1
 ```
 
+ComfyUI が `8190` で起動している環境では、`local-api/config.local.json` の
+`comfyui.baseUrl` を `http://127.0.0.1:8190` に設定してください。
+
 ## 停止
 
 ```powershell

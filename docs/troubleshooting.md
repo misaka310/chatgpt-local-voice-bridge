@@ -7,6 +7,7 @@
 - `local-api/workflows/qwen3_clone_api.json` が存在するか
 - `comfyui.inputDir` / `comfyui.outputDir` が存在するか
 - ComfyUI が起動しているか
+- ComfyUIが8190運用なら `config.local.json` の `comfyui.baseUrl` が `http://127.0.0.1:8190` か
 
 ## /v1/speak が失敗する
 
