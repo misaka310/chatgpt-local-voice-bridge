@@ -36,6 +36,12 @@ scripts\start-qwen-stack.cmd
 .\scripts\smoke-local-api.ps1
 ```
 
+## 拡張UIの運用
+
+- 拡張の `Read Latest` は同じpreviewなら生成済み音声を再利用する
+- `Replay` は最後に再生成功した音声を再生成なしで再生する
+- APIの起動/停止は `run-qwen-stack.cmd` 側で行い、拡張UIからは実行しない
+
 ## local-api 単体起動（必要時のみ）
 
 ```powershell
@@ -47,18 +53,6 @@ scripts\start-qwen-stack.cmd
 ```powershell
 .\scripts\stop-local-api.ps1
 ```
-
-## Native host導入（拡張Start/Stop用）
-
-1. `chrome://extensions` で拡張ID確認
-2. 実行:
-
-```powershell
-.\scripts\install-native-host.ps1 -ExtensionId <拡張ID>
-```
-
-3. ChatGPTタブ再読み込み
-4. パネルの `Start API` / `Stop API` / `Health` を利用
 
 ## Windowsログオン時自動起動（任意）
 

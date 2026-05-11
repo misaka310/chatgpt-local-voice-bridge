@@ -42,9 +42,14 @@
 - ChatGPTタブを1回クリックして自動再生制限を解除
 - 拡張を再読み込み
 
-## Native host Start API が失敗する
+## Read Latest / Replay のキャッシュ確認
 
-- 拡張IDで再登録:
+- 初回 `Read Latest`: `POST /v1/speak` が1回増える
+- 同じpreviewで2回目 `Read Latest`: `POST /v1/speak` は増えず `GET /audio/...` のみ
+- `Replay`: `POST /v1/speak` は増えず `GET /audio/...` のみ
+- local-apiを再起動して再生失敗した場合は、次の `Read Latest` で再生成される
+
+## Native hostを使う場合のみ失敗する
 
 ```powershell
 .\scripts\install-native-host.ps1 -ExtensionId <拡張ID>

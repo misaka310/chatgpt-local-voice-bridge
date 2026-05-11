@@ -55,12 +55,20 @@ run-qwen-stack.cmd
 
 8. ChatGPTでE2E確認
 - `https://chatgpt.com/` を開く
-- 「最新を読む」または自動検知で冒頭previewのみ送信
+- `Read Latest` または自動検知で冒頭previewのみ送信
+- 同じpreviewは再生成せずキャッシュ済み音声を再利用
+- `Replay` は最後に再生成功した音声を再生成なしで再生
 - Qwen3音声が再生される
+
+## 運用メモ
+
+- APIの起動/停止は `run-qwen-stack.cmd`（または scripts配下cmd）で行う
+- Chrome拡張UIからの `Start API` / `Stop API` 操作は使わない運用
+- Native Messaging を使う場合も、通常運用では必須ではない
 
 ## Native Messaging（任意）
 
-拡張から API Start/Stop を使う場合:
+必要時のみ:
 
 ```powershell
 .\scripts\install-native-host.ps1 -ExtensionId <拡張ID>
