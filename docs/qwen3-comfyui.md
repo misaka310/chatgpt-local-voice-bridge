@@ -1,18 +1,25 @@
 ﻿# Qwen3 / ComfyUI
 
-## 概要
+## 運用方針
 
-初期E2Eは `windows_sapi` または `mock_wav` を使用し、実運用時に `comfyui_qwen3` へ切り替えます。
+- **最終運用エンジンは `comfyui_qwen3`**
+- `windows_sapi` / `mock_wav` は疎通確認専用
+- `mock_wav` 成功だけでは完了扱いにしません
 
 ## 事前準備
 
 - ComfyUIを起動
 - Qwen3 Voice Clone workflowをAPI形式で保存
 - `local-api/workflows/qwen3_clone_api.json` に配置
+- `local-api/reference/voice.wav` と `local-api/reference/voice.txt` を配置
 
 ## 設定
 
-`local-api/config.local.json` 例:
+`local-api/config.local.json` の例は以下を使ってください。
+
+- `local-api/config.qwen3.example.json`
+
+例:
 
 ```json
 {
@@ -24,19 +31,35 @@
     "workflowPath": "./workflows/qwen3_clone_api.json",
     "outputDir": "C:/ComfyUI/output",
     "timeoutSec": 300,
-    "pollIntervalSec": 1.0
+    "pollIntervalSec": 1.0,
+    "defaultAudioExt": ".wav"
   }
 }
 ```
 
-## 注入仕様
+## Python側の注入範囲
 
-- `Qwen3VoiceClone.inputs.text` に本文を注入
-- `SaveAudio` 系ノードの保存名を一意化
-- 対応キーがあれば参照音源/文字起こしパスを注入
+`server.py` が実行時に差し替えるのは以下のみです。
 
-## エラー時
+- `Qwen3VoiceClone.inputs.text`
+- SaveAudio系ノードの保存名
+- 対応キーがある場合の参照音源パス
+- 対応キーがある場合の参照文字起こしパス
 
-- ComfyUI未起動: `/prompt` 接続失敗
-- workflow不一致: `Qwen3VoiceClone.inputs.text was not found`
-- 出力特定失敗: outputDirの最新音声探索でも見つからない
+## Qwenパラメータの管理場所
+
+- seed
+- temperature
+- speed
+- max tokens
+- sampling系
+- 声質ノード設定
+
+これらは **ComfyUI workflow JSON側で管理** し、Pythonにハードコードしません。
+
+## 最終確認
+
+1. `scripts/start-local-api.ps1`
+2. `/health` が `engine=comfyui_qwen3`
+3. `scripts/smoke-local-api.ps1` がQwen3経由で音声生成
+4. ChatGPTで `最新を読む` を押し、冒頭previewのみ再生される

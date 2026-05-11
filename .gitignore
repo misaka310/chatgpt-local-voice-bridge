@@ -24,6 +24,7 @@ local-api/.venv/
 local-api/config.local.json
 local-api/logs/
 local-api/generated_audio/
+local-api/workflows/qwen3_clone_api.json
 
 # generated audio
 local-api/audio/
@@ -40,6 +41,8 @@ local-api/reference/*.aac
 local-api/reference/*.txt
 !local-api/reference/README.md
 !local-api/reference/.gitkeep
+!local-api/workflows/README.md
+!local-api/workflows/*.example.json
 
 # local config / secrets
 .env

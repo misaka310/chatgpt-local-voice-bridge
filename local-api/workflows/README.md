@@ -1,17 +1,33 @@
 ﻿# workflows
 
-`engine=comfyui_qwen3` のとき、ComfyUIからAPI形式で保存した workflow を
-`qwen3_clone_api.json` としてこのフォルダへ配置してください。
+`qwen3_clone_api.json` は、ComfyUIから **API形式** で保存した Qwen3 Voice Clone workflow です。
+実運用では `local-api/workflows/qwen3_clone_api.json` に配置してください。
 
-本ブリッジは以下を反映します。
+## Git管理方針
 
-- `Qwen3VoiceClone.inputs.text` に本文注入
-- `SaveAudio` 系ノードの保存名を一意化
-- 対応キーがある場合、`referenceAudioPath` / `referenceTextPath` のパス注入
+- workflowに個人環境パスや参照音源情報が含まれる場合は **Gitに入れない**
+- 共有用には `qwen3_clone_api.example.json` を使う
+- 実workflowをGit管理しない運用でも問題ありません
 
-固定しておくもの:
+## Python側（server.py）が差し替える項目
 
-- モデル
-- 音色・速度
+- `Qwen3VoiceClone.inputs.text`
+- `SaveAudio` 系ノードの保存名
+- 対応キーが存在する場合の参照音源パス
+- 対応キーが存在する場合の参照文字起こしパス
+
+## Python側で管理しない項目
+
+以下のQwen生成パラメータは workflow JSON 側で管理します。
+
 - seed
-- 参照音源を固定運用する場合のノード構成
+- temperature
+- speed
+- max tokens
+- sampling系設定
+- 声質に関わるノード設定
+
+## example JSON について
+
+`qwen3_clone_api.example.json` は **実行可能保証のない参考例** です。
+実運用では必ずComfyUIで作成した実workflowをAPI形式で保存して配置してください。

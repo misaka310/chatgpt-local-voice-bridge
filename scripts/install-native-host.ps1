@@ -1,10 +1,10 @@
-$ErrorActionPreference = "Stop"
-
 param(
   [Parameter(Mandatory = $true)]
   [string]$ExtensionId,
   [string]$HostName = "com.chatgpt.local_voice_bridge"
 )
+
+$ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $PSScriptRoot
 $NativeDir = Join-Path $Root "tools\native-host"

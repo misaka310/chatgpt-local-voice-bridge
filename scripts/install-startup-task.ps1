@@ -1,8 +1,8 @@
-$ErrorActionPreference = "Stop"
-
 param(
   [string]$TaskName = "ChatGPTLocalVoiceBridge"
 )
+
+$ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $PSScriptRoot
 $ScriptPath = Join-Path $Root "scripts\start-local-api.ps1"
