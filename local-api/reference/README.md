@@ -1,12 +1,12 @@
-﻿# Reference Audio
+# reference
 
-Qwen3/ComfyUI 実行時に使用する参照データです。
+ComfyUI workflow実行時に使うローカル参照データ置き場です。
 
-- `voice.wav`: 参照音源
-- `voice.txt`: 参照文字起こし
+- `voice_irodori.wav`: 参照音源（Git管理しない）
+- `tts_e2e_irodori.json`: Irodori用workflow JSON（Git管理しない）
 
-運用ルール:
+`server.py` は実行時に以下のみ差し替えます。
 
-- 実ファイルはGitにコミットしない
-- `server.py` は生成前に `voice.wav` を ComfyUI input へコピーする
-- `server.py` は `voice.txt` を `Qwen3VoiceClone.inputs.ref_text` へ注入する
+- 読み上げ本文
+- 保存名（`filename_prefix` など）
+- 必要時のみ参照音源ファイル名

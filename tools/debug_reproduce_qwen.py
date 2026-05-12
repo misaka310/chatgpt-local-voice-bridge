@@ -106,8 +106,9 @@ def main() -> int:
 
     text_hashes = [run["summary"].get("textHash") for run in runs]
     ref_audio_hashes = [run["summary"].get("refAudioHash") for run in runs]
-    ref_text_hashes = [run["summary"].get("refTextHash") for run in runs]
+    reference_audio_used = [run["summary"].get("referenceAudioUsed") for run in runs]
     patched_prompt_hashes = [run["summary"].get("patchedPromptHash") for run in runs]
+    tts_input_hashes = [run["summary"].get("ttsInputHash") for run in runs]
     seeds = [run["summary"].get("seed") for run in runs]
     audio_hashes = [run["summary"].get("audioHash") for run in runs]
 
@@ -116,14 +117,16 @@ def main() -> int:
         "count": args.count,
         "same_text_hash": all_same(text_hashes),
         "same_ref_audio_hash": all_same(ref_audio_hashes),
-        "same_ref_text_hash": all_same(ref_text_hashes),
+        "same_reference_audio_used": all_same(reference_audio_used),
         "same_patched_prompt_hash": all_same(patched_prompt_hashes),
+        "same_tts_input_hash": all_same(tts_input_hashes),
         "same_seed": all_same(seeds),
         "same_audio_hash": all_same(audio_hashes),
         "textHashes": text_hashes,
         "refAudioHashes": ref_audio_hashes,
-        "refTextHashes": ref_text_hashes,
+        "referenceAudioUsedValues": reference_audio_used,
         "patchedPromptHashes": patched_prompt_hashes,
+        "ttsInputHashes": tts_input_hashes,
         "seeds": seeds,
         "audioHashes": audio_hashes,
     }
@@ -134,8 +137,9 @@ def main() -> int:
     print(f"session_dir: {session_dir}")
     print(f"same_text_hash: {str(result['same_text_hash']).lower()}")
     print(f"same_ref_audio_hash: {str(result['same_ref_audio_hash']).lower()}")
-    print(f"same_ref_text_hash: {str(result['same_ref_text_hash']).lower()}")
+    print(f"same_reference_audio_used: {str(result['same_reference_audio_used']).lower()}")
     print(f"same_patched_prompt_hash: {str(result['same_patched_prompt_hash']).lower()}")
+    print(f"same_tts_input_hash: {str(result['same_tts_input_hash']).lower()}")
     print(f"same_seed: {str(result['same_seed']).lower()}")
     print(f"same_audio_hash: {str(result['same_audio_hash']).lower()}")
     return 0

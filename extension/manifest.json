@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "ChatGPT Local Voice Bridge",
   "version": "0.1.0",
-  "description": "Reads ChatGPT web responses through a local TTS API such as Qwen3-TTS/ComfyUI.",
+  "description": "Reads ChatGPT web responses through a local ComfyUI workflow TTS API.",
   "permissions": ["storage", "nativeMessaging"],
   "host_permissions": [
     "http://127.0.0.1:8765/*",

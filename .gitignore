@@ -39,6 +39,7 @@ local-api/reference/*.m4a
 local-api/reference/*.ogg
 local-api/reference/*.aac
 local-api/reference/*.txt
+local-api/reference/*.json
 !local-api/reference/README.md
 !local-api/reference/.gitkeep
 !local-api/workflows/README.md

@@ -1,5 +1,5 @@
-﻿#!/usr/bin/env python3
-"""Qwen3/ComfyUI-only local voice bridge API."""
+#!/usr/bin/env python3
+"""ComfyUI workflow-based local voice bridge API."""
 
 from __future__ import annotations
 
@@ -28,24 +28,51 @@ CONFIG_PATH = ROOT / "config.json"
 CONFIG_LOCAL_PATH = ROOT / "config.local.json"
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac"}
-QWEN_TEXT_FIELD = "text"
-REF_TEXT_KEYS = ("ref_text", "reference_text", "referenceText")
-LOAD_AUDIO_KEYS = ("audio", "filename", "file", "path")
-SAVE_BASENAME_KEYS = ("filename_prefix", "filename", "output_name", "basename")
+
+DEFAULT_TEXT_CLASS_HINTS = ("Text", "TTS", "Irodori", "Prompt")
+DEFAULT_TEXT_KEYS = ("text", "prompt", "sentence")
+DEFAULT_SAVE_CLASS_HINTS = ("SaveAudio", "VHS_SaveAudio")
+DEFAULT_SAVE_KEYS = ("filename_prefix", "filename", "output_name", "basename")
+DEFAULT_REF_CLASS_HINTS = ("LoadAudio", "ReferenceAudio", "IrodoriTTSReferenceAudio", "Audio")
+DEFAULT_REF_KEYS = ("ref_audio", "audio", "filename", "file", "path")
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "engine": "comfyui_qwen3",
+    "engine": "comfyui_workflow",
+    "voiceProfile": "irodori",
     "host": "127.0.0.1",
     "port": 8765,
     "publicBaseUrl": "",
     "audioOutputDir": "./runtime/audio",
-    "referenceAudioPath": "./reference/voice.wav",
-    "referenceTextPath": "./reference/voice.txt",
+    "referenceAudioPath": "./reference/voice_irodori.wav",
+    "workflowPath": "./reference/tts_e2e_irodori.json",
+    "preview": {
+        "maxLines": 2,
+        "maxChars": 80,
+        "minChars": 25,
+        "stableMs": 800,
+    },
+    "workflowPatch": {
+        "text": {
+            "classTypeIncludes": ["Text", "TTS", "Irodori"],
+            "inputKeys": ["text", "prompt", "sentence"],
+            "enabled": True,
+        },
+        "save": {
+            "classTypeIncludes": ["SaveAudio", "VHS_SaveAudio"],
+            "inputKeys": ["filename_prefix", "filename", "output_name", "basename"],
+            "enabled": True,
+        },
+        "referenceAudio": {
+            "classTypeIncludes": ["IrodoriTTSReferenceAudio", "LoadAudio", "Audio"],
+            "inputKeys": ["ref_audio", "audio", "filename", "file", "path"],
+            "enabled": True,
+        },
+    },
     "comfyui": {
-        "baseUrl": "http://127.0.0.1:8190",
-        "workflowPath": "./workflows/qwen3_clone_api.json",
-        "inputDir": "C:/ComfyUI/input",
-        "outputDir": "C:/ComfyUI/output",
+        "baseUrl": "http://127.0.0.1:8288",
+        "startupBat": "D:/ComfyUI_TTS_E2E_SANDBOX/start_comfyui_tts_sandbox.bat",
+        "inputDir": "D:/ComfyUI_TTS_E2E_SANDBOX/ComfyUI/input",
+        "outputDir": "D:/ComfyUI_TTS_E2E_SANDBOX/ComfyUI/output",
         "timeoutSec": 300,
         "pollIntervalSec": 1.0,
         "defaultAudioExt": ".wav",
@@ -87,8 +114,11 @@ def normalize_legacy(raw: dict[str, Any]) -> dict[str, Any]:
         normalized["audioOutputDir"] = normalized.pop("output_dir")
     if "reference_audio_path" in normalized and "referenceAudioPath" not in normalized:
         normalized["referenceAudioPath"] = normalized.pop("reference_audio_path")
-    if "reference_text_path" in normalized and "referenceTextPath" not in normalized:
-        normalized["referenceTextPath"] = normalized.pop("reference_text_path")
+    if "workflow_path" in normalized and "workflowPath" not in normalized:
+        normalized["workflowPath"] = normalized.pop("workflow_path")
+
+    if str(normalized.get("engine", "")).strip() == "comfyui_qwen3":
+        normalized["engine"] = "comfyui_workflow"
 
     legacy_comfy = normalized.pop("comfyui_qwen3", None)
     if isinstance(legacy_comfy, dict):
@@ -105,6 +135,11 @@ def normalize_legacy(raw: dict[str, Any]) -> dict[str, Any]:
         for old_key, new_key in mapping.items():
             if old_key in legacy_comfy:
                 normalized["comfyui"][new_key] = legacy_comfy[old_key]
+
+    comfy = normalized.get("comfyui")
+    if isinstance(comfy, dict) and "workflowPath" in comfy and "workflowPath" not in normalized:
+        normalized["workflowPath"] = comfy["workflowPath"]
+
     return normalized
 
 
@@ -124,12 +159,13 @@ def apply_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
 
     env_map = {
         "LOCAL_VOICE_ENGINE": ("engine", str),
+        "LOCAL_VOICE_PROFILE": ("voiceProfile", str),
         "LOCAL_VOICE_HOST": ("host", str),
         "LOCAL_VOICE_PORT": ("port", int),
         "LOCAL_VOICE_PUBLIC_BASE_URL": ("publicBaseUrl", str),
         "LOCAL_VOICE_AUDIO_OUTPUT_DIR": ("audioOutputDir", str),
         "LOCAL_VOICE_REFERENCE_AUDIO_PATH": ("referenceAudioPath", str),
-        "LOCAL_VOICE_REFERENCE_TEXT_PATH": ("referenceTextPath", str),
+        "LOCAL_VOICE_WORKFLOW_PATH": ("workflowPath", str),
     }
     for env_name, (field, caster) in env_map.items():
         value = os.getenv(env_name)
@@ -138,9 +174,9 @@ def apply_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
 
     comfy_env = {
         "LOCAL_VOICE_COMFYUI_BASE_URL": ("baseUrl", str),
-        "LOCAL_VOICE_COMFYUI_WORKFLOW_PATH": ("workflowPath", str),
         "LOCAL_VOICE_COMFYUI_INPUT_DIR": ("inputDir", str),
         "LOCAL_VOICE_COMFYUI_OUTPUT_DIR": ("outputDir", str),
+        "LOCAL_VOICE_COMFYUI_STARTUP_BAT": ("startupBat", str),
         "LOCAL_VOICE_COMFYUI_DEFAULT_AUDIO_EXT": ("defaultAudioExt", str),
     }
     for env_name, (field, caster) in comfy_env.items():
@@ -154,6 +190,7 @@ def apply_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
     poll_interval = parse_env_float("LOCAL_VOICE_COMFYUI_POLL_INTERVAL_SEC")
     if poll_interval is not None:
         config["comfyui"]["pollIntervalSec"] = poll_interval
+
     return config
 
 
@@ -165,6 +202,7 @@ def load_config_raw() -> dict[str, Any]:
             if not isinstance(loaded, dict):
                 raise BridgeError(f"config must be JSON object: {path}")
             merged = deep_merge(merged, normalize_legacy(loaded))
+
     merged = apply_env_overrides(merged)
     if not merged.get("publicBaseUrl"):
         merged["publicBaseUrl"] = f"http://{merged.get('host', '127.0.0.1')}:{int(merged.get('port', 8765))}"
@@ -206,7 +244,11 @@ class RuntimeConfig:
 
     @property
     def engine(self) -> str:
-        return str(self.raw.get("engine", "comfyui_qwen3"))
+        return str(self.raw.get("engine", "comfyui_workflow"))
+
+    @property
+    def voice_profile(self) -> str:
+        return str(self.raw.get("voiceProfile", "irodori"))
 
     @property
     def audio_output_dir(self) -> Path:
@@ -214,11 +256,15 @@ class RuntimeConfig:
 
     @property
     def reference_audio_path(self) -> Path:
-        return resolve_path(self.root, self.raw.get("referenceAudioPath", "./reference/voice.wav"))
+        return resolve_path(self.root, self.raw.get("referenceAudioPath", "./reference/voice_irodori.wav"))
 
     @property
-    def reference_text_path(self) -> Path:
-        return resolve_path(self.root, self.raw.get("referenceTextPath", "./reference/voice.txt"))
+    def workflow_path(self) -> Path:
+        top = self.raw.get("workflowPath")
+        if top:
+            return resolve_path(self.root, top)
+        comfy = self.comfyui
+        return resolve_path(self.root, comfy.get("workflowPath", "./reference/tts_e2e_irodori.json"))
 
     @property
     def comfyui(self) -> dict[str, Any]:
@@ -227,19 +273,19 @@ class RuntimeConfig:
 
     @property
     def comfyui_base_url(self) -> str:
-        return str(self.comfyui.get("baseUrl", "http://127.0.0.1:8190")).rstrip("/")
+        return str(self.comfyui.get("baseUrl", "http://127.0.0.1:8288")).rstrip("/")
 
     @property
-    def comfyui_workflow_path(self) -> Path:
-        return resolve_path(self.root, self.comfyui.get("workflowPath", "./workflows/qwen3_clone_api.json"))
+    def comfyui_startup_bat(self) -> str:
+        return str(self.comfyui.get("startupBat", "D:/ComfyUI_TTS_E2E_SANDBOX/start_comfyui_tts_sandbox.bat"))
 
     @property
     def comfyui_input_dir(self) -> Path:
-        return resolve_path(self.root, self.comfyui.get("inputDir", "C:/ComfyUI/input"))
+        return resolve_path(self.root, self.comfyui.get("inputDir", "D:/ComfyUI_TTS_E2E_SANDBOX/ComfyUI/input"))
 
     @property
     def comfyui_output_dir(self) -> Path:
-        return resolve_path(self.root, self.comfyui.get("outputDir", "C:/ComfyUI/output"))
+        return resolve_path(self.root, self.comfyui.get("outputDir", "D:/ComfyUI_TTS_E2E_SANDBOX/ComfyUI/output"))
 
     @property
     def comfyui_timeout_sec(self) -> int:
@@ -254,16 +300,38 @@ class RuntimeConfig:
         return normalize_ext(str(self.comfyui.get("defaultAudioExt", ".wav")))
 
     @property
+    def workflow_patch(self) -> dict[str, Any]:
+        value = self.raw.get("workflowPatch")
+        return value if isinstance(value, dict) else {}
+
+    @property
     def debug_output_dir(self) -> Path:
         return resolve_path(self.root, "./runtime/debug")
 
 
 @dataclass(frozen=True)
-class ReferenceCopyDebug:
-    load_audio_filename: str
-    ref_audio_hash: str
-    ref_audio_size: int
-    ref_audio_mtime: str
+class PatchSelector:
+    class_type_includes: tuple[str, ...]
+    input_keys: tuple[str, ...]
+    enabled: bool
+
+
+@dataclass(frozen=True)
+class PatchTarget:
+    node_id: str
+    class_type: str
+    input_key: str
+
+
+@dataclass(frozen=True)
+class ReferenceAudioDebug:
+    configured_path: str
+    reference_audio_hash: str
+    reference_audio_size: int
+    reference_audio_mtime: str
+    used: bool
+    input_filename: str | None
+    fallback_input_filename: str | None
 
 
 @dataclass(frozen=True)
@@ -275,32 +343,44 @@ class SynthesisResult:
     history_raw: dict[str, Any]
     workflow_hash: str
     patched_prompt_hash: str
-    ref_text: str
-    ref_text_hash: str
-    ref_copy: ReferenceCopyDebug
-    qwen_inputs: dict[str, Any]
-    load_audio_inputs: dict[str, Any]
-    save_audio_inputs: dict[str, Any]
+    tts_input_hash: str
+    text_target: PatchTarget
+    save_target: PatchTarget
+    reference_target: PatchTarget | None
+    reference_audio: ReferenceAudioDebug
+
+
+def selector_from_config(raw: dict[str, Any], key: str, fallback_classes: tuple[str, ...], fallback_keys: tuple[str, ...], default_enabled: bool = True) -> PatchSelector:
+    block = raw.get(key)
+    if not isinstance(block, dict):
+        return PatchSelector(fallback_classes, fallback_keys, default_enabled)
+
+    classes = block.get("classTypeIncludes")
+    input_keys = block.get("inputKeys")
+    enabled = bool(block.get("enabled", default_enabled))
+
+    class_list = tuple(str(item) for item in classes) if isinstance(classes, list) and classes else fallback_classes
+    key_list = tuple(str(item) for item in input_keys) if isinstance(input_keys, list) and input_keys else fallback_keys
+    return PatchSelector(class_list, key_list, enabled)
 
 
 def load_config() -> RuntimeConfig:
     cfg = RuntimeConfig(raw=load_config_raw(), root=ROOT)
-    if cfg.engine != "comfyui_qwen3":
-        raise BridgeError(f"unsupported engine '{cfg.engine}'. This server supports only comfyui_qwen3.")
+    if cfg.engine != "comfyui_workflow":
+        raise BridgeError(f"unsupported engine '{cfg.engine}'. This server supports only comfyui_workflow.")
     return cfg
 
 
 def ensure_required_files(config: RuntimeConfig) -> None:
+    if not config.workflow_path.is_file():
+        raise BridgeError(f"workflowPath not found: {config.workflow_path}")
     if not config.reference_audio_path.is_file():
         raise BridgeError(f"referenceAudioPath not found: {config.reference_audio_path}")
-    if not config.reference_text_path.is_file():
-        raise BridgeError(f"referenceTextPath not found: {config.reference_text_path}")
-    if not config.comfyui_workflow_path.is_file():
-        raise BridgeError(f"workflowPath not found: {config.comfyui_workflow_path}")
     if not config.comfyui_input_dir.is_dir():
         raise BridgeError(f"comfyui.inputDir not found: {config.comfyui_input_dir}")
     if not config.comfyui_output_dir.is_dir():
         raise BridgeError(f"comfyui.outputDir not found: {config.comfyui_output_dir}")
+
     config.audio_output_dir.mkdir(parents=True, exist_ok=True)
     config.debug_output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -382,13 +462,6 @@ def safe_basename(text: str, request_id: str | None = None) -> str:
     return f"chatgpt-{safe}-{digest}"
 
 
-def read_reference_text(path: Path) -> str:
-    text = path.read_text(encoding="utf-8-sig").strip()
-    if not text:
-        raise BridgeError(f"referenceTextPath is empty: {path}")
-    return text
-
-
 def replace_tokens(value: Any, basename: str) -> Any:
     if isinstance(value, str):
         return value.replace("{{OUTPUT_BASENAME}}", basename)
@@ -399,83 +472,182 @@ def replace_tokens(value: Any, basename: str) -> Any:
     return value
 
 
-def maybe_set_first_string_field(inputs: dict[str, Any], candidate_keys: tuple[str, ...], value: str) -> bool:
-    for key in candidate_keys:
-        if key in inputs and (isinstance(inputs.get(key), str) or inputs.get(key) is None):
-            inputs[key] = value
-            return True
-    return False
+def is_api_prompt_format(value: Any) -> bool:
+    if not isinstance(value, dict) or not value:
+        return False
+    for node in value.values():
+        if not isinstance(node, dict):
+            return False
+        if "class_type" not in node and "type" not in node:
+            return False
+    return True
 
 
-def copy_reference_to_comfy_input(reference_audio_path: Path, comfy_input_dir: Path) -> ReferenceCopyDebug:
-    comfy_input_dir.mkdir(parents=True, exist_ok=True)
-    ref_hash = sha1_file(reference_audio_path)
-    suffix = reference_audio_path.suffix or ".wav"
-    target = (comfy_input_dir / f"voice-{ref_hash[:12]}{suffix}").resolve()
-    shutil.copy2(reference_audio_path, target)
-    stat = target.stat()
-    return ReferenceCopyDebug(
-        load_audio_filename=target.name,
-        ref_audio_hash=ref_hash,
-        ref_audio_size=int(stat.st_size),
-        ref_audio_mtime=datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
-    )
+def convert_graph_workflow_to_prompt(value: dict[str, Any]) -> dict[str, Any]:
+    nodes = value.get("nodes")
+    if not isinstance(nodes, list):
+        raise BridgeError("workflow JSON must be API prompt object or include nodes[]")
 
+    links = value.get("links")
+    link_by_id: dict[str, tuple[str, int]] = {}
+    if isinstance(links, list):
+        for item in links:
+            if isinstance(item, list) and len(item) >= 4:
+                link_id = str(item[0])
+                from_node = str(item[1])
+                from_slot = int(item[2])
+                link_by_id[link_id] = (from_node, from_slot)
 
-def patch_qwen_workflow(template: Any, text: str, basename: str, ref_audio_filename: str, ref_text: str) -> dict[str, Any]:
-    prompt = replace_tokens(copy.deepcopy(template), basename)
-    if not isinstance(prompt, dict):
-        raise BridgeError("workflow JSON must be an object")
-
-    text_patched = False
-    ref_text_patched = False
-    load_audio_patched = False
-    save_audio_patched = False
-
-    for node in prompt.values():
+    prompt: dict[str, Any] = {}
+    for node in nodes:
         if not isinstance(node, dict):
             continue
-        class_type = str(node.get("class_type", ""))
-        inputs = node.get("inputs")
-        if not isinstance(inputs, dict):
+        node_id = str(node.get("id", "")).strip()
+        if not node_id:
+            continue
+        class_type = str(node.get("class_type") or node.get("type") or "").strip()
+        if not class_type:
             continue
 
-        if "Qwen3VoiceClone" in class_type and QWEN_TEXT_FIELD in inputs:
-            inputs[QWEN_TEXT_FIELD] = text
-            text_patched = True
-            if maybe_set_first_string_field(inputs, REF_TEXT_KEYS, ref_text):
-                ref_text_patched = True
+        inputs_meta = node.get("inputs")
+        widgets_values = node.get("widgets_values")
+        widget_values_list = widgets_values if isinstance(widgets_values, list) else []
+        widget_index = 0
 
-        if "LoadAudio" in class_type:
-            if maybe_set_first_string_field(inputs, LOAD_AUDIO_KEYS, ref_audio_filename):
-                load_audio_patched = True
+        inputs: dict[str, Any] = {}
+        if isinstance(inputs_meta, list):
+            widget_inputs: list[tuple[str, str]] = []
+            for input_meta in inputs_meta:
+                if not isinstance(input_meta, dict):
+                    continue
+                input_name = str(input_meta.get("name") or "").strip()
+                if not input_name:
+                    continue
 
-        if "SaveAudio" in class_type:
-            if maybe_set_first_string_field(inputs, SAVE_BASENAME_KEYS, basename):
-                save_audio_patched = True
+                link_ref = input_meta.get("link")
+                if link_ref is not None:
+                    mapped = link_by_id.get(str(link_ref))
+                    if mapped:
+                        inputs[input_name] = [mapped[0], mapped[1]]
+                    continue
 
-    if not text_patched:
-        raise BridgeError("Qwen3VoiceClone.inputs.text was not found in workflow")
-    if not ref_text_patched:
-        raise BridgeError("Qwen3VoiceClone ref_text field was not found in workflow")
-    if not load_audio_patched:
-        raise BridgeError("LoadAudio.inputs.audio field was not found in workflow")
-    if not save_audio_patched:
-        raise BridgeError("SaveAudio filename field was not found in workflow")
+                if "widget" in input_meta:
+                    input_type = str(input_meta.get("type") or "")
+                    widget_inputs.append((input_name, input_type))
+                    continue
+
+                if "default" in input_meta:
+                    inputs[input_name] = copy.deepcopy(input_meta["default"])
+
+            def value_matches_input_type(expected_type: str, candidate: Any) -> bool:
+                kind = expected_type.upper()
+                if kind == "BOOLEAN":
+                    return isinstance(candidate, bool)
+                if kind in ("INT", "INTEGER"):
+                    return isinstance(candidate, int) and not isinstance(candidate, bool)
+                if kind in ("FLOAT", "NUMBER"):
+                    return isinstance(candidate, (int, float)) and not isinstance(candidate, bool)
+                if kind in ("STRING", "COMBO"):
+                    return isinstance(candidate, str)
+                return True
+
+            for widget_name, widget_type in widget_inputs:
+                while widget_index < len(widget_values_list):
+                    candidate = widget_values_list[widget_index]
+                    widget_index += 1
+                    if value_matches_input_type(widget_type, candidate):
+                        inputs[widget_name] = copy.deepcopy(candidate)
+                        break
+
+        prompt[node_id] = {
+            "class_type": class_type,
+            "inputs": inputs,
+        }
+
+    if not prompt:
+        raise BridgeError("workflow conversion produced empty prompt")
     return prompt
 
 
-def first_node_inputs_by_class(prompt: dict[str, Any], class_name_fragment: str) -> dict[str, Any]:
-    for node in prompt.values():
+def load_workflow_prompt(path: Path) -> tuple[Any, dict[str, Any]]:
+    raw = load_json(path)
+    if is_api_prompt_format(raw):
+        return raw, copy.deepcopy(raw)
+    if isinstance(raw, dict) and isinstance(raw.get("nodes"), list):
+        return raw, convert_graph_workflow_to_prompt(raw)
+    raise BridgeError("unsupported workflow JSON format")
+
+
+def class_matches(class_type: str, fragments: tuple[str, ...]) -> bool:
+    if not fragments:
+        return True
+    lowered = class_type.lower()
+    return any(str(fragment).lower() in lowered for fragment in fragments)
+
+
+def find_patch_target(prompt: dict[str, Any], selector: PatchSelector, purpose: str) -> PatchTarget | None:
+    if not selector.enabled:
+        return None
+
+    for node_id, node in prompt.items():
         if not isinstance(node, dict):
             continue
         class_type = str(node.get("class_type", ""))
-        if class_name_fragment not in class_type:
+        if not class_matches(class_type, selector.class_type_includes):
             continue
         inputs = node.get("inputs")
-        if isinstance(inputs, dict):
-            return inputs
-    return {}
+        if not isinstance(inputs, dict):
+            continue
+        for key in selector.input_keys:
+            if key in inputs and (isinstance(inputs.get(key), str) or inputs.get(key) is None):
+                return PatchTarget(node_id=node_id, class_type=class_type, input_key=key)
+
+    auto_keys = {
+        "text": DEFAULT_TEXT_KEYS,
+        "save": DEFAULT_SAVE_KEYS,
+        "reference": DEFAULT_REF_KEYS,
+    }.get(purpose, ())
+
+    auto_class_hints = {
+        "text": DEFAULT_TEXT_CLASS_HINTS,
+        "save": DEFAULT_SAVE_CLASS_HINTS,
+        "reference": DEFAULT_REF_CLASS_HINTS,
+    }.get(purpose, ())
+
+    for node_id, node in prompt.items():
+        if not isinstance(node, dict):
+            continue
+        class_type = str(node.get("class_type", ""))
+        if not class_matches(class_type, auto_class_hints):
+            continue
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict):
+            continue
+        for key in auto_keys:
+            if key in inputs and (isinstance(inputs.get(key), str) or inputs.get(key) is None):
+                return PatchTarget(node_id=node_id, class_type=class_type, input_key=key)
+
+    return None
+
+
+def apply_patch_value(prompt: dict[str, Any], target: PatchTarget, value: Any) -> None:
+    node = prompt.get(target.node_id)
+    if not isinstance(node, dict):
+        raise BridgeError(f"node not found while patching: {target.node_id}")
+    inputs = node.get("inputs")
+    if not isinstance(inputs, dict):
+        raise BridgeError(f"node inputs not found while patching: {target.node_id}")
+    inputs[target.input_key] = value
+
+
+def copy_reference_to_comfy_input(reference_audio_path: Path, comfy_input_dir: Path) -> tuple[str, str, int, str]:
+    comfy_input_dir.mkdir(parents=True, exist_ok=True)
+    ref_hash = sha1_file(reference_audio_path)
+    suffix = reference_audio_path.suffix or ".wav"
+    target = (comfy_input_dir / f"voice_irodori-{ref_hash[:12]}{suffix}").resolve()
+    shutil.copy2(reference_audio_path, target)
+    stat = target.stat()
+    return target.name, ref_hash, int(stat.st_size), datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
 
 
 def write_json_file(path: Path, payload: Any) -> None:
@@ -484,39 +656,64 @@ def write_json_file(path: Path, payload: Any) -> None:
         json.dump(payload, handle, ensure_ascii=False, indent=2)
 
 
+def build_tts_input_hash(prompt: dict[str, Any], save_target: PatchTarget) -> str:
+    normalized = copy.deepcopy(prompt)
+    node = normalized.get(save_target.node_id)
+    if isinstance(node, dict):
+        inputs = node.get("inputs")
+        if isinstance(inputs, dict) and save_target.input_key in inputs:
+            inputs[save_target.input_key] = "__OUTPUT_BASENAME__"
+    return hash_json(normalized)
+
+
 def build_summary(
+    config: RuntimeConfig,
     request_id: str,
     text_hash: str,
     result: SynthesisResult,
 ) -> dict[str, Any]:
-    qwen = result.qwen_inputs
-    load_audio = result.load_audio_inputs
-    save_audio = result.save_audio_inputs
     audio_hash = sha1_file(result.audio_path)
+    text_node = result.prompt.get(result.text_target.node_id, {}) if isinstance(result.prompt, dict) else {}
+    save_node = result.prompt.get(result.save_target.node_id, {}) if isinstance(result.prompt, dict) else {}
+    ref_node = result.prompt.get(result.reference_target.node_id, {}) if result.reference_target and isinstance(result.prompt, dict) else {}
+
+    text_inputs = text_node.get("inputs") if isinstance(text_node, dict) else {}
+    save_inputs = save_node.get("inputs") if isinstance(save_node, dict) else {}
+    ref_inputs = ref_node.get("inputs") if isinstance(ref_node, dict) else {}
+
     return {
         "requestId": request_id,
         "promptId": result.prompt_id,
+        "voiceProfile": config.voice_profile,
+        "engine": config.engine,
+        "workflowPath": str(config.workflow_path),
+        "referenceAudioPath": str(config.reference_audio_path),
         "textHash": text_hash,
-        "refAudioHash": result.ref_copy.ref_audio_hash,
-        "refTextHash": result.ref_text_hash,
         "workflowHash": result.workflow_hash,
         "patchedPromptHash": result.patched_prompt_hash,
-        "seed": qwen.get("seed"),
-        "generationMode": qwen.get("generation_mode"),
-        "language": qwen.get("language"),
-        "maxNewTokens": qwen.get("max_new_tokens"),
-        "refAudioMaxSeconds": qwen.get("ref_audio_max_seconds"),
-        "loadAudioFile": load_audio.get("audio") or load_audio.get("filename") or load_audio.get("file") or load_audio.get("path"),
-        "saveFilenamePrefix": save_audio.get("filename_prefix")
-        or save_audio.get("filename")
-        or save_audio.get("output_name")
-        or save_audio.get("basename"),
+        "ttsInputHash": result.tts_input_hash,
+        "referenceAudioHash": result.reference_audio.reference_audio_hash,
+        "referenceAudioSize": result.reference_audio.reference_audio_size,
+        "referenceAudioMtime": result.reference_audio.reference_audio_mtime,
+        "referenceAudioUsed": result.reference_audio.used,
+        "referenceAudioInputFilename": result.reference_audio.input_filename,
+        "referenceAudioFallbackInputFilename": result.reference_audio.fallback_input_filename,
+        "textPatchNodeId": result.text_target.node_id,
+        "textPatchClassType": result.text_target.class_type,
+        "textPatchInputKey": result.text_target.input_key,
+        "textPatchValueLength": len(str(text_inputs.get(result.text_target.input_key, ""))) if isinstance(text_inputs, dict) else 0,
+        "savePatchNodeId": result.save_target.node_id,
+        "savePatchClassType": result.save_target.class_type,
+        "savePatchInputKey": result.save_target.input_key,
+        "savePatchedValue": save_inputs.get(result.save_target.input_key) if isinstance(save_inputs, dict) else None,
+        "referencePatchNodeId": result.reference_target.node_id if result.reference_target else None,
+        "referencePatchClassType": result.reference_target.class_type if result.reference_target else None,
+        "referencePatchInputKey": result.reference_target.input_key if result.reference_target else None,
+        "referencePatchedValue": ref_inputs.get(result.reference_target.input_key) if result.reference_target and isinstance(ref_inputs, dict) else None,
         "audioPath": str(result.audio_path),
         "audioHash": audio_hash,
         "audioSize": int(result.audio_path.stat().st_size),
         "createdAt": utc_now_iso(),
-        "refAudioSize": result.ref_copy.ref_audio_size,
-        "refAudioMtime": result.ref_copy.ref_audio_mtime,
     }
 
 
@@ -535,8 +732,10 @@ def persist_debug_bundle(
         "textHash": text_hash,
         "textLength": len(text),
         "receivedAt": received_at,
+        "voiceProfile": config.voice_profile,
+        "engine": config.engine,
     }
-    summary_payload = build_summary(request_id=request_id, text_hash=text_hash, result=result)
+    summary_payload = build_summary(config=config, request_id=request_id, text_hash=text_hash, result=result)
     write_json_file(base / "request.json", request_payload)
     write_json_file(base / "prompt.json", result.prompt)
     write_json_file(base / "summary.json", summary_payload)
@@ -556,6 +755,7 @@ def http_json(method: str, url: str, payload: dict[str, Any] | None = None, time
         raise BridgeError(f"HTTP {exc.code} from {url}: {detail}") from exc
     except URLError as exc:
         raise BridgeError(f"cannot connect to {url}: {exc.reason}") from exc
+
     parsed = json.loads(body or "{}")
     if not isinstance(parsed, dict):
         raise BridgeError(f"unexpected JSON response from {url}")
@@ -566,6 +766,7 @@ def extract_generated_files(history_entry: dict[str, Any]) -> list[dict[str, str
     outputs = history_entry.get("outputs")
     if not isinstance(outputs, dict):
         return []
+
     found: list[dict[str, str]] = []
     for node in outputs.values():
         if not isinstance(node, dict):
@@ -599,12 +800,15 @@ def history_status(entry: dict[str, Any]) -> str:
 def history_error(entry: dict[str, Any]) -> str | None:
     if history_status(entry).lower() != "error":
         return None
+
     status = entry.get("status")
     if not isinstance(status, dict):
         return "status=error"
+
     messages = status.get("messages")
     if not isinstance(messages, list):
         return "status=error; messages unavailable"
+
     details: list[str] = []
     for message in messages:
         if isinstance(message, list) and len(message) >= 2 and isinstance(message[1], dict):
@@ -636,25 +840,132 @@ def list_audio_files(path: Path) -> list[Path]:
     return [p.resolve() for p in path.rglob("*") if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS]
 
 
-def synthesize_comfyui_qwen3(config: RuntimeConfig, text: str, request_id: str) -> SynthesisResult:
+def patch_workflow_prompt(
+    config: RuntimeConfig,
+    template_prompt: dict[str, Any],
+    text: str,
+    basename: str,
+) -> tuple[dict[str, Any], PatchTarget, PatchTarget, PatchTarget | None, ReferenceAudioDebug]:
+    prompt = replace_tokens(copy.deepcopy(template_prompt), basename)
+    if not isinstance(prompt, dict):
+        raise BridgeError("workflow prompt must be an object")
+
+    patch_cfg = config.workflow_patch
+    text_selector = selector_from_config(
+        patch_cfg,
+        "text",
+        DEFAULT_TEXT_CLASS_HINTS,
+        DEFAULT_TEXT_KEYS,
+        default_enabled=True,
+    )
+    save_selector = selector_from_config(
+        patch_cfg,
+        "save",
+        DEFAULT_SAVE_CLASS_HINTS,
+        DEFAULT_SAVE_KEYS,
+        default_enabled=True,
+    )
+    reference_selector = selector_from_config(
+        patch_cfg,
+        "referenceAudio",
+        DEFAULT_REF_CLASS_HINTS,
+        DEFAULT_REF_KEYS,
+        default_enabled=True,
+    )
+
+    text_target = find_patch_target(prompt, text_selector, "text")
+    if text_target is None:
+        raise BridgeError("text patch target was not found in workflow")
+    apply_patch_value(prompt, text_target, text)
+
+    save_target = find_patch_target(prompt, save_selector, "save")
+    if save_target is None:
+        raise BridgeError("save-audio patch target was not found in workflow")
+    apply_patch_value(prompt, save_target, basename)
+
+    stat = config.reference_audio_path.stat()
+    ref_hash = sha1_file(config.reference_audio_path)
+    ref_mtime = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+
+    reference_target = find_patch_target(prompt, reference_selector, "reference")
+    if reference_target is None:
+        reference_debug = ReferenceAudioDebug(
+            configured_path=str(config.reference_audio_path),
+            reference_audio_hash=ref_hash,
+            reference_audio_size=int(stat.st_size),
+            reference_audio_mtime=ref_mtime,
+            used=False,
+            input_filename=None,
+            fallback_input_filename=None,
+        )
+    else:
+        fallback_name: str | None = None
+        node = prompt.get(reference_target.node_id, {})
+        node_inputs = node.get("inputs") if isinstance(node, dict) else {}
+        existing_value = node_inputs.get(reference_target.input_key) if isinstance(node_inputs, dict) else None
+        if isinstance(existing_value, str) and existing_value.strip():
+            fallback_name = Path(existing_value).name
+
+        copied_name, copied_hash, copied_size, copied_mtime = copy_reference_to_comfy_input(config.reference_audio_path, config.comfyui_input_dir)
+        if fallback_name and fallback_name != copied_name:
+            alias_target = (config.comfyui_input_dir / fallback_name).resolve()
+            shutil.copy2(config.reference_audio_path, alias_target)
+        apply_patch_value(prompt, reference_target, copied_name)
+        reference_debug = ReferenceAudioDebug(
+            configured_path=str(config.reference_audio_path),
+            reference_audio_hash=copied_hash,
+            reference_audio_size=copied_size,
+            reference_audio_mtime=copied_mtime,
+            used=True,
+            input_filename=copied_name,
+            fallback_input_filename=fallback_name,
+        )
+
+    return prompt, text_target, save_target, reference_target, reference_debug
+
+
+def synthesize_comfyui_workflow(config: RuntimeConfig, text: str, request_id: str) -> SynthesisResult:
     ensure_required_files(config)
-    ref_text = read_reference_text(config.reference_text_path)
-    ref_copy = copy_reference_to_comfy_input(config.reference_audio_path, config.comfyui_input_dir)
 
     basename = safe_basename(text, request_id)
-    template = load_json(config.comfyui_workflow_path)
-    workflow_hash = hash_json(template)
-    prompt = patch_qwen_workflow(template, text, basename, ref_copy.load_audio_filename, ref_text)
-    patched_prompt_hash = hash_json(prompt)
+    raw_workflow, template_prompt = load_workflow_prompt(config.workflow_path)
+    workflow_hash = hash_json(raw_workflow)
+
+    prompt, text_target, save_target, reference_target, reference_audio = patch_workflow_prompt(
+        config=config,
+        template_prompt=template_prompt,
+        text=text,
+        basename=basename,
+    )
 
     before = {p.as_posix() for p in list_audio_files(config.comfyui_output_dir)}
     started_at = time.time()
-    body = http_json(
-        "POST",
-        f"{config.comfyui_base_url}/prompt",
-        {"prompt": prompt, "client_id": str(uuid.uuid4())},
-        timeout=30,
-    )
+    prompt_for_submit = prompt
+    try:
+        body = http_json(
+            "POST",
+            f"{config.comfyui_base_url}/prompt",
+            {"prompt": prompt_for_submit, "client_id": str(uuid.uuid4())},
+            timeout=30,
+        )
+    except BridgeError as exc:
+        error_text = str(exc)
+        fallback_name = reference_audio.fallback_input_filename
+        if reference_target and fallback_name and "Invalid audio file" in error_text:
+            retry_prompt = copy.deepcopy(prompt_for_submit)
+            apply_patch_value(retry_prompt, reference_target, fallback_name)
+            body = http_json(
+                "POST",
+                f"{config.comfyui_base_url}/prompt",
+                {"prompt": retry_prompt, "client_id": str(uuid.uuid4())},
+                timeout=30,
+            )
+            prompt_for_submit = retry_prompt
+        else:
+            raise
+
+    patched_prompt_hash = hash_json(prompt_for_submit)
+    tts_input_hash = build_tts_input_hash(prompt_for_submit, save_target)
     prompt_id = body.get("prompt_id")
     if not prompt_id:
         raise BridgeError("ComfyUI /prompt did not return prompt_id")
@@ -688,25 +999,40 @@ def synthesize_comfyui_qwen3(config: RuntimeConfig, text: str, request_id: str) 
     config.audio_output_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, out_file)
 
+    reference_audio_final = reference_audio
+    if reference_target:
+        node = prompt_for_submit.get(reference_target.node_id, {})
+        inputs = node.get("inputs") if isinstance(node, dict) else {}
+        used_name = inputs.get(reference_target.input_key) if isinstance(inputs, dict) else None
+        if isinstance(used_name, str):
+            reference_audio_final = ReferenceAudioDebug(
+                configured_path=reference_audio.configured_path,
+                reference_audio_hash=reference_audio.reference_audio_hash,
+                reference_audio_size=reference_audio.reference_audio_size,
+                reference_audio_mtime=reference_audio.reference_audio_mtime,
+                used=reference_audio.used,
+                input_filename=used_name,
+                fallback_input_filename=reference_audio.fallback_input_filename,
+            )
+
     return SynthesisResult(
         audio_path=out_file,
-        prompt=prompt,
+        prompt=prompt_for_submit,
         prompt_id=str(prompt_id),
         history_entry=entry,
         history_raw=history_raw,
         workflow_hash=workflow_hash,
         patched_prompt_hash=patched_prompt_hash,
-        ref_text=ref_text,
-        ref_text_hash=sha1_text(ref_text),
-        ref_copy=ref_copy,
-        qwen_inputs=first_node_inputs_by_class(prompt, "Qwen3VoiceClone"),
-        load_audio_inputs=first_node_inputs_by_class(prompt, "LoadAudio"),
-        save_audio_inputs=first_node_inputs_by_class(prompt, "SaveAudio"),
+        tts_input_hash=tts_input_hash,
+        text_target=text_target,
+        save_target=save_target,
+        reference_target=reference_target,
+        reference_audio=reference_audio_final,
     )
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "ChatGPTLocalVoiceBridge/0.3"
+    server_version = "ChatGPTLocalVoiceBridge/0.4"
 
     def do_OPTIONS(self) -> None:  # noqa: N802
         self.send_response(HTTPStatus.NO_CONTENT)
@@ -727,19 +1053,23 @@ class Handler(BaseHTTPRequestHandler):
                     {
                         "ok": True,
                         "engine": config.engine,
+                        "voiceProfile": config.voice_profile,
                         "audioOutputDir": str(config.audio_output_dir),
                         "publicBaseUrl": config.public_base_url,
                         "referenceAudioPath": str(config.reference_audio_path),
-                        "referenceTextPath": str(config.reference_text_path),
-                        "workflowPath": str(config.comfyui_workflow_path),
+                        "workflowPath": str(config.workflow_path),
+                        "comfyuiBaseUrl": config.comfyui_base_url,
+                        "comfyuiStartupBat": config.comfyui_startup_bat,
                         "comfyuiInputDir": str(config.comfyui_input_dir),
                         "comfyuiOutputDir": str(config.comfyui_output_dir),
                     },
                 )
                 return
+
             if parsed.path.startswith("/audio/"):
                 self.serve_audio(config, parsed.path[len("/audio/") :])
                 return
+
             json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
         except Exception as exc:  # noqa: BLE001
             json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
@@ -749,6 +1079,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path != "/v1/speak":
             json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
             return
+
         try:
             config = load_config()
             payload = read_request_json(self)
@@ -756,7 +1087,8 @@ class Handler(BaseHTTPRequestHandler):
             request_id = safe_request_id(str(payload.get("requestId") or ""))
             received_at = utc_now_iso()
             text_hash = sha1_text(text)
-            result = synthesize_comfyui_qwen3(config, text, request_id)
+
+            result = synthesize_comfyui_workflow(config, text, request_id)
             persist_debug_bundle(
                 config=config,
                 request_id=request_id,
@@ -765,6 +1097,7 @@ class Handler(BaseHTTPRequestHandler):
                 received_at=received_at,
                 result=result,
             )
+
             rel_name = result.audio_path.name
             audio_url = f"{config.public_base_url}/audio/{rel_name}"
             json_response(
@@ -773,6 +1106,7 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "ok": True,
                     "engine": config.engine,
+                    "voiceProfile": config.voice_profile,
                     "requestId": request_id,
                     "audioUrl": audio_url,
                     "audioPath": str(result.audio_path),
@@ -790,6 +1124,7 @@ class Handler(BaseHTTPRequestHandler):
         if not path.exists() or not path.is_file():
             json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "audio not found"})
             return
+
         content_type_map = {
             ".wav": "audio/wav",
             ".mp3": "audio/mpeg",
@@ -799,6 +1134,7 @@ class Handler(BaseHTTPRequestHandler):
             ".aac": "audio/aac",
         }
         content_type = content_type_map.get(path.suffix.lower()) or mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+
         data = path.read_bytes()
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
@@ -825,8 +1161,12 @@ def main() -> int:
     httpd = ThreadingHTTPServer(address, Handler)
     print(f"Local Voice Bridge listening on http://{config.host}:{config.port}")
     print(f"engine={config.engine}")
+    print(f"voiceProfile={config.voice_profile}")
+    print(f"workflowPath={config.workflow_path}")
+    print(f"referenceAudioPath={config.reference_audio_path}")
     print(f"audioOutputDir={config.audio_output_dir}")
     print("health: /health")
+
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -836,4 +1176,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

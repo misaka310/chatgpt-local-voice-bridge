@@ -1,18 +1,22 @@
 (() => {
+  const SETTINGS_VERSION = 2;
   const DEFAULT_SETTINGS = {
+    settingsVersion: SETTINGS_VERSION,
     enabled: false,
     apiUrl: 'http://127.0.0.1:8765/v1/speak',
     healthUrl: 'http://127.0.0.1:8765/health',
-    previewMaxLines: 3,
-    previewMaxChars: 120,
-    previewMinChars: 40,
+    previewMaxLines: 2,
+    previewMaxChars: 80,
+    previewMinChars: 25,
     previewStableMs: 800,
     panelPosition: null,
+    panelCollapsed: true,
   };
 
   const MIN_FALLBACK_CHARS = 20;
   const AUTO_SENT_FLAG = 'localVoiceSent';
   const PANEL_POSITION_KEY = 'panelPosition';
+  const PANEL_COLLAPSED_KEY = 'panelCollapsed';
 
   const stateByElement = new WeakMap();
   const initializedElements = new WeakSet();
@@ -20,16 +24,19 @@
   const audioCache = new Map();
 
   let settings = { ...DEFAULT_SETTINGS };
-  let currentAudio = null;
-  let isPlaying = false;
-  let enabled = true;
+  let enabled = Boolean(DEFAULT_SETTINGS.enabled);
   let observer = null;
   let inspectTimer = null;
   let sequence = 0;
+  let isPlaying = false;
+  let currentAudio = null;
   let lastAudio = null;
   let lastPreviewEntry = null;
+  let dragMovedRecently = false;
 
   let panel = null;
+  let panelBody = null;
+  let titleNode = null;
   let statusNode = null;
   let detailNode = null;
   let autoButton = null;
@@ -63,9 +70,9 @@
     const head = text.slice(0, maxChars);
     const punct = Math.max(
       head.lastIndexOf('。'),
-      head.lastIndexOf('．'),
       head.lastIndexOf('！'),
       head.lastIndexOf('？'),
+      head.lastIndexOf('．'),
       head.lastIndexOf('.'),
       head.lastIndexOf('!'),
       head.lastIndexOf('?'),
@@ -99,11 +106,9 @@
       .filter(Boolean);
 
     if (!lines.length) return '';
-
     const picked = lines.slice(0, Math.max(1, maxLines));
     const merged = normalizeText(picked.join(' '));
     if (!merged) return '';
-
     return normalizeText(naturalCut(merged, minChars, maxChars));
   }
 
@@ -179,14 +184,19 @@
 
   function setPanelState(statusText, detailText = '') {
     if (statusNode) statusNode.textContent = statusText;
-    if (detailNode) detailNode.textContent = detailText || 'Preview only / cache ready';
+    if (detailNode) detailNode.textContent = detailText || 'Irodori / preview only';
+    if (titleNode && settings.panelCollapsed) {
+      titleNode.textContent = `Voice · ${statusText}`;
+    } else if (titleNode) {
+      titleNode.textContent = 'Local Voice';
+    }
   }
 
   function setLastAudio(entry) {
     lastAudio = entry;
     if (!replayButton) return;
     replayButton.disabled = !lastAudio;
-    replayButton.style.opacity = lastAudio ? '1' : '0.5';
+    replayButton.style.opacity = lastAudio ? '1' : '0.45';
     replayButton.style.cursor = lastAudio ? 'pointer' : 'not-allowed';
   }
 
@@ -283,7 +293,7 @@
   function enqueueAudio(url, text, meta = {}) {
     audioQueue.push({ url, text, meta });
     if (!isPlaying) {
-      setPanelState('Idle', audioQueue.length > 0 ? `Queued ${audioQueue.length}` : 'Preview only / cache ready');
+      setPanelState('Ready', audioQueue.length > 0 ? `Queued ${audioQueue.length}` : 'Irodori / preview only');
     }
     void playNext();
   }
@@ -362,7 +372,7 @@
     currentAudio = null;
 
     try {
-      setPanelState('Playing', `${item.text.slice(0, 70)}${item.text.length > 70 ? '...' : ''}`);
+      setPanelState('Playing', `${item.text.slice(0, 60)}${item.text.length > 60 ? '...' : ''}`);
       const blob = await fetchAudioBlob(item.url);
       await playAudioBlob(blob);
 
@@ -374,7 +384,7 @@
         createdAt: Date.now(),
         cacheKey: item.meta.cacheKey || null,
       });
-      setPanelState('Idle', audioQueue.length > 0 ? `Queued ${audioQueue.length}` : 'Preview only / cache ready');
+      setPanelState('Ready', audioQueue.length > 0 ? `Queued ${audioQueue.length}` : 'Irodori / cached');
       void playNext();
     } catch (error) {
       isPlaying = false;
@@ -384,9 +394,7 @@
         try {
           const result = await item.meta.onPlaybackError(error);
           handled = Boolean(result && result.handled);
-        } catch (_handlerError) {
-          // Best effort; the main playback error is reported below.
-        }
+        } catch (_handlerError) {}
       }
       if (!handled) {
         setPanelState('Error', error.message || String(error));
@@ -403,7 +411,7 @@
     }
     currentAudio = null;
     isPlaying = false;
-    setPanelState('Idle', 'Playback stopped');
+    setPanelState('Ready', 'Playback stopped');
   }
 
   async function generateAndQueue(preview, key, node) {
@@ -422,7 +430,6 @@
 
     cacheAudio(key, audioUrl, preview);
     setPanelState('Cached', 'Generated and cached');
-
     enqueueAudio(audioUrl, preview, {
       cacheKey: key,
       onPlaybackError: async () => {
@@ -459,9 +466,9 @@
 
     try {
       await generateAndQueue(preview, key, node);
-      setPanelState('Qwen Ready', 'Preview only / cache ready');
+      setPanelState('Ready', forceGenerate ? 'Force regenerated' : 'Irodori / cached');
     } catch (error) {
-      setPanelState('Qwen Offline', error.message || String(error));
+      setPanelState('Offline', error.message || String(error));
     }
   }
 
@@ -492,6 +499,7 @@
       minChars: Number(settings.previewMinChars || DEFAULT_SETTINGS.previewMinChars),
     });
     if (!preview) return;
+
     lastPreviewEntry = {
       key: getCacheKey(preview),
       preview,
@@ -550,17 +558,16 @@
     button.type = 'button';
     button.textContent = label;
     button.style.cssText = [
-      'font:500 12px/1.2 "Segoe UI",sans-serif',
-      'padding:6px 10px',
+      'font:600 11px/1.1 "Segoe UI",sans-serif',
+      'padding:5px 8px',
       'border-radius:10px',
-      'border:1px solid rgba(255,255,255,0.15)',
+      'border:1px solid rgba(255,255,255,0.18)',
       'cursor:pointer',
       'background:rgba(255,255,255,0.08)',
       'color:#f7f9ff',
       'transition:background .15s ease,border-color .15s ease,transform .05s ease',
       'backdrop-filter:blur(6px)',
     ].join(';');
-
     button.addEventListener('mouseenter', () => {
       if (!button.disabled) button.style.background = 'rgba(255,255,255,0.18)';
     });
@@ -573,7 +580,6 @@
     button.addEventListener('mouseup', () => {
       button.style.transform = 'translateY(0)';
     });
-
     button.addEventListener('click', onClick);
     return button;
   }
@@ -581,12 +587,10 @@
   function clampPanelPosition(left, top) {
     if (!panel) return { left, top };
     const margin = 8;
-    const panelWidth = panel.offsetWidth || 320;
-    const panelHeight = panel.offsetHeight || 150;
-
+    const panelWidth = panel.offsetWidth || 300;
+    const panelHeight = panel.offsetHeight || 110;
     const maxLeft = Math.max(margin, window.innerWidth - panelWidth - margin);
     const maxTop = Math.max(margin, window.innerHeight - panelHeight - margin);
-
     const nextLeft = Math.min(Math.max(left, margin), maxLeft);
     const nextTop = Math.min(Math.max(top, margin), maxTop);
     return { left: Math.round(nextLeft), top: Math.round(nextTop) };
@@ -594,7 +598,6 @@
 
   function applyPanelPosition(position) {
     if (!panel) return;
-
     if (!position || !Number.isFinite(position.left) || !Number.isFinite(position.top)) {
       panel.style.left = '';
       panel.style.top = '';
@@ -602,7 +605,6 @@
       panel.style.bottom = '16px';
       return;
     }
-
     const clamped = clampPanelPosition(Number(position.left), Number(position.top));
     panel.style.right = 'auto';
     panel.style.bottom = 'auto';
@@ -617,9 +619,25 @@
     await chrome.storage.local.set({ [PANEL_POSITION_KEY]: clamped });
   }
 
+  async function setCollapsed(collapsed, persist = true) {
+    settings[PANEL_COLLAPSED_KEY] = Boolean(collapsed);
+    if (panelBody) {
+      panelBody.style.display = collapsed ? 'none' : 'flex';
+    }
+    if (panel) {
+      panel.style.width = collapsed ? 'auto' : 'min(92vw,320px)';
+      panel.style.padding = collapsed ? '8px 10px' : '10px';
+    }
+    if (titleNode) {
+      titleNode.textContent = collapsed ? `Voice · ${statusNode ? statusNode.textContent : 'Ready'}` : 'Local Voice';
+    }
+    if (persist && globalThis.chrome && chrome.storage && chrome.storage.local) {
+      await chrome.storage.local.set({ [PANEL_COLLAPSED_KEY]: Boolean(collapsed) });
+    }
+  }
+
   function makePanelDraggable(dragHandle) {
     if (!panel || !dragHandle) return;
-
     let dragState = null;
     const body = document.body;
 
@@ -627,6 +645,9 @@
       if (!dragState) return;
       const dx = event.clientX - dragState.startX;
       const dy = event.clientY - dragState.startY;
+      if (Math.abs(dx) + Math.abs(dy) > 3) {
+        dragMovedRecently = true;
+      }
       const rawLeft = dragState.startLeft + dx;
       const rawTop = dragState.startTop + dy;
       const clamped = clampPanelPosition(rawLeft, rawTop);
@@ -645,11 +666,15 @@
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
       await persistPanelPosition(left, top);
+      setTimeout(() => {
+        dragMovedRecently = false;
+      }, 0);
     };
 
     dragHandle.addEventListener('mousedown', (event) => {
       if (event.button !== 0) return;
       const rect = panel.getBoundingClientRect();
+      dragMovedRecently = false;
       dragState = {
         startX: event.clientX,
         startY: event.clientY,
@@ -679,9 +704,9 @@
           throw new Error(payload.error || `health failed: ${response.status}`);
         }
       }
-      setPanelState('Qwen Ready', 'Preview only / cache ready');
+      setPanelState('Ready', 'Irodori / cache ready');
     } catch (_error) {
-      setPanelState('Qwen Offline', 'Start with run-qwen-stack.cmd');
+      setPanelState('Offline', 'Start with run-voice-stack.cmd');
     }
   }
 
@@ -695,18 +720,18 @@
       'right:16px',
       'bottom:16px',
       'z-index:2147483647',
-      'font:12px/1.4 "Segoe UI",sans-serif',
+      'font:12px/1.35 "Segoe UI",sans-serif',
       'background:linear-gradient(135deg,rgba(10,12,18,.86),rgba(14,20,30,.82))',
       'color:#f5f7ff',
       'border:1px solid rgba(120,180,255,.25)',
       'border-radius:14px',
       'padding:10px',
-      'box-shadow:0 10px 28px rgba(0,0,0,.45), 0 0 18px rgba(92,155,255,.18)',
+      'box-shadow:0 10px 28px rgba(0,0,0,.45),0 0 18px rgba(92,155,255,.18)',
       'backdrop-filter:blur(10px)',
       'display:flex',
       'flex-direction:column',
       'gap:8px',
-      'width:min(92vw,360px)',
+      'width:min(92vw,320px)',
     ].join(';');
 
     const header = document.createElement('div');
@@ -721,9 +746,9 @@
       'user-select:none',
     ].join(';');
 
-    const title = document.createElement('div');
-    title.textContent = 'Local Voice';
-    title.style.cssText = 'font-weight:700;letter-spacing:.3px;color:#fbfdff';
+    titleNode = document.createElement('div');
+    titleNode.textContent = 'Local Voice';
+    titleNode.style.cssText = 'font-weight:700;letter-spacing:.2px;color:#fbfdff;';
 
     statusNode = document.createElement('div');
     statusNode.style.cssText = [
@@ -737,33 +762,33 @@
       'white-space:nowrap',
     ].join(';');
 
+    panelBody = document.createElement('div');
+    panelBody.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
+
     detailNode = document.createElement('div');
     detailNode.style.cssText = 'font-size:11px;color:#c8d2e8;min-height:1.2em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
 
     const controls = document.createElement('div');
     controls.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap';
 
-    autoButton = createButton('Auto ON', async () => {
+    autoButton = createButton('Auto', async () => {
       enabled = !enabled;
       settings.enabled = enabled;
       if (!enabled) stopPlayback();
-      autoButton.textContent = enabled ? 'Auto ON' : 'Auto OFF';
-      autoButton.style.borderColor = enabled ? 'rgba(90,200,140,.5)' : 'rgba(255,255,255,.15)';
+      autoButton.style.borderColor = enabled ? 'rgba(90,200,140,.5)' : 'rgba(255,255,255,.18)';
       autoButton.style.background = enabled ? 'rgba(73,168,113,.25)' : 'rgba(255,255,255,.08)';
-      setPanelState('Idle', enabled ? 'Auto read enabled' : 'Auto read disabled');
-
+      setPanelState('Ready', enabled ? 'Auto read enabled' : 'Auto read disabled');
       if (globalThis.chrome && chrome.storage && chrome.storage.local) {
         await chrome.storage.local.set({ enabled });
       }
     });
 
-    const readLatestButton = createButton('Read Latest', () => {
+    const readButton = createButton('Read', () => {
       const entry = buildLatestPreviewEntry();
       if (!entry) {
         setPanelState('Error', 'No assistant response');
         return;
       }
-
       const state = ensureElementState(entry.node, entry.text);
       state.sent = true;
       entry.node.dataset[AUTO_SENT_FLAG] = '1';
@@ -777,12 +802,30 @@
       void readPreview(entry.preview, entry.key, entry.node, { forceGenerate: false, fallbackGenerateOnCacheFail: true });
     });
 
-    replayButton = createButton('Replay', () => {
-      if (!lastAudio || !lastAudio.audioUrl) {
-        setPanelState('Idle', 'No cached audio');
+    const regenButton = createButton('Regen', () => {
+      const entry = buildLatestPreviewEntry();
+      if (!entry) {
+        setPanelState('Error', 'No assistant response');
         return;
       }
+      const state = ensureElementState(entry.node, entry.text);
+      state.sent = true;
+      entry.node.dataset[AUTO_SENT_FLAG] = '1';
+      lastPreviewEntry = {
+        key: entry.key,
+        preview: entry.preview,
+        textLength: entry.text.length,
+        capturedAt: entry.capturedAt,
+        nodeKey: state.key,
+      };
+      void readPreview(entry.preview, entry.key, entry.node, { forceGenerate: true, fallbackGenerateOnCacheFail: false });
+    });
 
+    replayButton = createButton('Replay', () => {
+      if (!lastAudio || !lastAudio.audioUrl) {
+        setPanelState('Ready', 'No replay source');
+        return;
+      }
       enqueueAudio(lastAudio.audioUrl, lastAudio.text || '', {
         cacheKey: lastAudio.cacheKey || null,
         onPlaybackError: async () => {
@@ -794,21 +837,25 @@
     });
 
     const stopButton = createButton('Stop', stopPlayback);
-
-    controls.append(autoButton, readLatestButton, replayButton, stopButton);
-    header.append(title, statusNode);
-
-    panel.append(header, detailNode, controls);
+    controls.append(autoButton, readButton, regenButton, replayButton, stopButton);
+    panelBody.append(detailNode, controls);
+    header.append(titleNode, statusNode);
+    panel.append(header, panelBody);
     document.documentElement.appendChild(panel);
 
-    autoButton.textContent = enabled ? 'Auto ON' : 'Auto OFF';
-    autoButton.style.borderColor = enabled ? 'rgba(90,200,140,.5)' : 'rgba(255,255,255,.15)';
+    autoButton.style.borderColor = enabled ? 'rgba(90,200,140,.5)' : 'rgba(255,255,255,.18)';
     autoButton.style.background = enabled ? 'rgba(73,168,113,.25)' : 'rgba(255,255,255,.08)';
 
     setLastAudio(null);
-    setPanelState('Idle', 'Preview only / cache ready');
+    setPanelState('Ready', 'Irodori / preview only');
     applyPanelPosition(settings[PANEL_POSITION_KEY]);
+    void setCollapsed(Boolean(settings[PANEL_COLLAPSED_KEY]), false);
     makePanelDraggable(header);
+
+    header.addEventListener('click', () => {
+      if (dragMovedRecently) return;
+      void setCollapsed(!Boolean(settings[PANEL_COLLAPSED_KEY]), true);
+    });
 
     window.addEventListener('resize', () => {
       if (!panel) return;
@@ -821,13 +868,18 @@
     });
   }
 
+  function clearAllPreviewCache() {
+    audioCache.clear();
+    setLastAudio(null);
+    setPanelState('Ready', 'Preview cache cleared');
+  }
+
   async function forceGenerateLatestPreview() {
     const entry = buildLatestPreviewEntry();
     if (!entry) {
       setPanelState('Error', 'No assistant response');
       return { ok: false, error: 'No assistant response' };
     }
-
     const state = ensureElementState(entry.node, entry.text);
     state.sent = true;
     entry.node.dataset[AUTO_SENT_FLAG] = '1';
@@ -838,21 +890,14 @@
       capturedAt: entry.capturedAt,
       nodeKey: state.key,
     };
-
     try {
-      await generateAndQueue(entry.preview, entry.key, entry.node);
-      setPanelState('Qwen Ready', 'Force generated');
+      await readPreview(entry.preview, entry.key, entry.node, { forceGenerate: true, fallbackGenerateOnCacheFail: false });
+      setPanelState('Ready', 'Force regenerated');
       return { ok: true, preview: entry.preview, key: entry.key };
     } catch (error) {
-      setPanelState('Qwen Offline', error.message || String(error));
+      setPanelState('Offline', error.message || String(error));
       return { ok: false, error: error.message || String(error) };
     }
-  }
-
-  function clearAllPreviewCache() {
-    audioCache.clear();
-    setLastAudio(null);
-    setPanelState('Idle', 'Preview cache cleared');
   }
 
   function registerDebugApi() {
@@ -866,14 +911,32 @@
     };
   }
 
+  async function migrateSettingsIfNeeded(stored) {
+    const next = { ...stored };
+    const version = Number(stored.settingsVersion || 0);
+    if (version >= SETTINGS_VERSION) return null;
+    next.previewMaxLines = DEFAULT_SETTINGS.previewMaxLines;
+    next.previewMaxChars = DEFAULT_SETTINGS.previewMaxChars;
+    next.previewMinChars = DEFAULT_SETTINGS.previewMinChars;
+    next.previewStableMs = DEFAULT_SETTINGS.previewStableMs;
+    next.settingsVersion = SETTINGS_VERSION;
+    if (typeof next.panelCollapsed !== 'boolean') next.panelCollapsed = DEFAULT_SETTINGS.panelCollapsed;
+    return next;
+  }
+
   async function loadSettings() {
     if (!globalThis.chrome || !chrome.storage || !chrome.storage.local) {
       settings = { ...DEFAULT_SETTINGS };
       enabled = Boolean(settings.enabled);
       return;
     }
-    const stored = await chrome.storage.local.get(DEFAULT_SETTINGS);
-    settings = { ...DEFAULT_SETTINGS, ...stored };
+    const stored = await chrome.storage.local.get(null);
+    const migrated = await migrateSettingsIfNeeded(stored);
+    if (migrated) {
+      await chrome.storage.local.set(migrated);
+    }
+    const effective = migrated || stored;
+    settings = { ...DEFAULT_SETTINGS, ...effective };
     enabled = Boolean(settings.enabled);
   }
 
@@ -891,20 +954,21 @@
   if (globalThis.chrome && chrome.storage && chrome.storage.onChanged) {
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local') return;
-
       for (const [key, change] of Object.entries(changes)) {
         settings[key] = change.newValue;
       }
 
       enabled = Boolean(settings.enabled);
       if (autoButton) {
-        autoButton.textContent = enabled ? 'Auto ON' : 'Auto OFF';
-        autoButton.style.borderColor = enabled ? 'rgba(90,200,140,.5)' : 'rgba(255,255,255,.15)';
+        autoButton.style.borderColor = enabled ? 'rgba(90,200,140,.5)' : 'rgba(255,255,255,.18)';
         autoButton.style.background = enabled ? 'rgba(73,168,113,.25)' : 'rgba(255,255,255,.08)';
       }
 
       if (Object.prototype.hasOwnProperty.call(changes, PANEL_POSITION_KEY)) {
         applyPanelPosition(changes[PANEL_POSITION_KEY].newValue);
+      }
+      if (Object.prototype.hasOwnProperty.call(changes, PANEL_COLLAPSED_KEY)) {
+        void setCollapsed(Boolean(changes[PANEL_COLLAPSED_KEY].newValue), false);
       }
     });
   }

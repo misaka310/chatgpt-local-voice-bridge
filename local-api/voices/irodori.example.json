@@ -1,27 +1,7 @@
 {
-  "engine": "comfyui_workflow",
   "voiceProfile": "irodori",
-  "host": "127.0.0.1",
-  "port": 8765,
-  "publicBaseUrl": "http://127.0.0.1:8765",
-  "audioOutputDir": "./runtime/audio",
   "referenceAudioPath": "./reference/voice_irodori.wav",
   "workflowPath": "./reference/tts_e2e_irodori.json",
-  "comfyui": {
-    "baseUrl": "http://127.0.0.1:8288",
-    "startupBat": "D:/ComfyUI_TTS_E2E_SANDBOX/start_comfyui_tts_sandbox.bat",
-    "inputDir": "D:/ComfyUI_TTS_E2E_SANDBOX/ComfyUI/input",
-    "outputDir": "D:/ComfyUI_TTS_E2E_SANDBOX/ComfyUI/output",
-    "timeoutSec": 300,
-    "pollIntervalSec": 1.0,
-    "defaultAudioExt": ".wav"
-  },
-  "preview": {
-    "maxLines": 2,
-    "maxChars": 80,
-    "minChars": 25,
-    "stableMs": 800
-  },
   "workflowPatch": {
     "text": {
       "classTypeIncludes": ["IrodoriTTSSampler", "Text", "TTS", "Irodori"],

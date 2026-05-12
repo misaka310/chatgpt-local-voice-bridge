@@ -1,14 +1,38 @@
 const NATIVE_HOST_NAME = 'com.chatgpt.local_voice_bridge';
-
+const SETTINGS_VERSION = 2;
 const DEFAULT_SETTINGS = {
+  settingsVersion: SETTINGS_VERSION,
   enabled: false,
   apiUrl: 'http://127.0.0.1:8765/v1/speak',
   healthUrl: 'http://127.0.0.1:8765/health',
-  previewMaxLines: 3,
-  previewMaxChars: 120,
-  previewMinChars: 40,
+  previewMaxLines: 2,
+  previewMaxChars: 80,
+  previewMinChars: 25,
   previewStableMs: 800,
+  panelCollapsed: true,
 };
+
+async function migrateSettings() {
+  const current = await chrome.storage.local.get(null);
+  const version = Number(current.settingsVersion || 0);
+  if (version >= SETTINGS_VERSION) {
+    await chrome.storage.local.set({ ...DEFAULT_SETTINGS, ...current });
+    return;
+  }
+  const migrated = {
+    ...DEFAULT_SETTINGS,
+    ...current,
+    settingsVersion: SETTINGS_VERSION,
+    previewMaxLines: DEFAULT_SETTINGS.previewMaxLines,
+    previewMaxChars: DEFAULT_SETTINGS.previewMaxChars,
+    previewMinChars: DEFAULT_SETTINGS.previewMinChars,
+    previewStableMs: DEFAULT_SETTINGS.previewStableMs,
+  };
+  if (typeof current.panelCollapsed !== 'boolean') {
+    migrated.panelCollapsed = DEFAULT_SETTINGS.panelCollapsed;
+  }
+  await chrome.storage.local.set(migrated);
+}
 
 async function getSettings() {
   const stored = await chrome.storage.local.get(DEFAULT_SETTINGS);
@@ -93,8 +117,11 @@ function callNativeHost(command) {
 }
 
 chrome.runtime.onInstalled.addListener(async () => {
-  const current = await chrome.storage.local.get(null);
-  await chrome.storage.local.set({ ...DEFAULT_SETTINGS, ...current });
+  await migrateSettings();
+});
+
+chrome.runtime.onStartup.addListener(async () => {
+  await migrateSettings();
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {

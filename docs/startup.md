@@ -1,30 +1,32 @@
-﻿# 起動方法
+# 起動方法
 
 ## 通常起動（推奨）
 
-リポジトリ直下で次を実行します。
+```cmd
+run-voice-stack.cmd
+```
+
+この導線で以下を自動実行します。
+
+- `D:/ComfyUI_TTS_E2E_SANDBOX/start_comfyui_tts_sandbox.bat` からComfyUI起動（未起動時のみ）
+- `http://127.0.0.1:8288/system_stats` 応答待機
+- `python local-api/server.py` でlocal-api起動（未起動時のみ）
+- `http://127.0.0.1:8765/health` 応答待機
+- `/health` の `engine=comfyui_workflow` と `voiceProfile=irodori` を確認
+
+互換ラッパー:
 
 ```cmd
 run-qwen-stack.cmd
 ```
 
-この起動導線では以下を自動実行します。
+## scripts配下から起動する場合
 
-- `D:\05_ComfyUI_ZImage\run.bat` から ComfyUI を起動（未起動時のみ）
-- `http://127.0.0.1:8190/system_stats` 応答待機
-- `python local-api/server.py` で local-api 起動（未起動時のみ）
-- `http://127.0.0.1:8765/health` 応答待機
-- `/health` の `engine=comfyui_qwen3` を確認
+```cmd
+scripts\start-voice-stack.cmd
+```
 
-補足:
-
-- `.cmd` は `ExecutionPolicy Bypass` をその実行1回だけ利用します
-- PowerShell実行ポリシー回避のための指定で、管理者権限への昇格ではありません
-- 起動ターミナルを開いている間だけ監視を継続します
-- `Ctrl+C` またはターミナルを閉じると、このスクリプトが起動したプロセスのみ停止します
-- 既存で起動済みの ComfyUI / local-api は停止しません
-
-## scripts配下から起動したい場合
+互換ラッパー:
 
 ```cmd
 scripts\start-qwen-stack.cmd
@@ -36,15 +38,17 @@ scripts\start-qwen-stack.cmd
 .\scripts\smoke-local-api.ps1
 ```
 
-## 拡張UIの運用
+## 拡張UI運用
 
-- 初期状態は `Auto OFF`（必要時のみ `Auto ON`）
-- 拡張の `Read Latest` は同じpreviewなら生成済み音声を再利用する
-- `Replay` は最後に再生成功した音声を再生成なしで再生する
-- 送信対象は冒頭previewのみ（最大3行/120文字）で、全文送信しない
-- APIの起動/停止は `run-qwen-stack.cmd` 側で行い、拡張UIからは実行しない
+- 初期状態は `Auto OFF`
+- `Read` は同じpreviewなら生成済み音声を再利用
+- `Regen` はキャッシュを無視して強制再生成
+- `Replay` は最後の音声を再生成なしで再生
+- `Stop` は再生停止
+- 送信対象は冒頭previewのみ（最大2行/80文字）
+- 全文送信しない
 
-## local-api 単体起動（必要時のみ）
+## local-api単体起動（必要時のみ）
 
 ```powershell
 .\scripts\start-local-api.ps1
@@ -54,16 +58,4 @@ scripts\start-qwen-stack.cmd
 
 ```powershell
 .\scripts\stop-local-api.ps1
-```
-
-## Windowsログオン時自動起動（任意）
-
-```powershell
-.\scripts\install-startup-task.ps1
-```
-
-解除:
-
-```powershell
-.\scripts\uninstall-startup-task.ps1
 ```

@@ -1,35 +1,38 @@
-﻿# 受け入れ条件
+# 受け入れ条件
 
 ## 必須前提
 
 - ComfyUIが起動している
-- Qwen3-TTS custom node が導入済み
-- 必要モデルが利用可能
-- `local-api/reference/voice.wav` が存在する
-- `local-api/reference/voice.txt` が存在する
-- `local-api/workflows/qwen3_clone_api.json`（標準workflow）が存在する
-- 設定の `engine` が `comfyui_qwen3`
+- `local-api/reference/voice_irodori.wav` が存在する
+- `local-api/reference/tts_e2e_irodori.json` が存在する
+- `engine` が `comfyui_workflow`
+- `voiceProfile` が `irodori`
 
 ## API E2E
 
-- `scripts/start-local-api.ps1` で起動
-- `/health` が `engine=comfyui_qwen3`
+- `run-voice-stack.cmd` または `scripts/start-voice-stack.cmd` で起動
+- `/health` が成功し、`engine=comfyui_workflow` を返す
 - `scripts/smoke-local-api.ps1` で `/v1/speak` 成功
 - ComfyUI `/prompt` 実行と `/history/{prompt_id}` 成功
-- 生成音声が `local-api/runtime/audio/` へコピーされる
+- 生成音声が `local-api/runtime/audio/` にコピーされる
 - `/audio/<filename>` が再生できる
 
-## Chrome E2E
+## 拡張 E2E
 
-- 拡張読み込み後、ChatGPTタブリロード
-- 初期状態は `Auto OFF` である
-- 「最新を読む」または自動検知で送信されるのは冒頭previewのみ
-- 送信されるpreviewは最大3行/120文字
-- 1応答につき自動送信1回のみ
-- 全文は送信されない
-- Qwen3音声が再生される
+- 初期状態 `Auto OFF`
+- `Read` で冒頭preview（最大2行/80文字）だけ送信
+- 同じpreviewで再度 `Read` しても再生成しない
+- `Regen` で強制再生成される
+- `Replay` は最後の音声を再生成なしで再生
+- `Stop` で再生停止
+- 折りたたみ/展開が可能
+- パネル位置と折りたたみ状態がリロード後も保持される
 
-## 完了判定
+## debug 出力
 
-- Qwen3 E2Eが通って初めて完了
-- 未実施時は `/prompt`・`/history`・LoadAudio・モデル読み込み・音声取得のどこまで通ったかを具体的に報告する
+- `local-api/runtime/debug/<requestId>/` に以下が保存される
+- `request.json`
+- `prompt.json`
+- `summary.json`
+- `history.json`
+- `summary.json` に `voiceProfile`, `engine`, `workflowPath`, `referenceAudioPath`, `referenceAudioHash`, `referenceAudioUsed`, `textHash`, `patchedPromptHash`, `ttsInputHash` が含まれる

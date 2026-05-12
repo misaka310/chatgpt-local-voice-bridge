@@ -1,16 +1,20 @@
-﻿# 参照音源
+# 参照音源
 
 配置先:
 
 ```text
-local-api/reference/voice.wav
-local-api/reference/voice.txt
+local-api/reference/voice_irodori.wav
 ```
 
-- `voice.wav`: 参照音源
-- `voice.txt`: 参照文字起こし
+- `voice_irodori.wav` はGit管理しません
+- `server.py` は実行時にSHA1を計算します
+- 参照音源ノードを使うworkflowの場合のみ `comfyui.inputDir` へコピーして注入します
+- 参照音源ノードを使わないworkflowでは注入しません（`referenceAudioUsed=false`）
 
-どちらも Git 管理しません。
+workflow JSON は次を想定します。
 
-`server.py` は生成前に `voice.wav` を `comfyui.inputDir` へコピーし、
-`voice.txt` の内容を `Qwen3VoiceClone.inputs.ref_text` に注入します。
+```text
+local-api/reference/tts_e2e_irodori.json
+```
+
+このworkflowファイルも個人環境依存がある場合はGit管理しません。

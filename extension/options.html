@@ -16,9 +16,10 @@
 </head>
 <body>
   <h1>ChatGPT Local Voice Bridge</h1>
-  <p>ChatGPT Webの応答を検知して、冒頭previewのみをローカルQwen3/ComfyUI APIへ送ります。</p>
+  <p>ChatGPT Webのassistant返答から冒頭previewのみを抽出して、ローカルComfyUI workflow APIへ送信します。</p>
 
   <label><input id="enabled" type="checkbox" /> 自動読み上げを有効にする</label>
+  <label><input id="panelCollapsed" type="checkbox" /> パネルを初期状態で折りたたむ</label>
 
   <label for="apiUrl">Local API URL (/v1/speak)</label>
   <input id="apiUrl" type="text" />
@@ -48,10 +49,7 @@
     </div>
   </div>
 
-  <p>
-    初期値は「最大3行・120文字の冒頭previewのみ送信」です。
-    返答全文は自動送信しません。
-  </p>
+  <p>初期値は「最大2行・80文字の冒頭previewのみ送信」です。全文は送信しません。</p>
 
   <button id="save">保存</button>
   <button id="test">API疎通テスト</button>
