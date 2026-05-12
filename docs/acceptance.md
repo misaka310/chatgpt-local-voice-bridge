@@ -1,38 +1,41 @@
-# 受け入れ条件
+﻿# Acceptance
 
-## 必須前提
+## 事前条件
 
-- ComfyUIが起動している
-- `local-api/reference/voice_irodori.wav` が存在する
-- `local-api/reference/tts_e2e_irodori.json` が存在する
-- `engine` が `comfyui_workflow`
-- `voiceProfile` が `irodori`
+- ComfyUI 起動済み
+- `local-api/reference/voice_irodori.wav` が存在
+- v2 workflow が存在
+  - `local-api/reference/tts_e2e_irodori.json`
+- v3 workflow が存在
+  - `D:/ComfyUI_TTS_E2E_SANDBOX/ComfyUI/user/default/workflows/tts_e2e_irodori_v3.json`
 
-## API E2E
+## API 受け入れ
 
-- `run-voice-stack.cmd` または `scripts/start-voice-stack.cmd` で起動
-- `/health` が成功し、`engine=comfyui_workflow` を返す
-- `scripts/smoke-local-api.ps1` で `/v1/speak` 成功
-- ComfyUI `/prompt` 実行と `/history/{prompt_id}` 成功
-- 生成音声が `local-api/runtime/audio/` にコピーされる
-- `/audio/<filename>` が再生できる
+1. `/health` が成功
+2. `engine=comfyui_workflow`
+3. `availableVoiceProfiles` に `irodori-v2`, `irodori-v3`
+4. `/v1/speak` `voiceProfile=irodori-v2` で成功
+5. `/v1/speak` `voiceProfile=irodori-v3` で成功
 
-## 拡張 E2E
+## UI 受け入れ
 
-- 初期状態 `Auto OFF`
-- `Read` で冒頭preview（最大2行/80文字）だけ送信
-- 同じpreviewで再度 `Read` しても再生成しない
-- `Regen` で強制再生成される
-- `Replay` は最後の音声を再生成なしで再生
-- `Stop` で再生停止
-- 折りたたみ/展開が可能
-- パネル位置と折りたたみ状態がリロード後も保持される
+1. Voice select で `Irodori v2 / Irodori v3` を切替できる
+2. 選択は `chrome.storage.local` に保持され、タブリロード後も維持される
+3. `Read` は chunk 0
+4. `Next` は次チャンク
+5. `Regen` は現在チャンク強制再生成
+6. `Replay` は再生成なし
+7. `Auto` は chunk 0 のみ
 
-## debug 出力
+## キャッシュ受け入れ
 
-- `local-api/runtime/debug/<requestId>/` に以下が保存される
-- `request.json`
-- `prompt.json`
-- `summary.json`
-- `history.json`
-- `summary.json` に `voiceProfile`, `engine`, `workflowPath`, `referenceAudioPath`, `referenceAudioHash`, `referenceAudioUsed`, `textHash`, `patchedPromptHash`, `ttsInputHash` が含まれる
+- キャッシュキーに `voiceProfile`, `messageKey`, `chunkIndex`, 正規化本文が含まれる
+- v2 で生成した音声を v3 で再利用しない
+
+## チャンク受け入れ
+
+- 1チャンクは短いまま（既定: 2行 / 80文字 / 最小25文字）
+- コードブロック除外
+- markdown記号を落とす
+- 句読点優先分割、不可なら maxChars 分割
+- 全文一括送信しない

@@ -1,5 +1,6 @@
-{
-  "voiceProfile": "irodori",
+﻿{
+  "voiceProfile": "irodori-v2",
+  "defaultVoiceProfile": "irodori-v2",
   "referenceAudioPath": "./reference/voice_irodori.wav",
   "workflowPath": "./reference/tts_e2e_irodori.json",
   "workflowPatch": {

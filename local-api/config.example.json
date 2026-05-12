@@ -1,12 +1,59 @@
-{
+﻿{
   "engine": "comfyui_workflow",
-  "voiceProfile": "irodori",
+  "voiceProfile": "irodori-v2",
+  "defaultVoiceProfile": "irodori-v2",
   "host": "127.0.0.1",
   "port": 8765,
   "publicBaseUrl": "http://127.0.0.1:8765",
   "audioOutputDir": "./runtime/audio",
   "referenceAudioPath": "./reference/voice_irodori.wav",
   "workflowPath": "./reference/tts_e2e_irodori.json",
+  "voiceProfiles": {
+    "irodori-v2": {
+      "label": "Irodori v2",
+      "referenceAudioPath": "./reference/voice_irodori.wav",
+      "workflowPath": "./reference/tts_e2e_irodori.json",
+      "workflowPatch": {
+        "text": {
+          "classTypeIncludes": ["IrodoriTTSSampler", "Text", "TTS", "Irodori"],
+          "inputKeys": ["text", "prompt", "sentence"],
+          "enabled": true
+        },
+        "save": {
+          "classTypeIncludes": ["SaveAudio", "VHS_SaveAudio"],
+          "inputKeys": ["filename_prefix", "filename", "output_name", "basename"],
+          "enabled": true
+        },
+        "referenceAudio": {
+          "classTypeIncludes": ["IrodoriTTSReferenceAudio", "LoadAudio", "Audio"],
+          "inputKeys": ["ref_audio", "audio", "filename", "file", "path"],
+          "enabled": true
+        }
+      }
+    },
+    "irodori-v3": {
+      "label": "Irodori v3",
+      "referenceAudioPath": "./reference/voice_irodori.wav",
+      "workflowPath": "D:/ComfyUI_TTS_E2E_SANDBOX/ComfyUI/user/default/workflows/tts_e2e_irodori_v3.json",
+      "workflowPatch": {
+        "text": {
+          "classTypeIncludes": ["IrodoriTTSSampler", "Irodori", "TTS"],
+          "inputKeys": ["text", "prompt", "sentence"],
+          "enabled": true
+        },
+        "save": {
+          "classTypeIncludes": ["SaveAudio", "VHS_SaveAudio"],
+          "inputKeys": ["filename_prefix", "filename", "output_name", "basename"],
+          "enabled": true
+        },
+        "referenceAudio": {
+          "classTypeIncludes": ["IrodoriTTSReferenceAudio", "LoadAudio", "Audio"],
+          "inputKeys": ["ref_audio", "audio", "filename", "file", "path"],
+          "enabled": true
+        }
+      }
+    }
+  },
   "comfyui": {
     "baseUrl": "http://127.0.0.1:8288",
     "startupBat": "D:/ComfyUI_TTS_E2E_SANDBOX/start_comfyui_tts_sandbox.bat",

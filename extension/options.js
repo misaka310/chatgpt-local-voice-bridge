@@ -1,9 +1,10 @@
-const SETTINGS_VERSION = 2;
+const SETTINGS_VERSION = 3;
 const DEFAULT_SETTINGS = {
   settingsVersion: SETTINGS_VERSION,
   enabled: false,
   apiUrl: 'http://127.0.0.1:8765/v1/speak',
   healthUrl: 'http://127.0.0.1:8765/health',
+  voiceProfile: 'irodori-v2',
   previewMaxLines: 2,
   previewMaxChars: 80,
   previewMinChars: 25,
@@ -27,6 +28,7 @@ async function migrateIfNeeded() {
     ...DEFAULT_SETTINGS,
     ...all,
     settingsVersion: SETTINGS_VERSION,
+    voiceProfile: String(all.voiceProfile || DEFAULT_SETTINGS.voiceProfile),
     previewMaxLines: DEFAULT_SETTINGS.previewMaxLines,
     previewMaxChars: DEFAULT_SETTINGS.previewMaxChars,
     previewMinChars: DEFAULT_SETTINGS.previewMinChars,
@@ -71,7 +73,7 @@ async function testApi() {
     const response = await fetch(settings.apiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: 'Local Voice API options test.', requestId: 'options-test' }),
+      body: JSON.stringify({ text: 'Local Voice API options test.', requestId: 'options-test', voiceProfile: settings.voiceProfile || DEFAULT_SETTINGS.voiceProfile }),
     });
     const payload = await response.json();
     if (!response.ok || !payload.ok) {

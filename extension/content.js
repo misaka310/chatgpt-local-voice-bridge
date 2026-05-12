@@ -1,10 +1,11 @@
-(() => {
-  const SETTINGS_VERSION = 2;
+﻿(() => {
+  const SETTINGS_VERSION = 3;
   const DEFAULT_SETTINGS = {
     settingsVersion: SETTINGS_VERSION,
     enabled: false,
     apiUrl: 'http://127.0.0.1:8765/v1/speak',
     healthUrl: 'http://127.0.0.1:8765/health',
+    voiceProfile: 'irodori-v2',
     previewMaxLines: 2,
     previewMaxChars: 80,
     previewMinChars: 25,
@@ -17,14 +18,20 @@
   const AUTO_SENT_FLAG = 'localVoiceSent';
   const PANEL_POSITION_KEY = 'panelPosition';
   const PANEL_COLLAPSED_KEY = 'panelCollapsed';
+  const DEFAULT_PROFILE_OPTIONS = [
+    { id: 'irodori-v2', label: 'Irodori v2' },
+    { id: 'irodori-v3', label: 'Irodori v3' },
+  ];
 
   const stateByElement = new WeakMap();
   const initializedElements = new WeakSet();
   const audioQueue = [];
   const audioCache = new Map();
+  const readCursorByMessage = new Map();
 
   let settings = { ...DEFAULT_SETTINGS };
   let enabled = Boolean(DEFAULT_SETTINGS.enabled);
+  let availableVoiceProfiles = [...DEFAULT_PROFILE_OPTIONS];
   let observer = null;
   let inspectTimer = null;
   let sequence = 0;
@@ -39,6 +46,7 @@
   let titleNode = null;
   let statusNode = null;
   let detailNode = null;
+  let voiceProfileSelect = null;
   let autoButton = null;
   let replayButton = null;
 
@@ -65,35 +73,49 @@
       .trim();
   }
 
-  function naturalCut(text, minChars, maxChars) {
-    if (text.length <= maxChars) return text;
-    const head = text.slice(0, maxChars);
-    const punct = Math.max(
-      head.lastIndexOf('。'),
-      head.lastIndexOf('！'),
-      head.lastIndexOf('？'),
-      head.lastIndexOf('．'),
-      head.lastIndexOf('.'),
-      head.lastIndexOf('!'),
-      head.lastIndexOf('?'),
-    );
-    if (punct >= Math.floor(minChars * 0.6)) {
-      return head.slice(0, punct + 1);
-    }
-    const soft = head.lastIndexOf(' ');
-    if (soft >= Math.floor(minChars * 0.6)) {
-      return head.slice(0, soft).trim();
-    }
-    return head;
+  function getCurrentVoiceProfile() {
+    const picked = String(settings.voiceProfile || DEFAULT_SETTINGS.voiceProfile).trim();
+    return picked || DEFAULT_SETTINGS.voiceProfile;
   }
 
-  function extractSpeakPreview(fullText, options = {}) {
+  function splitChunkByMaxChars(text, maxChars, minChars) {
+    const trimmed = normalizeText(text);
+    if (!trimmed) return { head: '', tail: '' };
+    if (trimmed.length <= maxChars) return { head: trimmed, tail: '' };
+
+    const head = trimmed.slice(0, maxChars);
+    const punctRegex = /[。！？.!?]/g;
+    let punctMatch = null;
+    for (const match of head.matchAll(punctRegex)) punctMatch = match;
+    if (punctMatch && Number(punctMatch.index) >= Math.floor(minChars * 0.6)) {
+      const cut = Number(punctMatch.index) + 1;
+      return {
+        head: normalizeText(trimmed.slice(0, cut)),
+        tail: normalizeText(trimmed.slice(cut)),
+      };
+    }
+
+    const soft = head.lastIndexOf(' ');
+    if (soft >= Math.floor(minChars * 0.6)) {
+      return {
+        head: normalizeText(head.slice(0, soft)),
+        tail: normalizeText(trimmed.slice(soft)),
+      };
+    }
+
+    return {
+      head: normalizeText(head),
+      tail: normalizeText(trimmed.slice(maxChars)),
+    };
+  }
+
+  function splitSpeakChunks(fullText, options = {}) {
     const maxLines = Number(options.maxLines || DEFAULT_SETTINGS.previewMaxLines);
     const maxChars = Number(options.maxChars || DEFAULT_SETTINGS.previewMaxChars);
     const minChars = Number(options.minChars || DEFAULT_SETTINGS.previewMinChars);
 
     let text = normalizeText(fullText);
-    if (!text) return '';
+    if (!text) return [];
 
     text = text
       .replace(/```[\s\S]*?```/g, ' ')
@@ -105,11 +127,41 @@
       .map((line) => normalizeMarkdownLine(line))
       .filter(Boolean);
 
-    if (!lines.length) return '';
-    const picked = lines.slice(0, Math.max(1, maxLines));
-    const merged = normalizeText(picked.join(' '));
-    if (!merged) return '';
-    return normalizeText(naturalCut(merged, minChars, maxChars));
+    if (!lines.length) return [];
+
+    const chunks = [];
+    let lineCursor = 0;
+
+    while (lineCursor < lines.length) {
+      const chunkLines = [];
+      let charCount = 0;
+
+      while (lineCursor < lines.length && chunkLines.length < Math.max(1, maxLines)) {
+        const line = lines[lineCursor];
+        const projectedChars = charCount === 0 ? line.length : charCount + line.length + 1;
+        if (chunkLines.length > 0 && projectedChars > maxChars) break;
+        chunkLines.push(line);
+        charCount = projectedChars;
+        lineCursor += 1;
+        if (charCount >= maxChars) break;
+      }
+
+      if (chunkLines.length === 0) {
+        chunkLines.push(lines[lineCursor]);
+        lineCursor += 1;
+      }
+
+      let pending = normalizeText(chunkLines.join(' '));
+      while (pending) {
+        const split = splitChunkByMaxChars(pending, maxChars, minChars);
+        if (!split.head) break;
+        chunks.push(split.head);
+        if (!split.tail || split.tail === pending) break;
+        pending = split.tail;
+      }
+    }
+
+    return chunks.filter(Boolean);
   }
 
   function shouldSendNow(preview, now, item) {
@@ -119,7 +171,7 @@
     const len = preview.length;
     if (!len) return false;
     if (len >= maxChars) return true;
-    if (len >= minChars && /[。．！？.!?]$/.test(preview)) return true;
+    if (len >= minChars && /[。！？.!?]$/.test(preview)) return true;
     if (len >= minChars && now - item.lastChangedAt >= stableMs) return true;
     if (len >= MIN_FALLBACK_CHARS && now - item.lastChangedAt >= stableMs + 400) return true;
     return false;
@@ -184,7 +236,7 @@
 
   function setPanelState(statusText, detailText = '') {
     if (statusNode) statusNode.textContent = statusText;
-    if (detailNode) detailNode.textContent = detailText || 'Irodori / preview only';
+    if (detailNode) detailNode.textContent = detailText || `${getCurrentVoiceProfile()} / chunked preview`;
     if (titleNode && settings.panelCollapsed) {
       titleNode.textContent = `Voice · ${statusText}`;
     } else if (titleNode) {
@@ -200,28 +252,29 @@
     replayButton.style.cursor = lastAudio ? 'pointer' : 'not-allowed';
   }
 
-  function getCacheKey(preview) {
-    return normalizeText(preview);
+  function getCacheKey({ voiceProfile, messageKey, chunkIndex, text }) {
+    return `${voiceProfile}::${messageKey}::${chunkIndex}::${normalizeText(text)}`;
   }
 
-  function buildLatestPreviewEntry() {
+  function buildLatestChunkContext() {
     const nodes = getAssistantNodes();
     if (!nodes.length) return null;
 
     const latest = nodes[nodes.length - 1];
     const text = extractAssistantText(latest);
-    const preview = extractSpeakPreview(text, {
+    const chunks = splitSpeakChunks(text, {
       maxLines: Number(settings.previewMaxLines || DEFAULT_SETTINGS.previewMaxLines),
       maxChars: Number(settings.previewMaxChars || DEFAULT_SETTINGS.previewMaxChars),
       minChars: Number(settings.previewMinChars || DEFAULT_SETTINGS.previewMinChars),
     });
-    if (!preview) return null;
+    if (!chunks.length) return null;
+    const messageKey = getStableKey(latest);
 
     return {
       node: latest,
       text,
-      preview,
-      key: getCacheKey(preview),
+      messageKey,
+      chunks,
       capturedAt: Date.now(),
     };
   }
@@ -241,12 +294,12 @@
     }
   }
 
-  async function postToLocalApi(text, requestId) {
+  async function postToLocalApi(text, requestId, voiceProfile) {
     const apiUrl = String(settings.apiUrl || DEFAULT_SETTINGS.apiUrl);
     const response = await fetch(apiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, requestId, source: 'chatgpt-web' }),
+      body: JSON.stringify({ text, requestId, source: 'chatgpt-web', voiceProfile }),
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok || !payload.ok) {
@@ -279,15 +332,15 @@
     });
   }
 
-  async function requestSpeech(text, requestId) {
+  async function requestSpeech(text, requestId, voiceProfile) {
     if (canUseRuntimeMessaging()) {
       try {
-        return await runtimeMessage('speak', { text, requestId });
+        return await runtimeMessage('speak', { text, requestId, voiceProfile });
       } catch (_error) {
         // Fall back to direct fetch in restricted content-script environments.
       }
     }
-    return postToLocalApi(text, requestId);
+    return postToLocalApi(text, requestId, voiceProfile);
   }
 
   function enqueueAudio(url, text, meta = {}) {
@@ -383,6 +436,7 @@
         text: item.text,
         createdAt: Date.now(),
         cacheKey: item.meta.cacheKey || null,
+        voiceProfile: item.meta.voiceProfile || getCurrentVoiceProfile(),
       });
       setPanelState('Ready', audioQueue.length > 0 ? `Queued ${audioQueue.length}` : 'Irodori / cached');
       void playNext();
@@ -414,44 +468,86 @@
     setPanelState('Ready', 'Playback stopped');
   }
 
-  async function generateAndQueue(preview, key, node) {
-    const requestId = `${key}-${Date.now()}-${sequence++}`.slice(0, 120);
-    setPanelState('Generating', `${preview.length} chars`);
+  function recordLastPreviewEntry(entry, chunkIndex, cacheKey) {
+    lastPreviewEntry = {
+      key: cacheKey,
+      preview: entry.chunks[chunkIndex],
+      textLength: entry.text.length,
+      capturedAt: entry.capturedAt,
+      nodeKey: entry.messageKey,
+      chunkIndex,
+      voiceProfile: getCurrentVoiceProfile(),
+    };
+  }
+
+  async function generateAndQueue(chunkText, cacheKey, node, chunkMeta) {
+    const requestId = `${cacheKey}-${Date.now()}-${sequence++}`.slice(0, 120);
+    const voiceProfile = getCurrentVoiceProfile();
+    setPanelState('Generating', `${chunkText.length} chars / ${voiceProfile}`);
 
     node.dataset[AUTO_SENT_FLAG] = '1';
     const nodeState = stateByElement.get(node);
     if (nodeState) nodeState.sent = true;
 
-    const payload = await requestSpeech(preview, requestId);
+    const payload = await requestSpeech(chunkText, requestId, voiceProfile);
     const audioUrl = payload && payload.audioUrl;
     if (!audioUrl) {
       throw new Error('audioUrl is missing in API response');
     }
 
-    cacheAudio(key, audioUrl, preview);
-    setPanelState('Cached', 'Generated and cached');
-    enqueueAudio(audioUrl, preview, {
-      cacheKey: key,
+    cacheAudio(cacheKey, audioUrl, chunkText);
+    console.debug('[local-voice] speak', {
+      voiceProfile,
+      messageKey: chunkMeta.messageKey,
+      chunkIndex: chunkMeta.chunkIndex,
+      cacheKey,
+      cacheHit: false,
+      text: chunkText,
+    });
+    setPanelState('Cached', `Generated ${voiceProfile}`);
+    enqueueAudio(audioUrl, chunkText, {
+      cacheKey,
+      voiceProfile,
       onPlaybackError: async () => {
-        clearCacheForKey(key);
+        clearCacheForKey(cacheKey);
       },
     });
   }
 
-  async function readPreview(preview, key, node, options = {}) {
+  async function readChunk(entry, chunkIndex, options = {}) {
     const { forceGenerate = false, fallbackGenerateOnCacheFail = true } = options;
-    if (!preview) return;
+    const chunkText = entry.chunks[chunkIndex];
+    if (!chunkText) return;
+
+    const voiceProfile = getCurrentVoiceProfile();
+    const cacheKey = getCacheKey({
+      voiceProfile,
+      messageKey: entry.messageKey,
+      chunkIndex,
+      text: chunkText,
+    });
+    const chunkMeta = { messageKey: entry.messageKey, chunkIndex };
+    recordLastPreviewEntry(entry, chunkIndex, cacheKey);
 
     if (!forceGenerate) {
-      const cached = audioCache.get(key);
+      const cached = audioCache.get(cacheKey);
       if (cached && cached.audioUrl) {
-        setPanelState('Cached', 'Using cached audio');
-        enqueueAudio(cached.audioUrl, preview, {
-          cacheKey: key,
+        console.debug('[local-voice] speak', {
+          voiceProfile,
+          messageKey: entry.messageKey,
+          chunkIndex,
+          cacheKey,
+          cacheHit: true,
+          text: chunkText,
+        });
+        setPanelState('Cached', `Using cached audio / ${voiceProfile}`);
+        enqueueAudio(cached.audioUrl, chunkText, {
+          cacheKey,
+          voiceProfile,
           onPlaybackError: async () => {
-            clearCacheForKey(key);
+            clearCacheForKey(cacheKey);
             if (fallbackGenerateOnCacheFail) {
-              await readPreview(preview, key, node, {
+              await readChunk(entry, chunkIndex, {
                 forceGenerate: true,
                 fallbackGenerateOnCacheFail: false,
               });
@@ -460,13 +556,15 @@
             return { handled: false };
           },
         });
+        readCursorByMessage.set(entry.messageKey, chunkIndex);
         return;
       }
     }
 
     try {
-      await generateAndQueue(preview, key, node);
-      setPanelState('Ready', forceGenerate ? 'Force regenerated' : 'Irodori / cached');
+      await generateAndQueue(chunkText, cacheKey, entry.node, chunkMeta);
+      readCursorByMessage.set(entry.messageKey, chunkIndex);
+      setPanelState('Ready', forceGenerate ? `Force regenerated / ${voiceProfile}` : `Ready / ${voiceProfile}`);
     } catch (error) {
       setPanelState('Offline', error.message || String(error));
     }
@@ -493,27 +591,32 @@
       item.lastChangedAt = Date.now();
     }
 
-    const preview = extractSpeakPreview(text, {
+    const chunks = splitSpeakChunks(text, {
       maxLines: Number(settings.previewMaxLines || DEFAULT_SETTINGS.previewMaxLines),
       maxChars: Number(settings.previewMaxChars || DEFAULT_SETTINGS.previewMaxChars),
       minChars: Number(settings.previewMinChars || DEFAULT_SETTINGS.previewMinChars),
     });
+    const preview = chunks[0];
     if (!preview) return;
-
-    lastPreviewEntry = {
-      key: getCacheKey(preview),
-      preview,
-      textLength: text.length,
+    const entry = {
+      node,
+      text,
+      messageKey: item.key,
+      chunks,
       capturedAt: Date.now(),
-      nodeKey: item.key,
     };
+    recordLastPreviewEntry(entry, 0, getCacheKey({
+      voiceProfile: getCurrentVoiceProfile(),
+      messageKey: item.key,
+      chunkIndex: 0,
+      text: preview,
+    }));
 
     const now = Date.now();
     if (shouldSendNow(preview, now, item)) {
       item.sent = true;
       node.dataset[AUTO_SENT_FLAG] = '1';
-      const key = getCacheKey(preview);
-      void readPreview(preview, key, node, { forceGenerate: false });
+      void readChunk(entry, 0, { forceGenerate: false });
       return;
     }
 
@@ -523,18 +626,25 @@
       const latest = extractAssistantText(node);
       if (latest !== item.lastText) return;
 
-      const pendingPreview = extractSpeakPreview(latest, {
+      const pendingChunks = splitSpeakChunks(latest, {
         maxLines: Number(settings.previewMaxLines || DEFAULT_SETTINGS.previewMaxLines),
         maxChars: Number(settings.previewMaxChars || DEFAULT_SETTINGS.previewMaxChars),
         minChars: Number(settings.previewMinChars || DEFAULT_SETTINGS.previewMinChars),
       });
+      const pendingPreview = pendingChunks[0];
       if (!pendingPreview) return;
 
       if (shouldSendNow(pendingPreview, Date.now(), item)) {
         item.sent = true;
         node.dataset[AUTO_SENT_FLAG] = '1';
-        const key = getCacheKey(pendingPreview);
-        void readPreview(pendingPreview, key, node, { forceGenerate: false });
+        const pendingEntry = {
+          node,
+          text: latest,
+          messageKey: item.key,
+          chunks: pendingChunks,
+          capturedAt: Date.now(),
+        };
+        void readChunk(pendingEntry, 0, { forceGenerate: false });
       }
     }, Number(settings.previewStableMs || DEFAULT_SETTINGS.previewStableMs) + 50);
   }
@@ -582,6 +692,28 @@
     });
     button.addEventListener('click', onClick);
     return button;
+  }
+
+  function syncVoiceProfileSelect() {
+    if (!voiceProfileSelect) return;
+    const current = getCurrentVoiceProfile();
+    voiceProfileSelect.innerHTML = '';
+    for (const profile of availableVoiceProfiles) {
+      const option = document.createElement('option');
+      option.value = profile.id;
+      option.textContent = profile.label;
+      voiceProfileSelect.appendChild(option);
+    }
+    if (!availableVoiceProfiles.some((item) => item.id === current)) {
+      settings.voiceProfile = (availableVoiceProfiles[0] && availableVoiceProfiles[0].id) || DEFAULT_SETTINGS.voiceProfile;
+    }
+    voiceProfileSelect.value = settings.voiceProfile;
+  }
+
+  async function persistVoiceProfile(voiceProfile) {
+    settings.voiceProfile = voiceProfile;
+    if (!globalThis.chrome || !chrome.storage || !chrome.storage.local) return;
+    await chrome.storage.local.set({ voiceProfile });
   }
 
   function clampPanelPosition(left, top) {
@@ -694,17 +826,33 @@
 
   async function probeApiStatus() {
     try {
+      let payload = null;
       if (canUseRuntimeMessaging()) {
-        await runtimeMessage('health');
+        payload = await runtimeMessage('health');
       } else {
         const healthUrl = String(settings.healthUrl || DEFAULT_SETTINGS.healthUrl);
         const response = await fetch(healthUrl, { method: 'GET', cache: 'no-store' });
-        const payload = await response.json().catch(() => ({}));
+        payload = await response.json().catch(() => ({}));
         if (!response.ok || !payload.ok) {
           throw new Error(payload.error || `health failed: ${response.status}`);
         }
       }
-      setPanelState('Ready', 'Irodori / cache ready');
+      if (payload && Array.isArray(payload.availableVoiceProfiles) && payload.availableVoiceProfiles.length > 0) {
+        availableVoiceProfiles = payload.availableVoiceProfiles
+          .map((item) => ({
+            id: String(item.id || '').trim(),
+            label: String(item.label || item.id || '').trim(),
+          }))
+          .filter((item) => item.id && item.label);
+      }
+      if (!Array.isArray(availableVoiceProfiles) || availableVoiceProfiles.length === 0) {
+        availableVoiceProfiles = [...DEFAULT_PROFILE_OPTIONS];
+      }
+      if (!availableVoiceProfiles.some((item) => item.id === getCurrentVoiceProfile())) {
+        settings.voiceProfile = payload && payload.defaultVoiceProfile ? String(payload.defaultVoiceProfile) : DEFAULT_SETTINGS.voiceProfile;
+      }
+      if (voiceProfileSelect) syncVoiceProfileSelect();
+      setPanelState('Ready', `Voice ${getCurrentVoiceProfile()} / cache ready`);
     } catch (_error) {
       setPanelState('Offline', 'Start with run-voice-stack.cmd');
     }
@@ -768,6 +916,30 @@
     detailNode = document.createElement('div');
     detailNode.style.cssText = 'font-size:11px;color:#c8d2e8;min-height:1.2em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
 
+    const voiceRow = document.createElement('div');
+    voiceRow.style.cssText = 'display:flex;align-items:center;gap:6px;';
+    const voiceLabel = document.createElement('div');
+    voiceLabel.textContent = 'Voice';
+    voiceLabel.style.cssText = 'font-size:11px;color:#c8d2e8;min-width:34px;';
+    voiceProfileSelect = document.createElement('select');
+    voiceProfileSelect.style.cssText = [
+      'flex:1',
+      'min-width:0',
+      'font:600 11px/1.1 "Segoe UI",sans-serif',
+      'padding:4px 6px',
+      'border-radius:8px',
+      'border:1px solid rgba(255,255,255,0.2)',
+      'background:rgba(255,255,255,0.08)',
+      'color:#f7f9ff',
+    ].join(';');
+    voiceProfileSelect.addEventListener('click', (event) => event.stopPropagation());
+    voiceProfileSelect.addEventListener('change', async () => {
+      const picked = String(voiceProfileSelect.value || DEFAULT_SETTINGS.voiceProfile);
+      await persistVoiceProfile(picked);
+      setPanelState('Ready', `Voice switched to ${picked}`);
+    });
+    voiceRow.append(voiceLabel, voiceProfileSelect);
+
     const controls = document.createElement('div');
     controls.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap';
 
@@ -784,7 +956,7 @@
     });
 
     const readButton = createButton('Read', () => {
-      const entry = buildLatestPreviewEntry();
+      const entry = buildLatestChunkContext();
       if (!entry) {
         setPanelState('Error', 'No assistant response');
         return;
@@ -792,18 +964,31 @@
       const state = ensureElementState(entry.node, entry.text);
       state.sent = true;
       entry.node.dataset[AUTO_SENT_FLAG] = '1';
-      lastPreviewEntry = {
-        key: entry.key,
-        preview: entry.preview,
-        textLength: entry.text.length,
-        capturedAt: entry.capturedAt,
-        nodeKey: state.key,
-      };
-      void readPreview(entry.preview, entry.key, entry.node, { forceGenerate: false, fallbackGenerateOnCacheFail: true });
+      readCursorByMessage.set(entry.messageKey, 0);
+      void readChunk(entry, 0, { forceGenerate: false, fallbackGenerateOnCacheFail: true });
+    });
+
+    const nextButton = createButton('Next', () => {
+      const entry = buildLatestChunkContext();
+      if (!entry) {
+        setPanelState('Error', 'No assistant response');
+        return;
+      }
+      const state = ensureElementState(entry.node, entry.text);
+      state.sent = true;
+      entry.node.dataset[AUTO_SENT_FLAG] = '1';
+
+      const lastIndex = readCursorByMessage.get(entry.messageKey);
+      const targetIndex = Number.isInteger(lastIndex) ? Number(lastIndex) + 1 : 0;
+      if (targetIndex >= entry.chunks.length) {
+        setPanelState('Ready', 'No more text');
+        return;
+      }
+      void readChunk(entry, targetIndex, { forceGenerate: false, fallbackGenerateOnCacheFail: true });
     });
 
     const regenButton = createButton('Regen', () => {
-      const entry = buildLatestPreviewEntry();
+      const entry = buildLatestChunkContext();
       if (!entry) {
         setPanelState('Error', 'No assistant response');
         return;
@@ -811,14 +996,9 @@
       const state = ensureElementState(entry.node, entry.text);
       state.sent = true;
       entry.node.dataset[AUTO_SENT_FLAG] = '1';
-      lastPreviewEntry = {
-        key: entry.key,
-        preview: entry.preview,
-        textLength: entry.text.length,
-        capturedAt: entry.capturedAt,
-        nodeKey: state.key,
-      };
-      void readPreview(entry.preview, entry.key, entry.node, { forceGenerate: true, fallbackGenerateOnCacheFail: false });
+      const lastIndex = readCursorByMessage.get(entry.messageKey);
+      const targetIndex = Number.isInteger(lastIndex) && Number(lastIndex) < entry.chunks.length ? Number(lastIndex) : 0;
+      void readChunk(entry, targetIndex, { forceGenerate: true, fallbackGenerateOnCacheFail: false });
     });
 
     replayButton = createButton('Replay', () => {
@@ -828,17 +1008,18 @@
       }
       enqueueAudio(lastAudio.audioUrl, lastAudio.text || '', {
         cacheKey: lastAudio.cacheKey || null,
+        voiceProfile: lastAudio.voiceProfile || getCurrentVoiceProfile(),
         onPlaybackError: async () => {
           if (lastAudio.cacheKey) clearCacheForKey(lastAudio.cacheKey);
           setLastAudio(null);
         },
       });
-      setPanelState('Cached', 'Replaying last audio');
+      setPanelState('Cached', `Replaying / ${lastAudio.voiceProfile || getCurrentVoiceProfile()}`);
     });
 
     const stopButton = createButton('Stop', stopPlayback);
-    controls.append(autoButton, readButton, regenButton, replayButton, stopButton);
-    panelBody.append(detailNode, controls);
+    controls.append(autoButton, readButton, nextButton, regenButton, replayButton, stopButton);
+    panelBody.append(detailNode, voiceRow, controls);
     header.append(titleNode, statusNode);
     panel.append(header, panelBody);
     document.documentElement.appendChild(panel);
@@ -846,8 +1027,9 @@
     autoButton.style.borderColor = enabled ? 'rgba(90,200,140,.5)' : 'rgba(255,255,255,.18)';
     autoButton.style.background = enabled ? 'rgba(73,168,113,.25)' : 'rgba(255,255,255,.08)';
 
+    syncVoiceProfileSelect();
     setLastAudio(null);
-    setPanelState('Ready', 'Irodori / preview only');
+    setPanelState('Ready', `${getCurrentVoiceProfile()} / chunk 0 ready`);
     applyPanelPosition(settings[PANEL_POSITION_KEY]);
     void setCollapsed(Boolean(settings[PANEL_COLLAPSED_KEY]), false);
     makePanelDraggable(header);
@@ -870,12 +1052,13 @@
 
   function clearAllPreviewCache() {
     audioCache.clear();
+    readCursorByMessage.clear();
     setLastAudio(null);
     setPanelState('Ready', 'Preview cache cleared');
   }
 
   async function forceGenerateLatestPreview() {
-    const entry = buildLatestPreviewEntry();
+    const entry = buildLatestChunkContext();
     if (!entry) {
       setPanelState('Error', 'No assistant response');
       return { ok: false, error: 'No assistant response' };
@@ -883,17 +1066,12 @@
     const state = ensureElementState(entry.node, entry.text);
     state.sent = true;
     entry.node.dataset[AUTO_SENT_FLAG] = '1';
-    lastPreviewEntry = {
-      key: entry.key,
-      preview: entry.preview,
-      textLength: entry.text.length,
-      capturedAt: entry.capturedAt,
-      nodeKey: state.key,
-    };
+    const lastIndex = readCursorByMessage.get(entry.messageKey);
+    const targetIndex = Number.isInteger(lastIndex) && Number(lastIndex) < entry.chunks.length ? Number(lastIndex) : 0;
     try {
-      await readPreview(entry.preview, entry.key, entry.node, { forceGenerate: true, fallbackGenerateOnCacheFail: false });
+      await readChunk(entry, targetIndex, { forceGenerate: true, fallbackGenerateOnCacheFail: false });
       setPanelState('Ready', 'Force regenerated');
-      return { ok: true, preview: entry.preview, key: entry.key };
+      return { ok: true, preview: entry.chunks[targetIndex], chunkIndex: targetIndex };
     } catch (error) {
       setPanelState('Offline', error.message || String(error));
       return { ok: false, error: error.message || String(error) };
@@ -919,6 +1097,7 @@
     next.previewMaxChars = DEFAULT_SETTINGS.previewMaxChars;
     next.previewMinChars = DEFAULT_SETTINGS.previewMinChars;
     next.previewStableMs = DEFAULT_SETTINGS.previewStableMs;
+    next.voiceProfile = String(stored.voiceProfile || DEFAULT_SETTINGS.voiceProfile);
     next.settingsVersion = SETTINGS_VERSION;
     if (typeof next.panelCollapsed !== 'boolean') next.panelCollapsed = DEFAULT_SETTINGS.panelCollapsed;
     return next;
@@ -970,6 +1149,9 @@
       if (Object.prototype.hasOwnProperty.call(changes, PANEL_COLLAPSED_KEY)) {
         void setCollapsed(Boolean(changes[PANEL_COLLAPSED_KEY].newValue), false);
       }
+      if (Object.prototype.hasOwnProperty.call(changes, 'voiceProfile')) {
+        if (voiceProfileSelect) syncVoiceProfileSelect();
+      }
     });
   }
 
@@ -981,3 +1163,4 @@
     void start();
   }
 })();
+

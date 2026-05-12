@@ -38,7 +38,8 @@ DEFAULT_REF_KEYS = ("ref_audio", "audio", "filename", "file", "path")
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "engine": "comfyui_workflow",
-    "voiceProfile": "irodori",
+    "voiceProfile": "irodori-v2",
+    "defaultVoiceProfile": "irodori-v2",
     "host": "127.0.0.1",
     "port": 8765,
     "publicBaseUrl": "",
@@ -159,7 +160,7 @@ def apply_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
 
     env_map = {
         "LOCAL_VOICE_ENGINE": ("engine", str),
-        "LOCAL_VOICE_PROFILE": ("voiceProfile", str),
+        "LOCAL_VOICE_PROFILE": ("defaultVoiceProfile", str),
         "LOCAL_VOICE_HOST": ("host", str),
         "LOCAL_VOICE_PORT": ("port", int),
         "LOCAL_VOICE_PUBLIC_BASE_URL": ("publicBaseUrl", str),
@@ -171,6 +172,8 @@ def apply_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
         value = os.getenv(env_name)
         if value:
             config[field] = caster(value)
+            if field == "defaultVoiceProfile":
+                config["voiceProfile"] = caster(value)
 
     comfy_env = {
         "LOCAL_VOICE_COMFYUI_BASE_URL": ("baseUrl", str),
@@ -247,24 +250,19 @@ class RuntimeConfig:
         return str(self.raw.get("engine", "comfyui_workflow"))
 
     @property
-    def voice_profile(self) -> str:
-        return str(self.raw.get("voiceProfile", "irodori"))
+    def default_voice_profile(self) -> str:
+        raw_default = str(self.raw.get("defaultVoiceProfile") or "").strip()
+        if raw_default:
+            return raw_default
+
+        raw_legacy = str(self.raw.get("voiceProfile") or "").strip()
+        if raw_legacy:
+            return raw_legacy
+        return "irodori"
 
     @property
     def audio_output_dir(self) -> Path:
         return resolve_path(self.root, self.raw.get("audioOutputDir", "./runtime/audio"))
-
-    @property
-    def reference_audio_path(self) -> Path:
-        return resolve_path(self.root, self.raw.get("referenceAudioPath", "./reference/voice_irodori.wav"))
-
-    @property
-    def workflow_path(self) -> Path:
-        top = self.raw.get("workflowPath")
-        if top:
-            return resolve_path(self.root, top)
-        comfy = self.comfyui
-        return resolve_path(self.root, comfy.get("workflowPath", "./reference/tts_e2e_irodori.json"))
 
     @property
     def comfyui(self) -> dict[str, Any]:
@@ -300,13 +298,88 @@ class RuntimeConfig:
         return normalize_ext(str(self.comfyui.get("defaultAudioExt", ".wav")))
 
     @property
-    def workflow_patch(self) -> dict[str, Any]:
-        value = self.raw.get("workflowPatch")
-        return value if isinstance(value, dict) else {}
-
-    @property
     def debug_output_dir(self) -> Path:
         return resolve_path(self.root, "./runtime/debug")
+
+    @property
+    def voice_profiles(self) -> dict[str, dict[str, Any]]:
+        raw_profiles = self.raw.get("voiceProfiles")
+        if not isinstance(raw_profiles, dict):
+            return {}
+
+        profiles: dict[str, dict[str, Any]] = {}
+        for key, value in raw_profiles.items():
+            profile_id = str(key or "").strip()
+            if not profile_id:
+                continue
+            if isinstance(value, dict):
+                profiles[profile_id] = value
+        return profiles
+
+    def has_voice_profiles(self) -> bool:
+        return bool(self.voice_profiles)
+
+    def available_profile_ids(self) -> list[str]:
+        if self.has_voice_profiles():
+            return list(self.voice_profiles.keys())
+        return [self.default_voice_profile]
+
+    def profile_label(self, profile_id: str) -> str:
+        profile = self.voice_profiles.get(profile_id)
+        if not isinstance(profile, dict):
+            return profile_id
+        label = str(profile.get("label") or "").strip()
+        return label or profile_id
+
+    def resolve_profile_id(self, profile_id: str | None) -> str:
+        picked = str(profile_id or "").strip()
+        if not picked:
+            picked = self.default_voice_profile
+
+        if self.has_voice_profiles():
+            if picked not in self.voice_profiles:
+                raise BridgeError(f"unknown voiceProfile: {picked}")
+            return picked
+
+        legacy = self.default_voice_profile
+        if picked != legacy:
+            raise BridgeError(f"unknown voiceProfile: {picked}")
+        return legacy
+
+    def _legacy_profile_value(self, field: str, fallback: Any) -> Any:
+        value = self.raw.get(field)
+        if value not in (None, ""):
+            return value
+        if field == "workflowPath":
+            return self.comfyui.get("workflowPath", fallback)
+        return fallback
+
+    def profile_config(self, profile_id: str | None) -> "ActiveVoiceProfile":
+        resolved_id = self.resolve_profile_id(profile_id)
+
+        if self.has_voice_profiles():
+            profile_raw = self.voice_profiles.get(resolved_id) or {}
+            reference_value = profile_raw.get("referenceAudioPath", self._legacy_profile_value("referenceAudioPath", "./reference/voice_irodori.wav"))
+            workflow_value = profile_raw.get("workflowPath", self._legacy_profile_value("workflowPath", "./reference/tts_e2e_irodori.json"))
+            patch_value = profile_raw.get("workflowPatch")
+            if not isinstance(patch_value, dict):
+                patch_value = self.raw.get("workflowPatch")
+            workflow_patch = patch_value if isinstance(patch_value, dict) else {}
+            label = str(profile_raw.get("label") or "").strip() or resolved_id
+        else:
+            reference_value = self._legacy_profile_value("referenceAudioPath", "./reference/voice_irodori.wav")
+            workflow_value = self._legacy_profile_value("workflowPath", "./reference/tts_e2e_irodori.json")
+            patch_value = self.raw.get("workflowPatch")
+            workflow_patch = patch_value if isinstance(patch_value, dict) else {}
+            label = resolved_id
+
+        return ActiveVoiceProfile(
+            id=resolved_id,
+            label=label,
+            reference_audio_path=resolve_path(self.root, reference_value),
+            workflow_path=resolve_path(self.root, workflow_value),
+            workflow_patch=workflow_patch,
+        )
 
 
 @dataclass(frozen=True)
@@ -350,6 +423,15 @@ class SynthesisResult:
     reference_audio: ReferenceAudioDebug
 
 
+@dataclass(frozen=True)
+class ActiveVoiceProfile:
+    id: str
+    label: str
+    reference_audio_path: Path
+    workflow_path: Path
+    workflow_patch: dict[str, Any]
+
+
 def selector_from_config(raw: dict[str, Any], key: str, fallback_classes: tuple[str, ...], fallback_keys: tuple[str, ...], default_enabled: bool = True) -> PatchSelector:
     block = raw.get(key)
     if not isinstance(block, dict):
@@ -371,11 +453,45 @@ def load_config() -> RuntimeConfig:
     return cfg
 
 
-def ensure_required_files(config: RuntimeConfig) -> None:
-    if not config.workflow_path.is_file():
-        raise BridgeError(f"workflowPath not found: {config.workflow_path}")
-    if not config.reference_audio_path.is_file():
-        raise BridgeError(f"referenceAudioPath not found: {config.reference_audio_path}")
+def normalize_workflow_version(raw: Any) -> str | None:
+    value = str(raw or "").strip().lower()
+    if not value:
+        return None
+    if value.startswith("irodori-"):
+        tail = value.split("-", 1)[1]
+        return f"irodori-{tail}" if tail else None
+    if value in {"2", "v2"}:
+        return "irodori-v2"
+    if value in {"3", "v3"}:
+        return "irodori-v3"
+    return None
+
+
+def resolve_voice_profile_id(config: RuntimeConfig, payload: dict[str, Any]) -> str:
+    requested = str(payload.get("voiceProfile") or "").strip()
+    if requested:
+        return config.resolve_profile_id(requested)
+
+    requested_version = normalize_workflow_version(payload.get("workflowVersion"))
+    if requested_version:
+        return config.resolve_profile_id(requested_version)
+    if payload.get("workflowVersion") not in (None, ""):
+        raise BridgeError(f"unknown workflowVersion: {payload.get('workflowVersion')}")
+    return config.resolve_profile_id(None)
+
+
+def available_voice_profiles_payload(config: RuntimeConfig) -> list[dict[str, str]]:
+    payload: list[dict[str, str]] = []
+    for profile_id in config.available_profile_ids():
+        payload.append({"id": profile_id, "label": config.profile_label(profile_id)})
+    return payload
+
+
+def ensure_required_files(config: RuntimeConfig, profile: ActiveVoiceProfile) -> None:
+    if not profile.workflow_path.is_file():
+        raise BridgeError(f"workflowPath not found for {profile.id}: {profile.workflow_path}")
+    if not profile.reference_audio_path.is_file():
+        raise BridgeError(f"referenceAudioPath not found for {profile.id}: {profile.reference_audio_path}")
     if not config.comfyui_input_dir.is_dir():
         raise BridgeError(f"comfyui.inputDir not found: {config.comfyui_input_dir}")
     if not config.comfyui_output_dir.is_dir():
@@ -383,6 +499,11 @@ def ensure_required_files(config: RuntimeConfig) -> None:
 
     config.audio_output_dir.mkdir(parents=True, exist_ok=True)
     config.debug_output_dir.mkdir(parents=True, exist_ok=True)
+
+
+def ensure_all_profile_files(config: RuntimeConfig) -> None:
+    for profile_id in config.available_profile_ids():
+        ensure_required_files(config, config.profile_config(profile_id))
 
 
 def json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict[str, Any]) -> None:
@@ -455,11 +576,14 @@ def safe_request_id(value: str | None) -> str:
     return safe[:120] or f"req-{uuid.uuid4().hex[:8]}"
 
 
-def safe_basename(text: str, request_id: str | None = None) -> str:
+def safe_basename(text: str, request_id: str | None = None, voice_profile: str = "voice") -> str:
     digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
     prefix = request_id or str(uuid.uuid4())[:8]
-    safe = "".join(ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in prefix)[:32]
-    return f"chatgpt-{safe}-{digest}"
+    safe_request = "".join(ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in prefix).strip("-")
+    safe_request = safe_request[:32] or f"req-{uuid.uuid4().hex[:8]}"
+    safe_profile = "".join(ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in str(voice_profile or "voice")).strip("-")
+    safe_profile = (safe_profile or "voice")[:40]
+    return f"chatgpt-{safe_profile}-{safe_request}-{digest}"
 
 
 def replace_tokens(value: Any, basename: str) -> Any:
@@ -668,6 +792,7 @@ def build_tts_input_hash(prompt: dict[str, Any], save_target: PatchTarget) -> st
 
 def build_summary(
     config: RuntimeConfig,
+    profile: ActiveVoiceProfile,
     request_id: str,
     text_hash: str,
     result: SynthesisResult,
@@ -684,10 +809,10 @@ def build_summary(
     return {
         "requestId": request_id,
         "promptId": result.prompt_id,
-        "voiceProfile": config.voice_profile,
+        "voiceProfile": profile.id,
         "engine": config.engine,
-        "workflowPath": str(config.workflow_path),
-        "referenceAudioPath": str(config.reference_audio_path),
+        "workflowPath": str(profile.workflow_path),
+        "referenceAudioPath": str(profile.reference_audio_path),
         "textHash": text_hash,
         "workflowHash": result.workflow_hash,
         "patchedPromptHash": result.patched_prompt_hash,
@@ -719,6 +844,7 @@ def build_summary(
 
 def persist_debug_bundle(
     config: RuntimeConfig,
+    profile: ActiveVoiceProfile,
     request_id: str,
     text: str,
     text_hash: str,
@@ -732,10 +858,10 @@ def persist_debug_bundle(
         "textHash": text_hash,
         "textLength": len(text),
         "receivedAt": received_at,
-        "voiceProfile": config.voice_profile,
+        "voiceProfile": profile.id,
         "engine": config.engine,
     }
-    summary_payload = build_summary(config=config, request_id=request_id, text_hash=text_hash, result=result)
+    summary_payload = build_summary(config=config, profile=profile, request_id=request_id, text_hash=text_hash, result=result)
     write_json_file(base / "request.json", request_payload)
     write_json_file(base / "prompt.json", result.prompt)
     write_json_file(base / "summary.json", summary_payload)
@@ -842,6 +968,7 @@ def list_audio_files(path: Path) -> list[Path]:
 
 def patch_workflow_prompt(
     config: RuntimeConfig,
+    profile: ActiveVoiceProfile,
     template_prompt: dict[str, Any],
     text: str,
     basename: str,
@@ -850,7 +977,7 @@ def patch_workflow_prompt(
     if not isinstance(prompt, dict):
         raise BridgeError("workflow prompt must be an object")
 
-    patch_cfg = config.workflow_patch
+    patch_cfg = profile.workflow_patch
     text_selector = selector_from_config(
         patch_cfg,
         "text",
@@ -883,14 +1010,14 @@ def patch_workflow_prompt(
         raise BridgeError("save-audio patch target was not found in workflow")
     apply_patch_value(prompt, save_target, basename)
 
-    stat = config.reference_audio_path.stat()
-    ref_hash = sha1_file(config.reference_audio_path)
+    stat = profile.reference_audio_path.stat()
+    ref_hash = sha1_file(profile.reference_audio_path)
     ref_mtime = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
 
     reference_target = find_patch_target(prompt, reference_selector, "reference")
     if reference_target is None:
         reference_debug = ReferenceAudioDebug(
-            configured_path=str(config.reference_audio_path),
+            configured_path=str(profile.reference_audio_path),
             reference_audio_hash=ref_hash,
             reference_audio_size=int(stat.st_size),
             reference_audio_mtime=ref_mtime,
@@ -906,13 +1033,13 @@ def patch_workflow_prompt(
         if isinstance(existing_value, str) and existing_value.strip():
             fallback_name = Path(existing_value).name
 
-        copied_name, copied_hash, copied_size, copied_mtime = copy_reference_to_comfy_input(config.reference_audio_path, config.comfyui_input_dir)
+        copied_name, copied_hash, copied_size, copied_mtime = copy_reference_to_comfy_input(profile.reference_audio_path, config.comfyui_input_dir)
         if fallback_name and fallback_name != copied_name:
             alias_target = (config.comfyui_input_dir / fallback_name).resolve()
-            shutil.copy2(config.reference_audio_path, alias_target)
+            shutil.copy2(profile.reference_audio_path, alias_target)
         apply_patch_value(prompt, reference_target, copied_name)
         reference_debug = ReferenceAudioDebug(
-            configured_path=str(config.reference_audio_path),
+            configured_path=str(profile.reference_audio_path),
             reference_audio_hash=copied_hash,
             reference_audio_size=copied_size,
             reference_audio_mtime=copied_mtime,
@@ -924,15 +1051,16 @@ def patch_workflow_prompt(
     return prompt, text_target, save_target, reference_target, reference_debug
 
 
-def synthesize_comfyui_workflow(config: RuntimeConfig, text: str, request_id: str) -> SynthesisResult:
-    ensure_required_files(config)
+def synthesize_comfyui_workflow(config: RuntimeConfig, profile: ActiveVoiceProfile, text: str, request_id: str) -> SynthesisResult:
+    ensure_required_files(config, profile)
 
-    basename = safe_basename(text, request_id)
-    raw_workflow, template_prompt = load_workflow_prompt(config.workflow_path)
+    basename = safe_basename(text, request_id, profile.id)
+    raw_workflow, template_prompt = load_workflow_prompt(profile.workflow_path)
     workflow_hash = hash_json(raw_workflow)
 
     prompt, text_target, save_target, reference_target, reference_audio = patch_workflow_prompt(
         config=config,
+        profile=profile,
         template_prompt=template_prompt,
         text=text,
         basename=basename,
@@ -1046,18 +1174,21 @@ class Handler(BaseHTTPRequestHandler):
         try:
             config = load_config()
             if parsed.path == "/health":
-                ensure_required_files(config)
+                ensure_all_profile_files(config)
+                default_profile = config.profile_config(config.default_voice_profile)
                 json_response(
                     self,
                     HTTPStatus.OK,
                     {
                         "ok": True,
                         "engine": config.engine,
-                        "voiceProfile": config.voice_profile,
+                        "voiceProfile": default_profile.id,
+                        "defaultVoiceProfile": default_profile.id,
+                        "availableVoiceProfiles": available_voice_profiles_payload(config),
                         "audioOutputDir": str(config.audio_output_dir),
                         "publicBaseUrl": config.public_base_url,
-                        "referenceAudioPath": str(config.reference_audio_path),
-                        "workflowPath": str(config.workflow_path),
+                        "referenceAudioPath": str(default_profile.reference_audio_path),
+                        "workflowPath": str(default_profile.workflow_path),
                         "comfyuiBaseUrl": config.comfyui_base_url,
                         "comfyuiStartupBat": config.comfyui_startup_bat,
                         "comfyuiInputDir": str(config.comfyui_input_dir),
@@ -1087,10 +1218,13 @@ class Handler(BaseHTTPRequestHandler):
             request_id = safe_request_id(str(payload.get("requestId") or ""))
             received_at = utc_now_iso()
             text_hash = sha1_text(text)
+            profile_id = resolve_voice_profile_id(config, payload)
+            profile = config.profile_config(profile_id)
 
-            result = synthesize_comfyui_workflow(config, text, request_id)
+            result = synthesize_comfyui_workflow(config, profile, text, request_id)
             persist_debug_bundle(
                 config=config,
+                profile=profile,
                 request_id=request_id,
                 text=text,
                 text_hash=text_hash,
@@ -1106,7 +1240,7 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "ok": True,
                     "engine": config.engine,
-                    "voiceProfile": config.voice_profile,
+                    "voiceProfile": profile.id,
                     "requestId": request_id,
                     "audioUrl": audio_url,
                     "audioPath": str(result.audio_path),
@@ -1151,7 +1285,8 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> int:
     try:
         config = load_config()
-        ensure_required_files(config)
+        ensure_all_profile_files(config)
+        default_profile = config.profile_config(config.default_voice_profile)
         config.audio_output_dir.mkdir(parents=True, exist_ok=True)
     except Exception as exc:  # noqa: BLE001
         print(f"[FATAL] {exc}", file=sys.stderr)
@@ -1161,9 +1296,10 @@ def main() -> int:
     httpd = ThreadingHTTPServer(address, Handler)
     print(f"Local Voice Bridge listening on http://{config.host}:{config.port}")
     print(f"engine={config.engine}")
-    print(f"voiceProfile={config.voice_profile}")
-    print(f"workflowPath={config.workflow_path}")
-    print(f"referenceAudioPath={config.reference_audio_path}")
+    print(f"defaultVoiceProfile={default_profile.id}")
+    print(f"workflowPath={default_profile.workflow_path}")
+    print(f"referenceAudioPath={default_profile.reference_audio_path}")
+    print(f"availableVoiceProfiles={','.join(config.available_profile_ids())}")
     print(f"audioOutputDir={config.audio_output_dir}")
     print("health: /health")
 

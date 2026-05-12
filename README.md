@@ -1,55 +1,60 @@
-# chatgpt-local-voice-bridge
+﻿# chatgpt-local-voice-bridge
 
-Web版ChatGPTのassistant返答から冒頭preview（最大2行/80文字）だけを抽出し、  
-ComfyUI workflowで音声生成して再生するローカルブリッジです。
+ChatGPT Web の assistant 返答を短いチャンクに分割し、ComfyUI workflow 経由でローカル再生するブリッジです。
 
-## 現在の標準プロファイル
+## 主要機能
 
-- engine: `comfyui_workflow`
-- voice profile: `irodori`
-- 参照音源: `local-api/reference/voice_irodori.wav`
-- workflow JSON: `local-api/reference/tts_e2e_irodori.json`
-- ComfyUI起動バッチ: `D:/ComfyUI_TTS_E2E_SANDBOX/start_comfyui_tts_sandbox.bat`
+- エンジン: `comfyui_workflow` のみ
+- Voice Profile を拡張UIで切替
+  - `Irodori v2`
+  - `Irodori v3`
+- 送信は常に短い 1 チャンクのみ（全文一括送信しない）
+- キャッシュ再生
+  - `Read`: 先頭チャンク（chunk 0）を読む。生成済みなら再生成しない
+  - `Next`: 次チャンクを 1 つ読む
+  - `Regen`: 現在チャンクを強制再生成
+  - `Replay`: 最後に再生した音声を再生成せず再生
+  - `Auto`: 最新返答の chunk 0 だけを1回自動送信
+
+## ワークフロー
+
+- v2 workflow: `local-api/reference/tts_e2e_irodori.json`
+- v3 workflow: `D:/ComfyUI_TTS_E2E_SANDBOX/ComfyUI/user/default/workflows/tts_e2e_irodori_v3.json`
+
+## 設定
+
+`local-api/config.local.json` で `voiceProfiles` を使います（`voiceProfiles` がある場合はこちらを優先）。
+
+- `defaultVoiceProfile`: 既定profile
+- `voiceProfiles.irodori-v2`
+- `voiceProfiles.irodori-v3`
+
+互換のため、従来のトップレベル設定（`voiceProfile`, `referenceAudioPath`, `workflowPath`, `workflowPatch`）も引き続きサポートします。
+
+## キャッシュキー
+
+profile衝突回避のため、拡張のキャッシュキーは以下要素を含みます。
+
+- `voiceProfile`
+- `messageKey`
+- `chunkIndex`
+- 正規化済みチャンク本文
 
 ## 起動
-
-推奨:
 
 ```cmd
 run-voice-stack.cmd
 ```
 
-互換ラッパー:
+最小確認:
 
-```cmd
-run-qwen-stack.cmd
-```
+- [http://127.0.0.1:8765/health](http://127.0.0.1:8765/health)
+- `engine=comfyui_workflow`
+- `availableVoiceProfiles` に `irodori-v2`, `irodori-v3`
 
-## Chrome拡張の操作
+## 関連ドキュメント
 
-- `Auto`: 自動読み上げON/OFF
-- `Read`: 最新assistant応答のpreviewを読む（キャッシュがあれば再生成しない）
-- `Regen`: 最新assistant応答のpreviewを強制再生成して読む
-- `Replay`: 最後に再生成功した音声を再生成なしで再生
-- `Stop`: 再生停止
-
-送信は常に冒頭previewのみです。全文は送信しません。
-
-## 設定ファイル
-
-- Git管理: `local-api/config.example.json`, `local-api/voices/irodori.example.json`
-- Git管理外: `local-api/config.local.json`
-
-`config.local.json` では少なくとも以下を設定してください。
-
-- `referenceAudioPath: ./reference/voice_irodori.wav`
-- `workflowPath: ./reference/tts_e2e_irodori.json`
-- `comfyui.startupBat: D:/ComfyUI_TTS_E2E_SANDBOX/start_comfyui_tts_sandbox.bat`
-
-## 主要ドキュメント
-
-- [起動方法](docs/startup.md)
-- [ComfyUI workflow運用](docs/comfyui-tts-workflow.md)
-- [参照音源](docs/reference-audio.md)
-- [トラブルシュート](docs/troubleshooting.md)
-- [受け入れ条件](docs/acceptance.md)
+- [startup](docs/startup.md)
+- [comfyui-tts-workflow](docs/comfyui-tts-workflow.md)
+- [troubleshooting](docs/troubleshooting.md)
+- [acceptance](docs/acceptance.md)

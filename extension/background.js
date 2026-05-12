@@ -1,10 +1,11 @@
 const NATIVE_HOST_NAME = 'com.chatgpt.local_voice_bridge';
-const SETTINGS_VERSION = 2;
+const SETTINGS_VERSION = 3;
 const DEFAULT_SETTINGS = {
   settingsVersion: SETTINGS_VERSION,
   enabled: false,
   apiUrl: 'http://127.0.0.1:8765/v1/speak',
   healthUrl: 'http://127.0.0.1:8765/health',
+  voiceProfile: 'irodori-v2',
   previewMaxLines: 2,
   previewMaxChars: 80,
   previewMinChars: 25,
@@ -23,6 +24,7 @@ async function migrateSettings() {
     ...DEFAULT_SETTINGS,
     ...current,
     settingsVersion: SETTINGS_VERSION,
+    voiceProfile: String(current.voiceProfile || DEFAULT_SETTINGS.voiceProfile),
     previewMaxLines: DEFAULT_SETTINGS.previewMaxLines,
     previewMaxChars: DEFAULT_SETTINGS.previewMaxChars,
     previewMinChars: DEFAULT_SETTINGS.previewMinChars,
@@ -59,9 +61,10 @@ async function postJson(url, payload) {
   return body;
 }
 
-async function speak(text, requestId) {
+async function speak(text, requestId, voiceProfile) {
   const settings = await getSettings();
-  return postJson(settings.apiUrl, { text, requestId, source: 'chatgpt-web' });
+  const pickedProfile = String(voiceProfile || settings.voiceProfile || DEFAULT_SETTINGS.voiceProfile);
+  return postJson(settings.apiUrl, { text, requestId, source: 'chatgpt-web', voiceProfile: pickedProfile });
 }
 
 async function health() {
@@ -128,7 +131,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || typeof message.type !== 'string') return false;
 
   if (message.type === 'speak') {
-    speak(String(message.text || ''), String(message.requestId || ''))
+    speak(String(message.text || ''), String(message.requestId || ''), String(message.voiceProfile || ''))
       .then((payload) => sendResponse({ ok: true, payload }))
       .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
     return true;

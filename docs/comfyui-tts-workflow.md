@@ -1,33 +1,55 @@
-# ComfyUI TTS Workflow
+﻿# ComfyUI TTS Workflow
 
-このリポジトリは `comfyui_workflow` エンジンで、ComfyUI workflow JSONを実行します。
+このプロジェクトは `comfyui_workflow` エンジンで ComfyUI workflow JSON を実行します。
 
-## 標準ファイル
+## Voice Profile と workflow
 
-- workflow: `local-api/reference/tts_e2e_irodori.json`
-- reference audio: `local-api/reference/voice_irodori.wav`
-- config example: `local-api/config.example.json`
-- voice profile example: `local-api/voices/irodori.example.json`
+- `irodori-v2`
+  - workflow: `local-api/reference/tts_e2e_irodori.json`
+- `irodori-v3`
+  - workflow: `D:/ComfyUI_TTS_E2E_SANDBOX/ComfyUI/user/default/workflows/tts_e2e_irodori_v3.json`
 
-## 注入ルール（Python側）
+`/v1/speak` は `voiceProfile`（または `workflowVersion`）で profile を解決します。
 
-`local-api/server.py` が実行時に更新するのは次のみです。
+- 未指定: `defaultVoiceProfile`
+- 不明な profile/version: `400`
 
-- 本文: workflow内の本文ノード入力（例: `IrodoriTTSSampler.text`）
-- 保存名: SaveAudio系入力（例: `SaveAudio.filename_prefix`）
-- 参照音源: 参照音源ノード入力（例: `IrodoriTTSReferenceAudio.ref_audio`）
+## config 設計
 
-それ以外の seed/model/style/speed/sampling などは workflow JSON 側の値をそのまま使います。
+`voiceProfiles` 方式（推奨）:
 
-## workflowPatch
+- `defaultVoiceProfile`
+- `voiceProfiles.<profileId>.referenceAudioPath`
+- `voiceProfiles.<profileId>.workflowPath`
+- `voiceProfiles.<profileId>.workflowPatch`
 
-注入先は `config.local.json` の `workflowPatch` で上書きできます。
-未指定時は `classTypeIncludes` と `inputKeys` の既定候補で自動検出します。
+互換性:
 
-## 参照音源の扱い
+- 従来のトップレベル設定（`voiceProfile`, `referenceAudioPath`, `workflowPath`, `workflowPatch`）は引き続き有効
+- ただし `voiceProfiles` がある場合は `voiceProfiles` を優先
 
-- `voice_irodori.wav` の存在確認
-- SHA1計算
-- 参照音源ノードが存在する場合のみ `inputDir` へ `voice_irodori-<sha12>.wav` としてコピー
-- workflowへコピー後ファイル名を注入
-- 参照音源ノードがないworkflowでは注入せず `referenceAudioUsed=false`
+## /health
+
+`/health` は以下を返します。
+
+- `engine`
+- `defaultVoiceProfile`
+- `availableVoiceProfiles`（`id`, `label`）
+- 既定profileの `workflowPath` / `referenceAudioPath`
+
+## debug summary
+
+`local-api/runtime/debug/<requestId>/summary.json` に少なくとも次が出力されます。
+
+- `voiceProfile`
+- `workflowPath`
+- `textHash`
+- `ttsInputHash`
+- `referenceAudioHash`
+- `audioPath`
+
+## 出力ファイル名
+
+音声ファイル名は profile を含みます。
+
+- 例: `chatgpt-irodori-v3-<requestId>-<hash>.flac`
