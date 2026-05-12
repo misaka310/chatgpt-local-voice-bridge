@@ -26,6 +26,7 @@
 - `local-api/reference/voice.wav` が存在するか
 - `local-api/reference/voice.txt` が存在するか
 - `local-api/workflows/qwen3_clone_api.json` が存在するか
+- 個人workflowを使う場合、`config.local.json` の `comfyui.workflowPath` が実在ファイルを指しているか
 - `comfyui.inputDir` / `comfyui.outputDir` が存在するか
 - ComfyUI が起動しているか
 - `comfyui.baseUrl` が `http://127.0.0.1:8190` か

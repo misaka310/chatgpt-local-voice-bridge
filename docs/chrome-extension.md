@@ -5,6 +5,7 @@
 - ChatGPTのassistant応答DOMを監視
 - 冒頭preview（最大3行/120文字）を抽出
 - 1応答につき1回だけ `/v1/speak` へ送信
+- ChatGPT全文は送信しない
 - 返却された `/audio/...` を取得して再生
 
 ## パネル
@@ -13,6 +14,7 @@
 - `Start API` / `Stop API`: Native host経由
 - `最新を読む`: 最新assistant応答の冒頭previewを手動送信
 - `Auto ON/OFF`: 自動送信切替
+- 初期状態は `Auto OFF`（安全側デフォルト）
 
 ## Native host未導入時
 

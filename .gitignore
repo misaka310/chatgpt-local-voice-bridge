@@ -21,8 +21,10 @@ out/
 # local runtime
 local-api/runtime/
 local-api/.venv/
+local-api/config.json
 local-api/config.local.json
 local-api/logs/
+local-api/workflows/*.local.json
 
 # generated audio
 local-api/audio/

@@ -5,10 +5,13 @@
 - ローカルAPIは `127.0.0.1` 待受
 - 外部公開しない
 - 参照音源/参照文字起こし/ローカル設定をGitに入れない
+- ChatGPTからは冒頭previewのみ送信し、全文は送信しない
 
 ## Git除外対象
 
 - `local-api/config.local.json`
+- `local-api/config.json`（ローカル互換用）
+- `local-api/workflows/*.local.json`（個人調整workflow）
 - `local-api/runtime/`
 - `local-api/logs/`
 - `local-api/reference/*.wav` / `*.txt`

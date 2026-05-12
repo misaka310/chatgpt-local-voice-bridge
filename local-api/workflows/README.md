@@ -15,8 +15,10 @@
 
 ## Git管理方針
 
-- 個人パスや秘匿情報が入る場合は実workflowをGit管理しない
-- 共有用として `qwen3_clone_api.example.json` を維持する
+- `qwen3_clone_api.json` は標準workflowとしてGit追跡する
+- 構造説明用として `qwen3_clone_api.example.json` を維持する
+- 個人調整版は `qwen3_clone_api.local.json` として作成し、Git管理しない
+- 個人調整版を使う場合は `config.local.json` の `comfyui.workflowPath` で切り替える
 
 ## 実行時注入（server.py）
 

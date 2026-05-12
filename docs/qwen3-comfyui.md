@@ -4,8 +4,10 @@
 
 ## 実workflow
 
-- `local-api/workflows/qwen3_clone_api.json`
+- `local-api/workflows/qwen3_clone_api.json`（標準・Git追跡）
 - 32_dotitao-room 実績構成（Qwen3Loader / LoadAudio / Qwen3VoiceClone / SaveAudio）を移植
+- 個人調整が必要な場合は `local-api/workflows/qwen3_clone_api.local.json` を作成し、
+  `config.local.json` の `comfyui.workflowPath` で切り替える（`.local.json` はGit管理外）
 
 ## 注入ルール（Python側）
 

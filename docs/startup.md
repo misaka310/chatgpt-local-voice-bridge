@@ -38,8 +38,10 @@ scripts\start-qwen-stack.cmd
 
 ## 拡張UIの運用
 
+- 初期状態は `Auto OFF`（必要時のみ `Auto ON`）
 - 拡張の `Read Latest` は同じpreviewなら生成済み音声を再利用する
 - `Replay` は最後に再生成功した音声を再生成なしで再生する
+- 送信対象は冒頭previewのみ（最大3行/120文字）で、全文送信しない
 - APIの起動/停止は `run-qwen-stack.cmd` 側で行い、拡張UIからは実行しない
 
 ## local-api 単体起動（必要時のみ）

@@ -1,6 +1,6 @@
 (() => {
   const DEFAULT_SETTINGS = {
-    enabled: true,
+    enabled: false,
     apiUrl: 'http://127.0.0.1:8765/v1/speak',
     healthUrl: 'http://127.0.0.1:8765/health',
     previewMaxLines: 3,

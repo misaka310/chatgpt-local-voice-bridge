@@ -12,13 +12,20 @@
 
 - `local-api/reference/voice.wav`
 - `local-api/reference/voice.txt`
-- `local-api/workflows/qwen3_clone_api.json`
+- `local-api/workflows/qwen3_clone_api.json`（標準workflow、Git追跡）
 
 ## 設定
 
-- 基本設定: `local-api/config.example.json`
-- ローカル上書き（Git管理外）: `local-api/config.local.json`
-- Qwen3設定例: `local-api/config.qwen3.example.json`
+- 標準例（Git追跡）: `local-api/config.example.json`
+- 実運用のローカル上書き（Git管理外）: `local-api/config.local.json`
+- Qwen3設定例（Git追跡）: `local-api/config.qwen3.example.json`
+- `local-api/config.json` はローカル互換用（任意、Git管理外）
+
+## workflowの使い分け
+
+- 標準は `local-api/workflows/qwen3_clone_api.json` を使う
+- 個人調整版workflowを使う場合は `local-api/workflows/qwen3_clone_api.local.json` を作成し、
+  `config.local.json` の `comfyui.workflowPath` で切り替える
 
 ## 起動
 
