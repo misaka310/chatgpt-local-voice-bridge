@@ -27,6 +27,7 @@
   let inspectTimer = null;
   let sequence = 0;
   let lastAudio = null;
+  let lastPreviewEntry = null;
 
   let panel = null;
   let statusNode = null;
@@ -191,6 +192,28 @@
 
   function getCacheKey(preview) {
     return normalizeText(preview);
+  }
+
+  function buildLatestPreviewEntry() {
+    const nodes = getAssistantNodes();
+    if (!nodes.length) return null;
+
+    const latest = nodes[nodes.length - 1];
+    const text = extractAssistantText(latest);
+    const preview = extractSpeakPreview(text, {
+      maxLines: Number(settings.previewMaxLines || DEFAULT_SETTINGS.previewMaxLines),
+      maxChars: Number(settings.previewMaxChars || DEFAULT_SETTINGS.previewMaxChars),
+      minChars: Number(settings.previewMinChars || DEFAULT_SETTINGS.previewMinChars),
+    });
+    if (!preview) return null;
+
+    return {
+      node: latest,
+      text,
+      preview,
+      key: getCacheKey(preview),
+      capturedAt: Date.now(),
+    };
   }
 
   function cacheAudio(key, audioUrl, text) {
@@ -469,6 +492,13 @@
       minChars: Number(settings.previewMinChars || DEFAULT_SETTINGS.previewMinChars),
     });
     if (!preview) return;
+    lastPreviewEntry = {
+      key: getCacheKey(preview),
+      preview,
+      textLength: text.length,
+      capturedAt: Date.now(),
+      nodeKey: item.key,
+    };
 
     const now = Date.now();
     if (shouldSendNow(preview, now, item)) {
@@ -728,30 +758,23 @@
     });
 
     const readLatestButton = createButton('Read Latest', () => {
-      const nodes = getAssistantNodes();
-      if (!nodes.length) {
+      const entry = buildLatestPreviewEntry();
+      if (!entry) {
         setPanelState('Error', 'No assistant response');
         return;
       }
 
-      const latest = nodes[nodes.length - 1];
-      const text = extractAssistantText(latest);
-      const preview = extractSpeakPreview(text, {
-        maxLines: Number(settings.previewMaxLines || DEFAULT_SETTINGS.previewMaxLines),
-        maxChars: Number(settings.previewMaxChars || DEFAULT_SETTINGS.previewMaxChars),
-        minChars: Number(settings.previewMinChars || DEFAULT_SETTINGS.previewMinChars),
-      });
-
-      if (!preview) {
-        setPanelState('Error', 'Preview is empty');
-        return;
-      }
-
-      const key = getCacheKey(preview);
-      const state = ensureElementState(latest, text);
+      const state = ensureElementState(entry.node, entry.text);
       state.sent = true;
-      latest.dataset[AUTO_SENT_FLAG] = '1';
-      void readPreview(preview, key, latest, { forceGenerate: false, fallbackGenerateOnCacheFail: true });
+      entry.node.dataset[AUTO_SENT_FLAG] = '1';
+      lastPreviewEntry = {
+        key: entry.key,
+        preview: entry.preview,
+        textLength: entry.text.length,
+        capturedAt: entry.capturedAt,
+        nodeKey: state.key,
+      };
+      void readPreview(entry.preview, entry.key, entry.node, { forceGenerate: false, fallbackGenerateOnCacheFail: true });
     });
 
     replayButton = createButton('Replay', () => {
@@ -798,6 +821,51 @@
     });
   }
 
+  async function forceGenerateLatestPreview() {
+    const entry = buildLatestPreviewEntry();
+    if (!entry) {
+      setPanelState('Error', 'No assistant response');
+      return { ok: false, error: 'No assistant response' };
+    }
+
+    const state = ensureElementState(entry.node, entry.text);
+    state.sent = true;
+    entry.node.dataset[AUTO_SENT_FLAG] = '1';
+    lastPreviewEntry = {
+      key: entry.key,
+      preview: entry.preview,
+      textLength: entry.text.length,
+      capturedAt: entry.capturedAt,
+      nodeKey: state.key,
+    };
+
+    try {
+      await generateAndQueue(entry.preview, entry.key, entry.node);
+      setPanelState('Qwen Ready', 'Force generated');
+      return { ok: true, preview: entry.preview, key: entry.key };
+    } catch (error) {
+      setPanelState('Qwen Offline', error.message || String(error));
+      return { ok: false, error: error.message || String(error) };
+    }
+  }
+
+  function clearAllPreviewCache() {
+    audioCache.clear();
+    setLastAudio(null);
+    setPanelState('Idle', 'Preview cache cleared');
+  }
+
+  function registerDebugApi() {
+    globalThis.localVoiceBridgeDebug = {
+      forceGenerateLatest: () => forceGenerateLatestPreview(),
+      clearCache: () => {
+        clearAllPreviewCache();
+        return { ok: true };
+      },
+      getLastPreview: () => (lastPreviewEntry ? { ...lastPreviewEntry } : null),
+    };
+  }
+
   async function loadSettings() {
     if (!globalThis.chrome || !chrome.storage || !chrome.storage.local) {
       settings = { ...DEFAULT_SETTINGS };
@@ -811,6 +879,7 @@
 
   async function start() {
     await loadSettings();
+    registerDebugApi();
     createPanel();
     markExistingMessagesAsSeen();
     await probeApiStatus();

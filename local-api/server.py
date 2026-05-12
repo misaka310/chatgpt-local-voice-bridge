@@ -13,6 +13,7 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -252,6 +253,35 @@ class RuntimeConfig:
     def default_audio_ext(self) -> str:
         return normalize_ext(str(self.comfyui.get("defaultAudioExt", ".wav")))
 
+    @property
+    def debug_output_dir(self) -> Path:
+        return resolve_path(self.root, "./runtime/debug")
+
+
+@dataclass(frozen=True)
+class ReferenceCopyDebug:
+    load_audio_filename: str
+    ref_audio_hash: str
+    ref_audio_size: int
+    ref_audio_mtime: str
+
+
+@dataclass(frozen=True)
+class SynthesisResult:
+    audio_path: Path
+    prompt: dict[str, Any]
+    prompt_id: str
+    history_entry: dict[str, Any]
+    history_raw: dict[str, Any]
+    workflow_hash: str
+    patched_prompt_hash: str
+    ref_text: str
+    ref_text_hash: str
+    ref_copy: ReferenceCopyDebug
+    qwen_inputs: dict[str, Any]
+    load_audio_inputs: dict[str, Any]
+    save_audio_inputs: dict[str, Any]
+
 
 def load_config() -> RuntimeConfig:
     cfg = RuntimeConfig(raw=load_config_raw(), root=ROOT)
@@ -272,6 +302,7 @@ def ensure_required_files(config: RuntimeConfig) -> None:
     if not config.comfyui_output_dir.is_dir():
         raise BridgeError(f"comfyui.outputDir not found: {config.comfyui_output_dir}")
     config.audio_output_dir.mkdir(parents=True, exist_ok=True)
+    config.debug_output_dir.mkdir(parents=True, exist_ok=True)
 
 
 def json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict[str, Any]) -> None:
@@ -311,6 +342,39 @@ def sanitize_text(text: Any) -> str:
     return value
 
 
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def sha1_bytes(data: bytes) -> str:
+    return hashlib.sha1(data).hexdigest()
+
+
+def sha1_text(value: str) -> str:
+    return sha1_bytes(value.encode("utf-8"))
+
+
+def sha1_file(path: Path) -> str:
+    digest = hashlib.sha1()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def hash_json(value: Any) -> str:
+    canonical = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return sha1_text(canonical)
+
+
+def safe_request_id(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        raw = f"req-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
+    safe = "".join(ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in raw).strip("-")
+    return safe[:120] or f"req-{uuid.uuid4().hex[:8]}"
+
+
 def safe_basename(text: str, request_id: str | None = None) -> str:
     digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
     prefix = request_id or str(uuid.uuid4())[:8]
@@ -343,11 +407,19 @@ def maybe_set_first_string_field(inputs: dict[str, Any], candidate_keys: tuple[s
     return False
 
 
-def copy_reference_to_comfy_input(reference_audio_path: Path, comfy_input_dir: Path) -> str:
+def copy_reference_to_comfy_input(reference_audio_path: Path, comfy_input_dir: Path) -> ReferenceCopyDebug:
     comfy_input_dir.mkdir(parents=True, exist_ok=True)
-    target = (comfy_input_dir / "voice.wav").resolve()
+    ref_hash = sha1_file(reference_audio_path)
+    suffix = reference_audio_path.suffix or ".wav"
+    target = (comfy_input_dir / f"voice-{ref_hash[:12]}{suffix}").resolve()
     shutil.copy2(reference_audio_path, target)
-    return target.name
+    stat = target.stat()
+    return ReferenceCopyDebug(
+        load_audio_filename=target.name,
+        ref_audio_hash=ref_hash,
+        ref_audio_size=int(stat.st_size),
+        ref_audio_mtime=datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+    )
 
 
 def patch_qwen_workflow(template: Any, text: str, basename: str, ref_audio_filename: str, ref_text: str) -> dict[str, Any]:
@@ -391,6 +463,84 @@ def patch_qwen_workflow(template: Any, text: str, basename: str, ref_audio_filen
     if not save_audio_patched:
         raise BridgeError("SaveAudio filename field was not found in workflow")
     return prompt
+
+
+def first_node_inputs_by_class(prompt: dict[str, Any], class_name_fragment: str) -> dict[str, Any]:
+    for node in prompt.values():
+        if not isinstance(node, dict):
+            continue
+        class_type = str(node.get("class_type", ""))
+        if class_name_fragment not in class_type:
+            continue
+        inputs = node.get("inputs")
+        if isinstance(inputs, dict):
+            return inputs
+    return {}
+
+
+def write_json_file(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+
+
+def build_summary(
+    request_id: str,
+    text_hash: str,
+    result: SynthesisResult,
+) -> dict[str, Any]:
+    qwen = result.qwen_inputs
+    load_audio = result.load_audio_inputs
+    save_audio = result.save_audio_inputs
+    audio_hash = sha1_file(result.audio_path)
+    return {
+        "requestId": request_id,
+        "promptId": result.prompt_id,
+        "textHash": text_hash,
+        "refAudioHash": result.ref_copy.ref_audio_hash,
+        "refTextHash": result.ref_text_hash,
+        "workflowHash": result.workflow_hash,
+        "patchedPromptHash": result.patched_prompt_hash,
+        "seed": qwen.get("seed"),
+        "generationMode": qwen.get("generation_mode"),
+        "language": qwen.get("language"),
+        "maxNewTokens": qwen.get("max_new_tokens"),
+        "refAudioMaxSeconds": qwen.get("ref_audio_max_seconds"),
+        "loadAudioFile": load_audio.get("audio") or load_audio.get("filename") or load_audio.get("file") or load_audio.get("path"),
+        "saveFilenamePrefix": save_audio.get("filename_prefix")
+        or save_audio.get("filename")
+        or save_audio.get("output_name")
+        or save_audio.get("basename"),
+        "audioPath": str(result.audio_path),
+        "audioHash": audio_hash,
+        "audioSize": int(result.audio_path.stat().st_size),
+        "createdAt": utc_now_iso(),
+        "refAudioSize": result.ref_copy.ref_audio_size,
+        "refAudioMtime": result.ref_copy.ref_audio_mtime,
+    }
+
+
+def persist_debug_bundle(
+    config: RuntimeConfig,
+    request_id: str,
+    text: str,
+    text_hash: str,
+    received_at: str,
+    result: SynthesisResult,
+) -> None:
+    base = (config.debug_output_dir / safe_request_id(request_id)).resolve()
+    request_payload = {
+        "requestId": request_id,
+        "text": text,
+        "textHash": text_hash,
+        "textLength": len(text),
+        "receivedAt": received_at,
+    }
+    summary_payload = build_summary(request_id=request_id, text_hash=text_hash, result=result)
+    write_json_file(base / "request.json", request_payload)
+    write_json_file(base / "prompt.json", result.prompt)
+    write_json_file(base / "summary.json", summary_payload)
+    write_json_file(base / "history.json", result.history_raw)
 
 
 def http_json(method: str, url: str, payload: dict[str, Any] | None = None, timeout: int = 30) -> dict[str, Any]:
@@ -466,7 +616,7 @@ def history_error(entry: dict[str, Any]) -> str | None:
     return " | ".join(details) or "status=error"
 
 
-def wait_for_history(base_url: str, prompt_id: str, poll_interval: float, timeout_sec: int) -> dict[str, Any]:
+def wait_for_history(base_url: str, prompt_id: str, poll_interval: float, timeout_sec: int) -> tuple[dict[str, Any], dict[str, Any]]:
     deadline = time.time() + timeout_sec
     while time.time() < deadline:
         body = http_json("GET", f"{base_url}/history/{prompt_id}", timeout=30)
@@ -475,7 +625,7 @@ def wait_for_history(base_url: str, prompt_id: str, poll_interval: float, timeou
             error = history_error(entry)
             if error:
                 raise BridgeError(f"ComfyUI history error: {error}")
-            return entry
+            return entry, body
         time.sleep(max(0.2, poll_interval))
     raise BridgeError(f"timeout waiting for ComfyUI prompt_id={prompt_id}")
 
@@ -486,14 +636,16 @@ def list_audio_files(path: Path) -> list[Path]:
     return [p.resolve() for p in path.rglob("*") if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS]
 
 
-def synthesize_comfyui_qwen3(config: RuntimeConfig, text: str, request_id: str | None) -> Path:
+def synthesize_comfyui_qwen3(config: RuntimeConfig, text: str, request_id: str) -> SynthesisResult:
     ensure_required_files(config)
     ref_text = read_reference_text(config.reference_text_path)
-    load_audio_filename = copy_reference_to_comfy_input(config.reference_audio_path, config.comfyui_input_dir)
+    ref_copy = copy_reference_to_comfy_input(config.reference_audio_path, config.comfyui_input_dir)
 
     basename = safe_basename(text, request_id)
     template = load_json(config.comfyui_workflow_path)
-    prompt = patch_qwen_workflow(template, text, basename, load_audio_filename, ref_text)
+    workflow_hash = hash_json(template)
+    prompt = patch_qwen_workflow(template, text, basename, ref_copy.load_audio_filename, ref_text)
+    patched_prompt_hash = hash_json(prompt)
 
     before = {p.as_posix() for p in list_audio_files(config.comfyui_output_dir)}
     started_at = time.time()
@@ -507,7 +659,7 @@ def synthesize_comfyui_qwen3(config: RuntimeConfig, text: str, request_id: str |
     if not prompt_id:
         raise BridgeError("ComfyUI /prompt did not return prompt_id")
 
-    entry = wait_for_history(
+    entry, history_raw = wait_for_history(
         config.comfyui_base_url,
         str(prompt_id),
         config.comfyui_poll_interval_sec,
@@ -535,7 +687,22 @@ def synthesize_comfyui_qwen3(config: RuntimeConfig, text: str, request_id: str |
     out_file = config.audio_output_dir / f"{basename}{suffix}"
     config.audio_output_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, out_file)
-    return out_file
+
+    return SynthesisResult(
+        audio_path=out_file,
+        prompt=prompt,
+        prompt_id=str(prompt_id),
+        history_entry=entry,
+        history_raw=history_raw,
+        workflow_hash=workflow_hash,
+        patched_prompt_hash=patched_prompt_hash,
+        ref_text=ref_text,
+        ref_text_hash=sha1_text(ref_text),
+        ref_copy=ref_copy,
+        qwen_inputs=first_node_inputs_by_class(prompt, "Qwen3VoiceClone"),
+        load_audio_inputs=first_node_inputs_by_class(prompt, "LoadAudio"),
+        save_audio_inputs=first_node_inputs_by_class(prompt, "SaveAudio"),
+    )
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -586,9 +753,19 @@ class Handler(BaseHTTPRequestHandler):
             config = load_config()
             payload = read_request_json(self)
             text = sanitize_text(payload.get("text"))
-            request_id = str(payload.get("requestId") or "") or None
-            source_file = synthesize_comfyui_qwen3(config, text, request_id)
-            rel_name = source_file.name
+            request_id = safe_request_id(str(payload.get("requestId") or ""))
+            received_at = utc_now_iso()
+            text_hash = sha1_text(text)
+            result = synthesize_comfyui_qwen3(config, text, request_id)
+            persist_debug_bundle(
+                config=config,
+                request_id=request_id,
+                text=text,
+                text_hash=text_hash,
+                received_at=received_at,
+                result=result,
+            )
+            rel_name = result.audio_path.name
             audio_url = f"{config.public_base_url}/audio/{rel_name}"
             json_response(
                 self,
@@ -598,7 +775,7 @@ class Handler(BaseHTTPRequestHandler):
                     "engine": config.engine,
                     "requestId": request_id,
                     "audioUrl": audio_url,
-                    "audioPath": str(source_file),
+                    "audioPath": str(result.audio_path),
                     "textLength": len(text),
                 },
             )
