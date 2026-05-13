@@ -1,11 +1,12 @@
 const NATIVE_HOST_NAME = 'com.chatgpt.local_voice_bridge';
-const SETTINGS_VERSION = 3;
+const SETTINGS_VERSION = 4;
 const DEFAULT_SETTINGS = {
   settingsVersion: SETTINGS_VERSION,
   enabled: false,
   apiUrl: 'http://127.0.0.1:8765/v1/speak',
   healthUrl: 'http://127.0.0.1:8765/health',
   voiceProfile: 'irodori-v2',
+  voiceVolume: 0.6,
   previewMaxLines: 2,
   previewMaxChars: 80,
   previewMinChars: 25,
@@ -25,6 +26,9 @@ async function migrateSettings() {
     ...current,
     settingsVersion: SETTINGS_VERSION,
     voiceProfile: String(current.voiceProfile || DEFAULT_SETTINGS.voiceProfile),
+    voiceVolume: Number.isFinite(Number(current.voiceVolume))
+      ? Math.min(1, Math.max(0, Number(current.voiceVolume)))
+      : DEFAULT_SETTINGS.voiceVolume,
     previewMaxLines: DEFAULT_SETTINGS.previewMaxLines,
     previewMaxChars: DEFAULT_SETTINGS.previewMaxChars,
     previewMinChars: DEFAULT_SETTINGS.previewMinChars,

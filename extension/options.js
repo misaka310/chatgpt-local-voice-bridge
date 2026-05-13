@@ -1,10 +1,11 @@
-const SETTINGS_VERSION = 3;
+const SETTINGS_VERSION = 4;
 const DEFAULT_SETTINGS = {
   settingsVersion: SETTINGS_VERSION,
   enabled: false,
   apiUrl: 'http://127.0.0.1:8765/v1/speak',
   healthUrl: 'http://127.0.0.1:8765/health',
   voiceProfile: 'irodori-v2',
+  voiceVolume: 0.6,
   previewMaxLines: 2,
   previewMaxChars: 80,
   previewMinChars: 25,
@@ -20,6 +21,17 @@ function setStatus(message, isError = false) {
   node.style.color = isError ? '#b00020' : '#0a6b21';
 }
 
+function clampVolume(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return DEFAULT_SETTINGS.voiceVolume;
+  return Math.min(1, Math.max(0, n));
+}
+
+function renderVoiceVolumePercent(value) {
+  const percent = Math.round(clampVolume(value) * 100);
+  $('voiceVolumeValue').textContent = `${percent}%`;
+}
+
 async function migrateIfNeeded() {
   const all = await chrome.storage.local.get(null);
   const version = Number(all.settingsVersion || 0);
@@ -29,6 +41,7 @@ async function migrateIfNeeded() {
     ...all,
     settingsVersion: SETTINGS_VERSION,
     voiceProfile: String(all.voiceProfile || DEFAULT_SETTINGS.voiceProfile),
+    voiceVolume: clampVolume(all.voiceVolume),
     previewMaxLines: DEFAULT_SETTINGS.previewMaxLines,
     previewMaxChars: DEFAULT_SETTINGS.previewMaxChars,
     previewMinChars: DEFAULT_SETTINGS.previewMinChars,
@@ -43,6 +56,8 @@ async function load() {
   $('enabled').checked = Boolean(settings.enabled);
   $('apiUrl').value = settings.apiUrl;
   $('healthUrl').value = settings.healthUrl;
+  $('voiceVolume').value = String(Math.round(clampVolume(settings.voiceVolume) * 100));
+  renderVoiceVolumePercent(settings.voiceVolume);
   $('previewMaxLines').value = settings.previewMaxLines;
   $('previewMaxChars').value = settings.previewMaxChars;
   $('previewMinChars').value = settings.previewMinChars;
@@ -51,11 +66,15 @@ async function load() {
 }
 
 async function save() {
+  const current = await chrome.storage.local.get(DEFAULT_SETTINGS);
+  const voiceVolume = clampVolume((Number($('voiceVolume').value) || 0) / 100);
   const settings = {
     settingsVersion: SETTINGS_VERSION,
     enabled: $('enabled').checked,
     apiUrl: $('apiUrl').value.trim() || DEFAULT_SETTINGS.apiUrl,
     healthUrl: $('healthUrl').value.trim() || DEFAULT_SETTINGS.healthUrl,
+    voiceProfile: String(current.voiceProfile || DEFAULT_SETTINGS.voiceProfile),
+    voiceVolume,
     previewMaxLines: Number($('previewMaxLines').value || DEFAULT_SETTINGS.previewMaxLines),
     previewMaxChars: Number($('previewMaxChars').value || DEFAULT_SETTINGS.previewMaxChars),
     previewMinChars: Number($('previewMinChars').value || DEFAULT_SETTINGS.previewMinChars),
@@ -63,6 +82,7 @@ async function save() {
     panelCollapsed: $('panelCollapsed').checked,
   };
   await chrome.storage.local.set(settings);
+  renderVoiceVolumePercent(voiceVolume);
   setStatus('Saved. Reload the ChatGPT tab to apply immediately.');
 }
 
@@ -87,4 +107,7 @@ async function testApi() {
 
 $('save').addEventListener('click', save);
 $('test').addEventListener('click', testApi);
+$('voiceVolume').addEventListener('input', () => {
+  renderVoiceVolumePercent((Number($('voiceVolume').value) || 0) / 100);
+});
 load();

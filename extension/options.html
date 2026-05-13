@@ -9,6 +9,9 @@
     label { display: block; margin: 16px 0 6px; font-weight: 700; }
     input[type="text"], input[type="number"] { width: 100%; box-sizing: border-box; padding: 8px; }
     .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .range-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; }
+    input[type="range"] { width: 100%; }
+    #voiceVolumeValue { font-variant-numeric: tabular-nums; min-width: 3.2em; text-align: right; }
     button { padding: 8px 12px; cursor: pointer; }
     .status { margin-top: 12px; min-height: 1.5em; }
     code { background: #f3f3f3; padding: 2px 4px; border-radius: 4px; }
@@ -16,7 +19,7 @@
 </head>
 <body>
   <h1>ChatGPT Local Voice Bridge</h1>
-  <p>ChatGPT Webのassistant返答から冒頭previewのみを抽出して、ローカルComfyUI workflow APIへ送信します。</p>
+  <p>ChatGPT Web の assistant 応答プレビューを Local Voice API で読み上げます。</p>
 
   <label><input id="enabled" type="checkbox" /> 自動読み上げを有効にする</label>
   <label><input id="panelCollapsed" type="checkbox" /> パネルを初期状態で折りたたむ</label>
@@ -27,32 +30,38 @@
   <label for="healthUrl">Health URL (/health)</label>
   <input id="healthUrl" type="text" />
 
+  <label for="voiceVolume">読み上げ音量 (Local Voiceのみ)</label>
+  <div class="range-row">
+    <input id="voiceVolume" type="range" min="0" max="100" step="1" />
+    <span id="voiceVolumeValue">60%</span>
+  </div>
+
   <div class="row">
     <div>
-      <label for="previewMaxLines">冒頭行数の上限</label>
+      <label for="previewMaxLines">プレビュー最大行数</label>
       <input id="previewMaxLines" type="number" min="1" max="6" />
     </div>
     <div>
-      <label for="previewMaxChars">冒頭文字数の上限</label>
+      <label for="previewMaxChars">プレビュー最大文字数</label>
       <input id="previewMaxChars" type="number" min="40" max="400" />
     </div>
   </div>
 
   <div class="row">
     <div>
-      <label for="previewMinChars">送信判定の最小文字数</label>
+      <label for="previewMinChars">送信開始の最小文字数</label>
       <input id="previewMinChars" type="number" min="20" max="240" />
     </div>
     <div>
-      <label for="previewStableMs">安定判定ミリ秒</label>
+      <label for="previewStableMs">安定待機ミリ秒</label>
       <input id="previewStableMs" type="number" min="200" max="4000" />
     </div>
   </div>
 
-  <p>初期値は「最大2行・80文字の冒頭previewのみ送信」です。全文は送信しません。</p>
+  <p>既定値は、2行・80文字のプレビューを優先して送信します。</p>
 
   <button id="save">保存</button>
-  <button id="test">API疎通テスト</button>
+  <button id="test">API 接続テスト</button>
   <div class="status" id="status"></div>
 
   <script src="options.js"></script>

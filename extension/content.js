@@ -1,11 +1,12 @@
-﻿(() => {
-  const SETTINGS_VERSION = 3;
+(() => {
+  const SETTINGS_VERSION = 4;
   const DEFAULT_SETTINGS = {
     settingsVersion: SETTINGS_VERSION,
     enabled: false,
     apiUrl: 'http://127.0.0.1:8765/v1/speak',
     healthUrl: 'http://127.0.0.1:8765/health',
     voiceProfile: 'irodori-v2',
+    voiceVolume: 0.6,
     previewMaxLines: 2,
     previewMaxChars: 80,
     previewMinChars: 25,
@@ -22,6 +23,8 @@
     { id: 'irodori-v2', label: 'Irodori v2' },
     { id: 'irodori-v3', label: 'Irodori v3' },
   ];
+  const PET_POSITION_KEY = 'petPosition';
+  const DEFAULT_PET_SIZE = { width: 72, height: 86 };
 
   const stateByElement = new WeakMap();
   const initializedElements = new WeakSet();
@@ -41,12 +44,21 @@
   let lastPreviewEntry = null;
   let dragMovedRecently = false;
 
+  // Pixel Pet variables
+  let petContainer = null;
+  let petImage = null;
+  let petState = 'idle';
+  let petAnimTimer = null;
+  let petBlinkTimer = null;
+
   let panel = null;
   let panelBody = null;
   let titleNode = null;
   let statusNode = null;
   let detailNode = null;
   let voiceProfileSelect = null;
+  let volumeSlider = null;
+  let volumeValueNode = null;
   let autoButton = null;
   let replayButton = null;
 
@@ -76,6 +88,12 @@
   function getCurrentVoiceProfile() {
     const picked = String(settings.voiceProfile || DEFAULT_SETTINGS.voiceProfile).trim();
     return picked || DEFAULT_SETTINGS.voiceProfile;
+  }
+
+  function clampVolume(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return 0.6;
+    return Math.min(1, Math.max(0, n));
   }
 
   function splitChunkByMaxChars(text, maxChars, minChars) {
@@ -368,6 +386,7 @@
     const objectUrl = URL.createObjectURL(blob);
     return new Promise((resolve, reject) => {
       const audio = new Audio(objectUrl);
+      audio.volume = clampVolume(settings.voiceVolume);
       currentAudio = audio;
       audio.onended = () => {
         URL.revokeObjectURL(objectUrl);
@@ -397,8 +416,11 @@
     const decoded = await context.decodeAudioData(buffer.slice(0));
     await new Promise((resolve, reject) => {
       const source = context.createBufferSource();
+      const gain = context.createGain();
+      gain.gain.value = clampVolume(settings.voiceVolume);
       source.buffer = decoded;
-      source.connect(context.destination);
+      source.connect(gain);
+      gain.connect(context.destination);
       source.onended = resolve;
       try {
         source.start(0);
@@ -426,11 +448,21 @@
 
     try {
       setPanelState('Playing', `${item.text.slice(0, 60)}${item.text.length > 60 ? '...' : ''}`);
+      setPixelPetState('talking');
       const blob = await fetchAudioBlob(item.url);
       await playAudioBlob(blob);
 
       isPlaying = false;
       currentAudio = null;
+      
+      // Briefly show happy state if possible
+      setPixelPetState('happy');
+      setTimeout(() => {
+        if (petState === 'happy') {
+          setPixelPetState('idle');
+        }
+      }, 1200);
+
       setLastAudio({
         audioUrl: item.url,
         text: item.text,
@@ -443,6 +475,7 @@
     } catch (error) {
       isPlaying = false;
       currentAudio = null;
+      setPixelPetState('error');
       let handled = false;
       if (typeof item.meta.onPlaybackError === 'function') {
         try {
@@ -465,6 +498,7 @@
     }
     currentAudio = null;
     isPlaying = false;
+    setPixelPetState('idle');
     setPanelState('Ready', 'Playback stopped');
   }
 
@@ -483,6 +517,7 @@
   async function generateAndQueue(chunkText, cacheKey, node, chunkMeta) {
     const requestId = `${cacheKey}-${Date.now()}-${sequence++}`.slice(0, 120);
     const voiceProfile = getCurrentVoiceProfile();
+    setPixelPetState('thinking');
     setPanelState('Generating', `${chunkText.length} chars / ${voiceProfile}`);
 
     node.dataset[AUTO_SENT_FLAG] = '1';
@@ -567,6 +602,7 @@
       setPanelState('Ready', forceGenerate ? `Force regenerated / ${voiceProfile}` : `Ready / ${voiceProfile}`);
     } catch (error) {
       setPanelState('Offline', error.message || String(error));
+      setPixelPetState('error');
     }
   }
 
@@ -716,6 +752,34 @@
     await chrome.storage.local.set({ voiceProfile });
   }
 
+  function setVolumeDisplay(percent) {
+    if (!volumeValueNode) return;
+    volumeValueNode.textContent = `${percent}%`;
+  }
+
+  async function persistVoiceVolume(percent) {
+    const boundedPercent = Math.min(100, Math.max(0, Number(percent) || 0));
+    const nextVolume = clampVolume(boundedPercent / 100);
+    const nextPercent = Math.round(nextVolume * 100);
+    settings.voiceVolume = nextVolume;
+    if (volumeSlider && String(volumeSlider.value) !== String(nextPercent)) {
+      volumeSlider.value = String(nextPercent);
+    }
+    setVolumeDisplay(nextPercent);
+    if (currentAudio && Number.isFinite(currentAudio.volume)) {
+      currentAudio.volume = nextVolume;
+    }
+    if (!globalThis.chrome || !chrome.storage || !chrome.storage.local) return;
+    await chrome.storage.local.set({ voiceVolume: nextVolume });
+  }
+
+  function syncVoiceVolumeSlider() {
+    if (!volumeSlider) return;
+    const percent = Math.round(clampVolume(settings.voiceVolume) * 100);
+    volumeSlider.value = String(percent);
+    setVolumeDisplay(percent);
+  }
+
   function clampPanelPosition(left, top) {
     if (!panel) return { left, top };
     const margin = 8;
@@ -858,6 +922,204 @@
     }
   }
 
+  function getPetImageUrl(filename) {
+    if (!globalThis.chrome || !chrome.runtime || !chrome.runtime.getURL) return '';
+    return chrome.runtime.getURL(`assets/pet/${filename}`);
+  }
+
+  function createPixelPet() {
+    if (petContainer) return;
+
+    petContainer = document.createElement('div');
+    petContainer.id = 'local-voice-pixel-pet';
+    petContainer.title = 'Double-click to reset position';
+    petContainer.style.cssText = [
+      'position:fixed',
+      'z-index:2147483647',
+      `width:${DEFAULT_PET_SIZE.width}px`,
+      `height:${DEFAULT_PET_SIZE.height}px`,
+      'display:flex',
+      'align-items:center',
+      'justify-content:center',
+      'transition:opacity 0.3s ease',
+      'cursor:move',
+      'pointer-events:auto',
+      'user-select:none',
+    ].join(';');
+
+    petImage = document.createElement('img');
+    petImage.style.cssText = [
+      'width:100%',
+      'height:100%',
+      'object-fit:contain',
+      'image-rendering:pixelated',
+      'pointer-events:none',
+    ].join(';');
+
+    // Fallback logic for missing images
+    petImage.onerror = () => {
+      const currentSrc = petImage.src;
+      const idleSrc = getPetImageUrl('idle_0.png');
+      if (currentSrc !== idleSrc) {
+        console.warn('[local-voice] Pet image load failed, falling back to idle_0.png', currentSrc);
+        petImage.src = idleSrc;
+      }
+    };
+    
+    petContainer.appendChild(petImage);
+    document.documentElement.appendChild(petContainer);
+
+    makePetDraggable(petContainer);
+    
+    petContainer.addEventListener('dblclick', () => {
+      resetPetPosition();
+    });
+
+    loadPetPosition();
+    setPixelPetState('idle');
+  }
+
+  function makePetDraggable(el) {
+    let dragState = null;
+    const onMove = (e) => {
+      if (!dragState) return;
+      const dx = e.clientX - dragState.startX;
+      const dy = e.clientY - dragState.startY;
+      const nextLeft = dragState.startLeft + dx;
+      const nextTop = dragState.startTop + dy;
+      
+      const margin = 10;
+      const clampedLeft = Math.min(Math.max(margin, nextLeft), window.innerWidth - el.offsetWidth - margin);
+      const clampedTop = Math.min(Math.max(margin, nextTop), window.innerHeight - el.offsetHeight - margin);
+      
+      el.style.left = `${clampedLeft}px`;
+      el.style.top = `${clampedTop}px`;
+      el.style.right = 'auto';
+      el.style.bottom = 'auto';
+    };
+    const onUp = async () => {
+      if (!dragState) return;
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      dragState = null;
+      await savePetPosition();
+    };
+    el.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      const rect = el.getBoundingClientRect();
+      dragState = {
+        startX: e.clientX,
+        startY: e.clientY,
+        startLeft: rect.left,
+        startTop: rect.top,
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+      e.preventDefault();
+    });
+  }
+
+  async function loadPetPosition() {
+    if (!globalThis.chrome || !chrome.storage || !chrome.storage.local) return;
+    const data = await chrome.storage.local.get([PET_POSITION_KEY]);
+    const pos = data[PET_POSITION_KEY];
+    if (pos && typeof pos.left === 'number' && typeof pos.top === 'number') {
+      petContainer.style.left = `${pos.left}px`;
+      petContainer.style.top = `${pos.top}px`;
+      petContainer.style.right = 'auto';
+      petContainer.style.bottom = 'auto';
+    } else {
+      // Default position: Above or near the panel
+      petContainer.style.right = '24px';
+      petContainer.style.bottom = '140px';
+    }
+  }
+
+  async function savePetPosition() {
+    if (!petContainer || !globalThis.chrome || !chrome.storage || !chrome.storage.local) return;
+    const rect = petContainer.getBoundingClientRect();
+    await chrome.storage.local.set({
+      [PET_POSITION_KEY]: { left: Math.round(rect.left), top: Math.round(rect.top) }
+    });
+  }
+
+  function resetPetPosition() {
+    if (!petContainer) return;
+    petContainer.style.left = '';
+    petContainer.style.top = '';
+    petContainer.style.right = '24px';
+    petContainer.style.bottom = '140px';
+    void savePetPosition();
+  }
+
+  function setPixelPetState(state) {
+    if (!petImage) return;
+    petState = state;
+    
+    if (petAnimTimer) clearInterval(petAnimTimer);
+    if (petBlinkTimer) clearTimeout(petBlinkTimer);
+
+    switch (state) {
+      case 'idle':
+        startPetIdle();
+        break;
+      case 'thinking':
+        petImage.src = getPetImageUrl('thinking_0.png');
+        break;
+      case 'talking':
+        startPetTalking();
+        break;
+      case 'happy':
+        petImage.src = getPetImageUrl('happy_0.png');
+        break;
+      case 'error':
+        petImage.src = getPetImageUrl('error_0.png');
+        setTimeout(() => {
+          if (petState === 'error') setPixelPetState('idle');
+        }, 3000);
+        break;
+    }
+    
+    if (petContainer) {
+      // If disabled, make it slightly darker/transparent
+      const isActuallyEnabled = enabled && settings.enabled;
+      petContainer.style.opacity = isActuallyEnabled ? '1' : '0.4';
+      petContainer.style.filter = isActuallyEnabled ? 'none' : 'grayscale(0.5) brightness(0.7)';
+    }
+  }
+
+  function startPetIdle() {
+    petImage.src = getPetImageUrl('idle_0.png');
+    
+    const blink = () => {
+      if (petState !== 'idle') return;
+      // idle_1.png or fallback to idle_0.png
+      petImage.src = getPetImageUrl('idle_1.png');
+      setTimeout(() => {
+        if (petState !== 'idle') return;
+        petImage.src = getPetImageUrl('idle_0.png');
+        // Random blink interval: 2s to 7s
+        petBlinkTimer = setTimeout(blink, 2000 + Math.random() * 5000);
+      }, 150);
+    };
+    petBlinkTimer = setTimeout(blink, 3000);
+  }
+
+  function startPetTalking() {
+    // talk_0 -> talk_1 -> talk_2 -> talk_3 -> talk_2 -> talk_1
+    const frames = ['talk_0.png', 'talk_1.png', 'talk_2.png', 'talk_3.png', 'talk_2.png', 'talk_1.png'];
+    let frameIdx = 0;
+    
+    const nextFrame = () => {
+      if (petState !== 'talking') return;
+      petImage.src = getPetImageUrl(frames[frameIdx]);
+      frameIdx = (frameIdx + 1) % frames.length;
+    };
+
+    nextFrame();
+    petAnimTimer = setInterval(nextFrame, 130);
+  }
+
   function createPanel() {
     if (panel) return;
 
@@ -940,6 +1202,34 @@
     });
     voiceRow.append(voiceLabel, voiceProfileSelect);
 
+    const volumeRow = document.createElement('div');
+    volumeRow.style.cssText = 'display:flex;align-items:center;gap:8px;';
+    const volumeLabel = document.createElement('div');
+    volumeLabel.textContent = 'Volume';
+    volumeLabel.style.cssText = 'font-size:11px;color:#c8d2e8;min-width:42px;';
+    volumeSlider = document.createElement('input');
+    volumeSlider.type = 'range';
+    volumeSlider.min = '0';
+    volumeSlider.max = '100';
+    volumeSlider.step = '1';
+    volumeSlider.style.cssText = 'flex:1;min-width:0;';
+    volumeSlider.addEventListener('click', (event) => event.stopPropagation());
+    volumeSlider.addEventListener('input', () => {
+      const percent = Math.min(100, Math.max(0, Number(volumeSlider.value) || 0));
+      settings.voiceVolume = clampVolume(percent / 100);
+      setVolumeDisplay(Math.round(clampVolume(settings.voiceVolume) * 100));
+      if (currentAudio && Number.isFinite(currentAudio.volume)) {
+        currentAudio.volume = settings.voiceVolume;
+      }
+    });
+    volumeSlider.addEventListener('change', async () => {
+      await persistVoiceVolume(volumeSlider.value);
+      setPanelState('Ready', `Volume ${Math.round(clampVolume(settings.voiceVolume) * 100)}%`);
+    });
+    volumeValueNode = document.createElement('div');
+    volumeValueNode.style.cssText = 'font-size:11px;color:#c8d2e8;min-width:36px;text-align:right;';
+    volumeRow.append(volumeLabel, volumeSlider, volumeValueNode);
+
     const controls = document.createElement('div');
     controls.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap';
 
@@ -950,6 +1240,7 @@
       autoButton.style.borderColor = enabled ? 'rgba(90,200,140,.5)' : 'rgba(255,255,255,.18)';
       autoButton.style.background = enabled ? 'rgba(73,168,113,.25)' : 'rgba(255,255,255,.08)';
       setPanelState('Ready', enabled ? 'Auto read enabled' : 'Auto read disabled');
+      setPixelPetState(petState);
       if (globalThis.chrome && chrome.storage && chrome.storage.local) {
         await chrome.storage.local.set({ enabled });
       }
@@ -1019,7 +1310,7 @@
 
     const stopButton = createButton('Stop', stopPlayback);
     controls.append(autoButton, readButton, nextButton, regenButton, replayButton, stopButton);
-    panelBody.append(detailNode, voiceRow, controls);
+    panelBody.append(detailNode, voiceRow, volumeRow, controls);
     header.append(titleNode, statusNode);
     panel.append(header, panelBody);
     document.documentElement.appendChild(panel);
@@ -1028,6 +1319,7 @@
     autoButton.style.background = enabled ? 'rgba(73,168,113,.25)' : 'rgba(255,255,255,.08)';
 
     syncVoiceProfileSelect();
+    syncVoiceVolumeSlider();
     setLastAudio(null);
     setPanelState('Ready', `${getCurrentVoiceProfile()} / chunk 0 ready`);
     applyPanelPosition(settings[PANEL_POSITION_KEY]);
@@ -1098,6 +1390,7 @@
     next.previewMinChars = DEFAULT_SETTINGS.previewMinChars;
     next.previewStableMs = DEFAULT_SETTINGS.previewStableMs;
     next.voiceProfile = String(stored.voiceProfile || DEFAULT_SETTINGS.voiceProfile);
+    next.voiceVolume = clampVolume(stored.voiceVolume);
     next.settingsVersion = SETTINGS_VERSION;
     if (typeof next.panelCollapsed !== 'boolean') next.panelCollapsed = DEFAULT_SETTINGS.panelCollapsed;
     return next;
@@ -1116,6 +1409,7 @@
     }
     const effective = migrated || stored;
     settings = { ...DEFAULT_SETTINGS, ...effective };
+    settings.voiceVolume = clampVolume(settings.voiceVolume);
     enabled = Boolean(settings.enabled);
   }
 
@@ -1123,6 +1417,7 @@
     await loadSettings();
     registerDebugApi();
     createPanel();
+    createPixelPet();
     markExistingMessagesAsSeen();
     await probeApiStatus();
 
@@ -1142,6 +1437,7 @@
         autoButton.style.borderColor = enabled ? 'rgba(90,200,140,.5)' : 'rgba(255,255,255,.18)';
         autoButton.style.background = enabled ? 'rgba(73,168,113,.25)' : 'rgba(255,255,255,.08)';
       }
+      setPixelPetState(petState);
 
       if (Object.prototype.hasOwnProperty.call(changes, PANEL_POSITION_KEY)) {
         applyPanelPosition(changes[PANEL_POSITION_KEY].newValue);
@@ -1151,6 +1447,13 @@
       }
       if (Object.prototype.hasOwnProperty.call(changes, 'voiceProfile')) {
         if (voiceProfileSelect) syncVoiceProfileSelect();
+      }
+      if (Object.prototype.hasOwnProperty.call(changes, 'voiceVolume')) {
+        settings.voiceVolume = clampVolume(changes.voiceVolume.newValue);
+        syncVoiceVolumeSlider();
+        if (currentAudio && Number.isFinite(currentAudio.volume)) {
+          currentAudio.volume = settings.voiceVolume;
+        }
       }
     });
   }
