@@ -1,4 +1,4 @@
-﻿# Startup
+# Startup
 
 ## 1. 起動
 
@@ -11,6 +11,14 @@ run-voice-stack.cmd
 ```cmd
 scripts\start-voice-stack.cmd
 ```
+
+### 運用上の注意
+
+- `run-voice-stack.cmd` を実行すると、メインターミナルが1つ立ち上がります。
+- ComfyUI や local-api はバックグラウンドで起動するため、このターミナルを閉じないでください。
+- 終了はメインターミナルで **`Ctrl+C`** を押してください。
+  - このスクリプトが起動したプロセスのみが停止します。
+  - 既に起動済みだったプロセスは維持されます。
 
 ## 2. API ヘルス確認
 

@@ -1,4 +1,4 @@
-﻿# Troubleshooting
+# Troubleshooting
 
 ## /health が失敗する
 
@@ -42,3 +42,12 @@
   - `ttsInputHash`
   - `referenceAudioHash`
   - `audioPath`
+
+## ログとターミナル
+
+- 詳細な実行ログは `local-api/runtime/logs/` に出力されます。
+  - `comfyui-*.log`
+  - `local-api-*.log`
+- `run-voice-stack.cmd` 実行時にターミナルが複数開いてしまう場合：
+  - 外部の ComfyUI 起動用 bat（`D:\ComfyUI_TTS_E2E_SANDBOX\start_comfyui_tts_sandbox.bat` など）の中で `start` や `cmd /k` が使われていないか確認してください。
+  - `VOICE_STACK_CONTROLLED=1` 環境変数がセットされた際の挙動を確認してください。

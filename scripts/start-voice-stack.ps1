@@ -52,14 +52,17 @@ function Wait-HttpOk {
     [int]$TimeoutSec = 60
   )
 
+  Write-Host ("Waiting for {0} to become ready..." -f $Name) -NoNewline
   $deadline = (Get-Date).AddSeconds($TimeoutSec)
   while ((Get-Date) -lt $deadline) {
     if (Test-HttpOk -Url $Url) {
-      Write-Host ("{0} is ready: {1}" -f $Name, $Url)
+      Write-Host " OK." -ForegroundColor Green
       return
     }
+    Write-Host "." -NoNewline
     Start-Sleep -Seconds 2
   }
+  Write-Host " FAILED." -ForegroundColor Red
 
   throw ("{0} did not become ready within {1} seconds: {2}" -f $Name, $TimeoutSec, $Url)
 }
@@ -214,6 +217,7 @@ $cancelHandler = [ConsoleCancelEventHandler]{
 [Console]::add_CancelKeyPress($cancelHandler)
 
 try {
+  $env:VOICE_STACK_CONTROLLED = "1"
   if (-not (Test-Path -LiteralPath $ComfyRunBat)) {
     throw ("ComfyUI start bat not found: {0}" -f $ComfyRunBat)
   }
@@ -230,18 +234,18 @@ try {
 
   if (Test-HttpOk -Url $comfyStatsUrl) {
     $script:ComfyWasAlreadyRunning = $true
-    Write-Host ("ComfyUI already running: {0}" -f $comfyStatsUrl)
+    Write-Host "ComfyUI: Already running." -ForegroundColor Cyan
   } else {
     $comfyLog = New-LogFilePath -Prefix "comfyui"
     $comfyRoot = Split-Path -Parent $ComfyRunBat
     $comfyCommand = '""{0}" 1>>"{1}" 2>>&1"' -f $ComfyRunBat, $comfyLog
-    Write-Host ("Starting ComfyUI via: {0}" -f $ComfyRunBat)
-    Write-Host ("ComfyUI log: {0}" -f $comfyLog)
+    
+    Write-Host "ComfyUI: Starting..."
     $script:StartedComfyProcess = Start-Process `
       -FilePath "cmd.exe" `
       -ArgumentList @("/c", $comfyCommand) `
       -WorkingDirectory $comfyRoot `
-      -NoNewWindow `
+      -WindowStyle Hidden `
       -PassThru
     Save-StackState
     Wait-HttpOk -Url $comfyStatsUrl -Name "ComfyUI" -TimeoutSec $ComfyStartupTimeoutSec
@@ -249,18 +253,18 @@ try {
 
   if (Test-HttpOk -Url $localHealthUrl) {
     $script:LocalApiWasAlreadyRunning = $true
-    Write-Host ("local-api already running: {0}" -f $localHealthUrl)
+    Write-Host "local-api: Already running." -ForegroundColor Cyan
   } else {
     $pythonCmd = (Get-Command python -ErrorAction Stop).Source
     $localApiLog = New-LogFilePath -Prefix "local-api"
     $localApiCommand = '""{0}" "{1}" 1>>"{2}" 2>>&1"' -f $pythonCmd, $ServerPath, $localApiLog
-    Write-Host ("Starting local-api via python: {0}" -f $ServerPath)
-    Write-Host ("local-api log: {0}" -f $localApiLog)
+    
+    Write-Host "local-api: Starting..."
     $script:StartedLocalApiProcess = Start-Process `
       -FilePath "cmd.exe" `
       -ArgumentList @("/c", $localApiCommand) `
       -WorkingDirectory $LocalApiDir `
-      -NoNewWindow `
+      -WindowStyle Hidden `
       -PassThru
     Save-StackState
     Wait-HttpOk -Url $localHealthUrl -Name "local-api" -TimeoutSec $LocalApiStartupTimeoutSec
@@ -271,10 +275,16 @@ try {
   Save-StackState
 
   Write-Host ""
-  Write-Host "Voice stack is ready."
-  Write-Host ("ComfyUI : {0}" -f $ComfyBaseUrl)
-  Write-Host ("local-api: {0}" -f $LocalApiBaseUrl)
-  Write-Host "Keep this terminal open. Press Ctrl+C to stop only processes started by this script."
+  Write-Host "==============================================" -ForegroundColor Green
+  Write-Host " VOICE STACK IS READY" -ForegroundColor Green
+  Write-Host "==============================================" -ForegroundColor Green
+  Write-Host (" ComfyUI  : {0}" -f $ComfyBaseUrl)
+  Write-Host (" local-api: {0}" -f $LocalApiBaseUrl)
+  Write-Host (" Logs     : {0}" -f $LogsDir)
+  Write-Host ""
+  Write-Host " Keep this terminal open."
+  Write-Host " Press Ctrl+C to stop only processes started by this script."
+  Write-Host "=============================================="
 
   while ($true) {
     if ($null -ne $script:StartedComfyProcess -and $script:StartedComfyProcess.HasExited) {
