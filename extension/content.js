@@ -25,6 +25,14 @@
   ];
   const PET_POSITION_KEY = 'petPosition';
   const DEFAULT_PET_SIZE = { width: 72, height: 86 };
+  const DEFAULT_CODEX_PET_SHEET = {
+    width: 1536,
+    height: 1872,
+    columns: 8,
+    rows: 9,
+    frameWidth: 192,
+    frameHeight: 208,
+  };
 
   const stateByElement = new WeakMap();
   const initializedElements = new WeakSet();
@@ -46,10 +54,10 @@
 
   // Pixel Pet variables
   let petContainer = null;
-  let petImage = null;
   let petState = 'idle';
   let petAnimTimer = null;
-  let petBlinkTimer = null;
+  let petConfig = null;
+  let petSpriteEl = null;
 
   let panel = null;
   let panelBody = null;
@@ -927,6 +935,123 @@
     return chrome.runtime.getURL(`assets/pet/${filename}`);
   }
 
+  function toPositiveInt(value, fallback) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return fallback;
+    return Math.max(1, Math.round(n));
+  }
+
+  function clampFrameId(frameId, totalFrames) {
+    const n = Number(frameId);
+    if (!Number.isFinite(n)) return 0;
+    const i = Math.max(0, Math.floor(n));
+    if (!Number.isFinite(totalFrames) || totalFrames <= 0) return i;
+    return Math.min(totalFrames - 1, i);
+  }
+
+  function normalizeAnimDef(raw, fallbackFrames, fallbackSpeed, totalFrames) {
+    const defaultFrames = Array.isArray(fallbackFrames) && fallbackFrames.length ? fallbackFrames : [0];
+    const sourceFrames = Array.isArray(raw)
+      ? raw
+      : raw && Array.isArray(raw.frames)
+        ? raw.frames
+        : defaultFrames;
+    const frames = sourceFrames
+      .map((id) => clampFrameId(id, totalFrames))
+      .filter((id) => Number.isFinite(id));
+    const speedCandidate = raw && typeof raw === 'object' ? raw.speed : undefined;
+    return {
+      frames: frames.length ? frames : defaultFrames.map((id) => clampFrameId(id, totalFrames)),
+      speed: toPositiveInt(speedCandidate, fallbackSpeed),
+    };
+  }
+
+  function getPetFrameViewportSize() {
+    if (!petContainer) {
+      return { frameWidth: DEFAULT_PET_SIZE.width, frameHeight: DEFAULT_PET_SIZE.height };
+    }
+    return {
+      frameWidth: Math.max(1, Math.round(petContainer.clientWidth || petContainer.offsetWidth || DEFAULT_PET_SIZE.width)),
+      frameHeight: Math.max(1, Math.round(petContainer.clientHeight || petContainer.offsetHeight || DEFAULT_PET_SIZE.height)),
+    };
+  }
+
+  function applyPetSpriteFrame(frameId) {
+    if (!petConfig || !petSpriteEl) return;
+    const cols = toPositiveInt(petConfig.columns, 1);
+    const rows = toPositiveInt(petConfig.rows, 1);
+    const totalFrames = cols * rows;
+    const safeFrameId = clampFrameId(frameId, totalFrames);
+    const col = safeFrameId % cols;
+    const row = Math.floor(safeFrameId / cols);
+    const { frameWidth, frameHeight } = getPetFrameViewportSize();
+    const sheetWidth = frameWidth * cols;
+    const sheetHeight = frameHeight * rows;
+
+    petSpriteEl.style.backgroundSize = `${sheetWidth}px ${sheetHeight}px`;
+    petSpriteEl.style.backgroundPosition = `${-col * frameWidth}px ${-row * frameHeight}px`;
+  }
+
+  async function loadPetConfig() {
+    try {
+      const jsonUrl = getPetImageUrl('pet.json');
+      const response = await fetch(jsonUrl);
+      if (!response.ok) return null;
+      const data = await response.json();
+
+      if (!data.spritesheetPath) return null;
+      const spritesheetUrl = getPetImageUrl(data.spritesheetPath);
+
+      const columns = toPositiveInt(data.columns, DEFAULT_CODEX_PET_SHEET.columns);
+      const rows = toPositiveInt(data.rows, DEFAULT_CODEX_PET_SHEET.rows);
+      const img = new Image();
+      img.src = spritesheetUrl;
+      await new Promise((resolve) => {
+        img.onload = resolve;
+        img.onerror = resolve;
+      });
+
+      const sheetWidth = toPositiveInt(img.naturalWidth, DEFAULT_CODEX_PET_SHEET.width);
+      const sheetHeight = toPositiveInt(img.naturalHeight, DEFAULT_CODEX_PET_SHEET.height);
+      if (!img.naturalWidth || !img.naturalHeight) return null;
+
+      const frameWidth = toPositiveInt(
+        data.frameWidth,
+        toPositiveInt(Math.floor(sheetWidth / columns), DEFAULT_CODEX_PET_SHEET.frameWidth),
+      );
+      const frameHeight = toPositiveInt(
+        data.frameHeight,
+        toPositiveInt(Math.floor(sheetHeight / rows), DEFAULT_CODEX_PET_SHEET.frameHeight),
+      );
+
+      const totalFrames = columns * rows;
+      const rawAnimations = data.animations || {};
+      const defaultAnimations = {
+        idle: normalizeAnimDef(rawAnimations.idle || rawAnimations.waiting, [0, 1], 400, totalFrames),
+        talking: normalizeAnimDef(rawAnimations.talking || rawAnimations.speaking || rawAnimations.talk, [16, 17, 18, 17], 150, totalFrames),
+        thinking: normalizeAnimDef(rawAnimations.thinking || rawAnimations.working, [24, 25], 300, totalFrames),
+        happy: normalizeAnimDef(rawAnimations.happy || rawAnimations.success || rawAnimations.celebrate, [32, 33], 220, totalFrames),
+        error: normalizeAnimDef(rawAnimations.error || rawAnimations.sad || rawAnimations.angry || rawAnimations.confused, [40, 41], 260, totalFrames),
+      };
+
+      const config = {
+        id: data.id || 'custom-pet',
+        spritesheetUrl,
+        columns,
+        rows,
+        frameWidth,
+        frameHeight,
+        sheetWidth,
+        sheetHeight,
+        animations: defaultAnimations,
+      };
+      return config;
+    } catch (e) {
+      console.warn('[local-voice] Failed to load Codex pet assets (pet.json / spritesheet.webp)', e);
+      return null;
+    }
+  }
+
   function createPixelPet() {
     if (petContainer) return;
 
@@ -945,28 +1070,23 @@
       'cursor:move',
       'pointer-events:auto',
       'user-select:none',
+      'overflow:hidden',
     ].join(';');
 
-    petImage = document.createElement('img');
-    petImage.style.cssText = [
+    petSpriteEl = document.createElement('div');
+    petSpriteEl.style.cssText = [
       'width:100%',
       'height:100%',
-      'object-fit:contain',
+      'background-repeat:no-repeat',
       'image-rendering:pixelated',
+      'display:none',
       'pointer-events:none',
+      'background-position:0 0',
+      'overflow:hidden',
+      'background-origin:border-box',
+      'background-clip:border-box',
     ].join(';');
-
-    // Fallback logic for missing images
-    petImage.onerror = () => {
-      const currentSrc = petImage.src;
-      const idleSrc = getPetImageUrl('idle_0.png');
-      if (currentSrc !== idleSrc) {
-        console.warn('[local-voice] Pet image load failed, falling back to idle_0.png', currentSrc);
-        petImage.src = idleSrc;
-      }
-    };
-    
-    petContainer.appendChild(petImage);
+    petContainer.appendChild(petSpriteEl);
     document.documentElement.appendChild(petContainer);
 
     makePetDraggable(petContainer);
@@ -976,7 +1096,28 @@
     });
 
     loadPetPosition();
-    setPixelPetState('idle');
+    
+    // Load Codex pet format (pet.json + spritesheet.webp)
+    loadPetConfig().then(config => {
+      petConfig = config;
+      if (petConfig) {
+        console.log('[local-voice] Codex pet loaded:', petConfig.id, `${petConfig.columns}x${petConfig.rows}`);
+        petSpriteEl.style.display = 'block';
+        petSpriteEl.style.backgroundImage = `url("${petConfig.spritesheetUrl}")`;
+        petSpriteEl.style.backgroundRepeat = 'no-repeat';
+        
+        // Ensure the container matches the aspect ratio of a single frame
+        if (petConfig.frameWidth && petConfig.frameHeight) {
+          const ratio = petConfig.frameHeight / petConfig.frameWidth;
+          const currentWidth = DEFAULT_PET_SIZE.width;
+          petContainer.style.height = `${Math.round(currentWidth * ratio)}px`;
+        }
+        applyPetSpriteFrame(0);
+      } else {
+        console.warn('[local-voice] Codex pet assets are unavailable. Pet animation is disabled.');
+      }
+      setPixelPetState('idle');
+    });
   }
 
   function makePetDraggable(el) {
@@ -1053,31 +1194,39 @@
   }
 
   function setPixelPetState(state) {
-    if (!petImage) return;
+    if (!petSpriteEl) return;
     petState = state;
     
-    if (petAnimTimer) clearInterval(petAnimTimer);
-    if (petBlinkTimer) clearTimeout(petBlinkTimer);
-
-    switch (state) {
-      case 'idle':
-        startPetIdle();
-        break;
-      case 'thinking':
-        petImage.src = getPetImageUrl('thinking_0.png');
-        break;
-      case 'talking':
-        startPetTalking();
-        break;
-      case 'happy':
-        petImage.src = getPetImageUrl('happy_0.png');
-        break;
-      case 'error':
-        petImage.src = getPetImageUrl('error_0.png');
-        setTimeout(() => {
-          if (petState === 'error') setPixelPetState('idle');
-        }, 3000);
-        break;
+    if (petAnimTimer) {
+      clearInterval(petAnimTimer);
+      clearTimeout(petAnimTimer);
+      petAnimTimer = null;
+    }
+    if (petConfig) {
+      switch (state) {
+        case 'idle':
+          startPetSpriteAnim('idle');
+          break;
+        case 'thinking':
+          startPetSpriteAnim('thinking');
+          break;
+        case 'talking':
+          startPetSpriteAnim('talking');
+          break;
+        case 'happy':
+          startPetSpriteAnim('happy');
+          break;
+        case 'error':
+          startPetSpriteAnim('error');
+          setTimeout(() => {
+            if (petState === 'error') setPixelPetState('idle');
+          }, 3000);
+          break;
+      }
+    } else if (state === 'error') {
+      setTimeout(() => {
+        if (petState === 'error') setPixelPetState('idle');
+      }, 3000);
     }
     
     if (petContainer) {
@@ -1086,38 +1235,6 @@
       petContainer.style.opacity = isActuallyEnabled ? '1' : '0.4';
       petContainer.style.filter = isActuallyEnabled ? 'none' : 'grayscale(0.5) brightness(0.7)';
     }
-  }
-
-  function startPetIdle() {
-    petImage.src = getPetImageUrl('idle_0.png');
-    
-    const blink = () => {
-      if (petState !== 'idle') return;
-      // idle_1.png or fallback to idle_0.png
-      petImage.src = getPetImageUrl('idle_1.png');
-      setTimeout(() => {
-        if (petState !== 'idle') return;
-        petImage.src = getPetImageUrl('idle_0.png');
-        // Random blink interval: 2s to 7s
-        petBlinkTimer = setTimeout(blink, 2000 + Math.random() * 5000);
-      }, 150);
-    };
-    petBlinkTimer = setTimeout(blink, 3000);
-  }
-
-  function startPetTalking() {
-    // talk_0 -> talk_1 -> talk_2 -> talk_3 -> talk_2 -> talk_1
-    const frames = ['talk_0.png', 'talk_1.png', 'talk_2.png', 'talk_3.png', 'talk_2.png', 'talk_1.png'];
-    let frameIdx = 0;
-    
-    const nextFrame = () => {
-      if (petState !== 'talking') return;
-      petImage.src = getPetImageUrl(frames[frameIdx]);
-      frameIdx = (frameIdx + 1) % frames.length;
-    };
-
-    nextFrame();
-    petAnimTimer = setInterval(nextFrame, 130);
   }
 
   function createPanel() {
@@ -1423,6 +1540,26 @@
 
     observer = new MutationObserver(scheduleInspect);
     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+  }
+
+  function startPetSpriteAnim(animName) {
+    if (!petConfig || !petSpriteEl) return;
+    const anim = petConfig.animations[animName] || petConfig.animations.idle;
+    if (!anim || !anim.frames || anim.frames.length === 0) return;
+
+    let frameIdx = 0;
+    const updateFrame = () => {
+      if (petState !== animName && !(animName === 'idle' && petState === 'idle')) return;
+      
+      const frameId = anim.frames[frameIdx];
+      applyPetSpriteFrame(frameId);
+
+      frameIdx = (frameIdx + 1) % anim.frames.length;
+      if (petAnimTimer) clearTimeout(petAnimTimer);
+      petAnimTimer = setTimeout(updateFrame, anim.speed || 400);
+    };
+
+    updateFrame();
   }
 
   if (globalThis.chrome && chrome.storage && chrome.storage.onChanged) {

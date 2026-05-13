@@ -7,9 +7,15 @@ ENV/
 __pycache__/
 *.py[cod]
 *.pyc
+*.pyo
+*.pyd
+*.so
+*.egg-info/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+htmlcov/
 
 # build outputs
 dist/
@@ -72,6 +78,15 @@ exports/
 *.swp
 .DS_Store
 Thumbs.db
+
+# pet asset working files
+codex_prompt_*.txt
+pet_frames_preview*.png
+transparency_check*.json
+pixel-pet-*.css
+extension/assets/pet/transparency_report.json
+extension/assets/pet/spritesheet_*.png
+extension/assets/assets/
 
 # editor
 .vscode/
