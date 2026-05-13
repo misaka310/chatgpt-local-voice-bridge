@@ -32,6 +32,21 @@ function New-LogFilePath {
   return (Join-Path $LogsDir ("{0}-{1}.log" -f $Prefix, $timestamp))
 }
 
+function Show-LogTail {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [int]$Lines = 50
+  )
+
+  if (Test-Path -LiteralPath $Path) {
+    Write-Host "`n--- Last $Lines lines of log: $Path ---" -ForegroundColor Yellow
+    Get-Content -LiteralPath $Path -Tail $Lines | Write-Host
+    Write-Host "--- End of log ---`n" -ForegroundColor Yellow
+  } else {
+    Write-Host "`nLog file not found: $Path" -ForegroundColor Red
+  }
+}
+
 function Test-HttpOk {
   param(
     [Parameter(Mandatory = $true)][string]$Url
@@ -49,22 +64,26 @@ function Wait-HttpOk {
   param(
     [Parameter(Mandatory = $true)][string]$Url,
     [Parameter(Mandatory = $true)][string]$Name,
-    [int]$TimeoutSec = 60
+    [int]$TimeoutSec = 60,
+    [System.Diagnostics.Process]$Process = $null
   )
 
   Write-Host ("Waiting for {0} to become ready..." -f $Name) -NoNewline
   $deadline = (Get-Date).AddSeconds($TimeoutSec)
   while ((Get-Date) -lt $deadline) {
+    if ($null -ne $Process -and $Process.HasExited) {
+      Write-Host " FAILED (Process exited)." -ForegroundColor Red
+      return $false
+    }
     if (Test-HttpOk -Url $Url) {
       Write-Host " OK." -ForegroundColor Green
-      return
+      return $true
     }
     Write-Host "." -NoNewline
     Start-Sleep -Seconds 2
   }
-  Write-Host " FAILED." -ForegroundColor Red
-
-  throw ("{0} did not become ready within {1} seconds: {2}" -f $Name, $TimeoutSec, $Url)
+  Write-Host " FAILED (Timeout)." -ForegroundColor Red
+  return $false
 }
 
 function Get-ProcessSafe {
@@ -248,7 +267,11 @@ try {
       -WindowStyle Hidden `
       -PassThru
     Save-StackState
-    Wait-HttpOk -Url $comfyStatsUrl -Name "ComfyUI" -TimeoutSec $ComfyStartupTimeoutSec
+    $ok = Wait-HttpOk -Url $comfyStatsUrl -Name "ComfyUI" -TimeoutSec $ComfyStartupTimeoutSec -Process $script:StartedComfyProcess
+    if (-not $ok) {
+      Show-LogTail -Path $comfyLog -Lines 100
+      throw "ComfyUI failed to start. Check the log above."
+    }
   }
 
   if (Test-HttpOk -Url $localHealthUrl) {
@@ -267,7 +290,11 @@ try {
       -WindowStyle Hidden `
       -PassThru
     Save-StackState
-    Wait-HttpOk -Url $localHealthUrl -Name "local-api" -TimeoutSec $LocalApiStartupTimeoutSec
+    $ok = Wait-HttpOk -Url $localHealthUrl -Name "local-api" -TimeoutSec $LocalApiStartupTimeoutSec -Process $script:StartedLocalApiProcess
+    if (-not $ok) {
+      Show-LogTail -Path $localApiLog -Lines 100
+      throw "local-api failed to start. Check the log above."
+    }
   }
 
   Assert-HealthEngine -HealthUrl $localHealthUrl

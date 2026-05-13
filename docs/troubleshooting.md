@@ -9,6 +9,9 @@
 - `local-api/config.local.json` の profile 設定が正しい
 - `voiceProfiles` を使う場合、`irodori-v2` / `irodori-v3` の `workflowPath` と `referenceAudioPath` が有効
 
+> [!TIP]
+> `run-voice-stack.cmd` 実行時に「Waiting for ComfyUI...」で止まってしまう場合は、`local-api/runtime/logs/comfyui-*.log` を確認してください。バッチファイルの構文エラーやパスの間違い、ポート競合などが記録されている場合があります。
+
 ## /v1/speak が失敗する
 
 - `voiceProfile` が存在するIDか
