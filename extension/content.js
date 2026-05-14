@@ -25,7 +25,7 @@
     { id: 'irodori-v3', label: 'Irodori v3' },
   ];
   const PET_POSITION_KEY = 'petPosition';
-  const DEFAULT_PET_SIZE = { width: 72, height: 86 };
+  const DEFAULT_PET_SIZE = { width: 88, height: 104 };
   const DEFAULT_CODEX_PET_SHEET = {
     width: 1536,
     height: 1872,
@@ -701,7 +701,7 @@
     button.textContent = label;
     button.style.cssText = [
       'font:600 11px/1.1 "Segoe UI",sans-serif',
-      'padding:5px 8px',
+      'padding:5px 6px',
       'border-radius:10px',
       'border:1px solid rgba(255,255,255,0.18)',
       'cursor:pointer',
@@ -1366,7 +1366,7 @@
     volumeRow.append(volumeLabel, volumeSlider, volumeValueNode);
 
     const controls = document.createElement('div');
-    controls.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap';
+    controls.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap';
 
     autoButton = createButton('Auto', async () => {
       enabled = !enabled;
@@ -1381,9 +1381,6 @@
       }
     });
 
-    const readButton = createButton('Read', () => {
-      chrome.runtime.sendMessage({ type: 'ui-command', cmd: 'read' }).catch(() => {});
-    });
 
     const nextButton = createButton('Next', () => {
       chrome.runtime.sendMessage({ type: 'ui-command', cmd: 'next' }).catch(() => {});
@@ -1405,7 +1402,7 @@
       chrome.runtime.sendMessage({ type: 'ui-command', cmd: 'stop' }).catch(() => {});
     });
 
-    controls.append(autoButton, readButton, nextButton, regenButton, replayButton, skipButton, stopButton);
+    controls.append(autoButton, nextButton, regenButton, replayButton, skipButton, stopButton);
     panelBody.append(detailNode, voiceRow, tabRow, volumeRow, controls);
     header.append(titleNode, statusNode);
     panel.append(header, panelBody);
