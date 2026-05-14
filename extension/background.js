@@ -14,6 +14,17 @@ const DEFAULT_SETTINGS = {
   panelCollapsed: true,
 };
 
+// State for multi-tab UI aggregation
+const tabRegistry = new Map();
+let uiOwnerTabId = null;
+let selectedTabId = null;
+
+// Shared Queue State
+let audioQueue = [];
+let isPlaying = false;
+let currentPlayingItem = null;
+let lastPlayedItem = null;
+
 async function migrateSettings() {
   const current = await chrome.storage.local.get(null);
   const version = Number(current.settingsVersion || 0);
@@ -123,6 +134,113 @@ function callNativeHost(command) {
   });
 }
 
+// Global UI Logic
+function electUiOwner() {
+  const ids = Array.from(tabRegistry.keys());
+  if (ids.length === 0) {
+    uiOwnerTabId = null;
+    selectedTabId = null;
+    return null;
+  }
+  
+  if (!uiOwnerTabId || !tabRegistry.has(uiOwnerTabId)) {
+    uiOwnerTabId = ids[0];
+  }
+  
+  if (!selectedTabId || !tabRegistry.has(selectedTabId)) {
+    selectedTabId = uiOwnerTabId;
+  }
+
+  const state = {
+    isUiOwner: false, // will be set per tab
+    uiOwnerTabId,
+    selectedTabId,
+    tabs: Array.from(tabRegistry.entries()).map(([id, info]) => ({
+      id,
+      title: info.title,
+      url: info.url,
+    })),
+    queueSize: audioQueue.length,
+    isPlaying,
+    currentPlayingItem,
+    lastPlayedItem,
+  };
+
+  console.debug('[local-voice] electUiOwner state:', state);
+  broadcastState(state);
+  return state;
+}
+
+function broadcastState(providedState = null) {
+  const tabs = Array.from(tabRegistry.entries()).map(([id, info]) => ({
+    id,
+    title: info.title,
+    url: info.url,
+  }));
+
+  const baseState = providedState || {
+    uiOwnerTabId,
+    selectedTabId,
+    tabs,
+    queueSize: audioQueue.length,
+    isPlaying,
+    currentPlayingItem,
+    lastPlayedItem,
+  };
+
+  for (const tabId of tabRegistry.keys()) {
+    console.debug('[local-voice] broadcasting state to tab:', tabId, 'isOwner:', tabId === uiOwnerTabId);
+    chrome.tabs.sendMessage(tabId, {
+      type: 'state-update',
+      payload: {
+        ...baseState,
+        isUiOwner: tabId === uiOwnerTabId,
+      }
+    }).catch(() => {});
+  }
+}
+
+async function playNext() {
+  if (isPlaying || audioQueue.length === 0 || !uiOwnerTabId) {
+    broadcastState();
+    return;
+  }
+
+  const item = audioQueue.shift();
+  isPlaying = true;
+  currentPlayingItem = item;
+  broadcastState();
+
+  try {
+    const settings = await getSettings();
+    const requestId = `bg-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const payload = await speak(item.text, requestId, item.voiceProfile || settings.voiceProfile);
+    
+    if (payload && payload.audioUrl) {
+      chrome.tabs.sendMessage(uiOwnerTabId, {
+        type: 'play-audio',
+        payload: {
+          url: payload.audioUrl,
+          text: item.text,
+          item: item
+        }
+      }).catch(err => {
+        console.error('Failed to send play-audio to UI owner', err);
+        isPlaying = false;
+        currentPlayingItem = null;
+        playNext();
+      });
+    } else {
+      throw new Error('No audioUrl in speak response');
+    }
+  } catch (error) {
+    console.error('Playback error in background:', error);
+    isPlaying = false;
+    currentPlayingItem = null;
+    playNext();
+  }
+}
+
 chrome.runtime.onInstalled.addListener(async () => {
   await migrateSettings();
 });
@@ -131,8 +249,155 @@ chrome.runtime.onStartup.addListener(async () => {
   await migrateSettings();
 });
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (tabRegistry.has(tabId)) {
+    tabRegistry.delete(tabId);
+    if (uiOwnerTabId === tabId) {
+      uiOwnerTabId = null;
+      electUiOwner();
+    } else if (selectedTabId === tabId) {
+      selectedTabId = null;
+      electUiOwner();
+    } else {
+      broadcastState();
+    }
+  }
+});
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message.type !== 'string') return false;
+
+  const tabId = sender.tab ? sender.tab.id : null;
+
+  if (message.type === 'register-tab') {
+    console.debug('[local-voice] register-tab from:', tabId, message.title);
+    let state = null;
+    if (tabId) {
+      tabRegistry.set(tabId, {
+        title: message.title || 'ChatGPT',
+        url: sender.tab.url,
+        lastAssistantMessage: null,
+        lastReadIndex: -1
+      });
+      state = electUiOwner();
+    }
+    const resp = { 
+      ok: true, 
+      payload: state ? { ...state, isUiOwner: tabId === uiOwnerTabId } : null 
+    };
+    console.debug('[local-voice] register-tab response sending:', resp);
+    sendResponse(resp);
+    return false;
+  }
+
+  if (message.type === 'report-chunks') {
+    if (tabId && tabRegistry.has(tabId)) {
+      const info = tabRegistry.get(tabId);
+      if (message.title && message.title !== info.title) {
+        info.title = message.title;
+      }
+      
+      const isNewMessage = !info.lastAssistantMessage || info.lastAssistantMessage.messageKey !== message.messageKey;
+      if (isNewMessage) {
+        info.lastReadIndex = -1;
+      }
+      
+      info.lastAssistantMessage = {
+        messageKey: message.messageKey,
+        text: message.text,
+        chunks: message.chunks,
+        capturedAt: Date.now()
+      };
+
+      if (message.isAuto) {
+        if (isNewMessage && info.lastReadIndex === -1) {
+          info.lastReadIndex = 0;
+          audioQueue.push({
+            tabId,
+            tabTitle: info.title,
+            messageKey: message.messageKey,
+            chunkIndex: 0,
+            text: message.chunks[0],
+            voiceProfile: message.voiceProfile,
+            isAuto: true
+          });
+          playNext();
+        }
+      }
+      broadcastState();
+    }
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  if (message.type === 'playback-done') {
+    isPlaying = false;
+    lastPlayedItem = currentPlayingItem;
+    currentPlayingItem = null;
+    broadcastState();
+    playNext();
+    return false;
+  }
+
+  if (message.type === 'ui-command') {
+    const { cmd, params } = message;
+    
+    if (cmd === 'select-tab') {
+      selectedTabId = params.tabId;
+      broadcastState();
+    } else if (cmd === 'stop') {
+      audioQueue = [];
+      isPlaying = false;
+      currentPlayingItem = null;
+      if (uiOwnerTabId) {
+        chrome.tabs.sendMessage(uiOwnerTabId, { type: 'stop-audio' }).catch(() => {});
+      }
+      broadcastState();
+    } else if (cmd === 'skip') {
+      if (uiOwnerTabId) {
+        chrome.tabs.sendMessage(uiOwnerTabId, { type: 'stop-audio' }).catch(() => {});
+      }
+      isPlaying = false;
+      playNext();
+    } else if (cmd === 'replay') {
+      if (lastPlayedItem) {
+        audioQueue.unshift(lastPlayedItem);
+        playNext();
+      }
+    } else if (cmd === 'next' || cmd === 'read' || cmd === 'regen') {
+      const targetId = selectedTabId || tabId;
+      if (targetId && tabRegistry.has(targetId)) {
+        const info = tabRegistry.get(targetId);
+        if (info.lastAssistantMessage) {
+          let chunkIndex = 0;
+          if (cmd === 'next') {
+            info.lastReadIndex = (info.lastReadIndex ?? -1) + 1;
+            chunkIndex = info.lastReadIndex;
+          } else if (cmd === 'regen') {
+            chunkIndex = info.lastReadIndex >= 0 ? info.lastReadIndex : 0;
+          } else {
+            // read
+            chunkIndex = 0;
+            info.lastReadIndex = 0;
+          }
+
+          if (chunkIndex >= 0 && chunkIndex < info.lastAssistantMessage.chunks.length) {
+            audioQueue.push({
+              tabId: targetId,
+              tabTitle: info.title,
+              messageKey: info.lastAssistantMessage.messageKey,
+              chunkIndex: chunkIndex,
+              text: info.lastAssistantMessage.chunks[chunkIndex],
+              voiceProfile: params ? params.voiceProfile : null
+            });
+            playNext();
+          }
+        }
+      }
+    }
+    sendResponse({ ok: true });
+    return false;
+  }
 
   if (message.type === 'speak') {
     speak(String(message.text || ''), String(message.requestId || ''), String(message.voiceProfile || ''))

@@ -1,4 +1,5 @@
 (() => {
+  console.debug('[local-voice] content.js loaded');
   const SETTINGS_VERSION = 4;
   const DEFAULT_SETTINGS = {
     settingsVersion: SETTINGS_VERSION,
@@ -59,6 +60,14 @@
   let petConfig = null;
   let petSpriteEl = null;
 
+  // Global UI State
+  let isUiOwner = null; // null: unknown, true: owner, false: non-owner
+  console.debug('[local-voice] Initial isUiOwner:', isUiOwner);
+  let uiOwnerStateFallbackTimer = null;
+  let globalTabs = [];
+  let selectedTabId = null;
+  let queueSize = 0;
+
   let panel = null;
   let panelBody = null;
   let titleNode = null;
@@ -69,6 +78,7 @@
   let volumeValueNode = null;
   let autoButton = null;
   let replayButton = null;
+  let tabSelect = null;
 
   function normalizeText(text) {
     return String(text || '')
@@ -447,6 +457,22 @@
     }
   }
 
+  async function playItem(url, text, itemMeta = {}) {
+    stopPlayback();
+    isPlaying = true;
+    try {
+      const blob = await fetchAudioBlob(url);
+      await playAudioBlob(blob);
+      isPlaying = false;
+      chrome.runtime.sendMessage({ type: 'playback-done' }).catch(() => {});
+    } catch (error) {
+      isPlaying = false;
+      setPixelPetState('error');
+      setPanelState('Error', error.message || String(error));
+      chrome.runtime.sendMessage({ type: 'playback-done' }).catch(() => {});
+    }
+  }
+
   async function playNext() {
     if (isPlaying || audioQueue.length === 0) return;
 
@@ -479,11 +505,13 @@
         voiceProfile: item.meta.voiceProfile || getCurrentVoiceProfile(),
       });
       setPanelState('Ready', audioQueue.length > 0 ? `Queued ${audioQueue.length}` : 'Irodori / cached');
+      chrome.runtime.sendMessage({ type: 'playback-done' }).catch(() => {});
       void playNext();
     } catch (error) {
       isPlaying = false;
       currentAudio = null;
       setPixelPetState('error');
+      chrome.runtime.sendMessage({ type: 'playback-done' }).catch(() => {});
       let handled = false;
       if (typeof item.meta.onPlaybackError === 'function') {
         try {
@@ -557,61 +585,21 @@
     });
   }
 
-  async function readChunk(entry, chunkIndex, options = {}) {
-    const { forceGenerate = false, fallbackGenerateOnCacheFail = true } = options;
-    const chunkText = entry.chunks[chunkIndex];
-    if (!chunkText) return;
-
-    const voiceProfile = getCurrentVoiceProfile();
-    const cacheKey = getCacheKey({
-      voiceProfile,
+  async function reportChunks(entry, isAuto = false) {
+    chrome.runtime.sendMessage({
+      type: 'report-chunks',
       messageKey: entry.messageKey,
-      chunkIndex,
-      text: chunkText,
-    });
-    const chunkMeta = { messageKey: entry.messageKey, chunkIndex };
-    recordLastPreviewEntry(entry, chunkIndex, cacheKey);
+      text: entry.text,
+      chunks: entry.chunks,
+      isAuto,
+      voiceProfile: getCurrentVoiceProfile(),
+      title: document.title
+    }).catch(() => {});
+  }
 
-    if (!forceGenerate) {
-      const cached = audioCache.get(cacheKey);
-      if (cached && cached.audioUrl) {
-        console.debug('[local-voice] speak', {
-          voiceProfile,
-          messageKey: entry.messageKey,
-          chunkIndex,
-          cacheKey,
-          cacheHit: true,
-          text: chunkText,
-        });
-        setPanelState('Cached', `Using cached audio / ${voiceProfile}`);
-        enqueueAudio(cached.audioUrl, chunkText, {
-          cacheKey,
-          voiceProfile,
-          onPlaybackError: async () => {
-            clearCacheForKey(cacheKey);
-            if (fallbackGenerateOnCacheFail) {
-              await readChunk(entry, chunkIndex, {
-                forceGenerate: true,
-                fallbackGenerateOnCacheFail: false,
-              });
-              return { handled: true };
-            }
-            return { handled: false };
-          },
-        });
-        readCursorByMessage.set(entry.messageKey, chunkIndex);
-        return;
-      }
-    }
-
-    try {
-      await generateAndQueue(chunkText, cacheKey, entry.node, chunkMeta);
-      readCursorByMessage.set(entry.messageKey, chunkIndex);
-      setPanelState('Ready', forceGenerate ? `Force regenerated / ${voiceProfile}` : `Ready / ${voiceProfile}`);
-    } catch (error) {
-      setPanelState('Offline', error.message || String(error));
-      setPixelPetState('error');
-    }
+  async function readChunk(entry, chunkIndex, options = {}) {
+    // In centralized mode, readChunk just reports chunks and the background handles the rest
+    await reportChunks(entry, false);
   }
 
   function processNode(node) {
@@ -660,7 +648,7 @@
     if (shouldSendNow(preview, now, item)) {
       item.sent = true;
       node.dataset[AUTO_SENT_FLAG] = '1';
-      void readChunk(entry, 0, { forceGenerate: false });
+      void reportChunks(entry, true);
       return;
     }
 
@@ -688,7 +676,7 @@
           chunks: pendingChunks,
           capturedAt: Date.now(),
         };
-        void readChunk(pendingEntry, 0, { forceGenerate: false });
+        void reportChunks(pendingEntry, true);
       }
     }, Number(settings.previewStableMs || DEFAULT_SETTINGS.previewStableMs) + 50);
   }
@@ -1054,6 +1042,8 @@
 
   function createPixelPet() {
     if (petContainer) return;
+    // Always create, but initial visibility depends on isUiOwner
+    // If isUiOwner is null (unknown), we show it as fallback.
 
     petContainer = document.createElement('div');
     petContainer.id = 'local-voice-pixel-pet';
@@ -1239,6 +1229,8 @@
 
   function createPanel() {
     if (panel) return;
+    // Always create, but initial visibility depends on isUiOwner
+    // If isUiOwner is null (unknown), we show it as fallback.
 
     panel = document.createElement('div');
     panel.id = 'local-voice-bridge-panel';
@@ -1319,6 +1311,32 @@
     });
     voiceRow.append(voiceLabel, voiceProfileSelect);
 
+    const tabRow = document.createElement('div');
+    tabRow.style.cssText = 'display:flex;align-items:center;gap:6px;';
+    const tabLabel = document.createElement('div');
+    tabLabel.textContent = 'Tab';
+    tabLabel.style.cssText = 'font-size:11px;color:#c8d2e8;min-width:34px;';
+    tabSelect = document.createElement('select');
+    tabSelect.style.cssText = [
+      'flex:1',
+      'min-width:0',
+      'font:600 11px/1.1 "Segoe UI",sans-serif',
+      'padding:4px 6px',
+      'border-radius:8px',
+      'border:1px solid rgba(255,255,255,0.2)',
+      'background:rgba(255,255,255,0.08)',
+      'color:#f7f9ff',
+    ].join(';');
+    tabSelect.addEventListener('click', (event) => event.stopPropagation());
+    tabSelect.addEventListener('change', () => {
+      chrome.runtime.sendMessage({
+        type: 'ui-command',
+        cmd: 'select-tab',
+        params: { tabId: Number(tabSelect.value) }
+      }).catch(() => {});
+    });
+    tabRow.append(tabLabel, tabSelect);
+
     const volumeRow = document.createElement('div');
     volumeRow.style.cssText = 'display:flex;align-items:center;gap:8px;';
     const volumeLabel = document.createElement('div');
@@ -1364,70 +1382,31 @@
     });
 
     const readButton = createButton('Read', () => {
-      const entry = buildLatestChunkContext();
-      if (!entry) {
-        setPanelState('Error', 'No assistant response');
-        return;
-      }
-      const state = ensureElementState(entry.node, entry.text);
-      state.sent = true;
-      entry.node.dataset[AUTO_SENT_FLAG] = '1';
-      readCursorByMessage.set(entry.messageKey, 0);
-      void readChunk(entry, 0, { forceGenerate: false, fallbackGenerateOnCacheFail: true });
+      chrome.runtime.sendMessage({ type: 'ui-command', cmd: 'read' }).catch(() => {});
     });
 
     const nextButton = createButton('Next', () => {
-      const entry = buildLatestChunkContext();
-      if (!entry) {
-        setPanelState('Error', 'No assistant response');
-        return;
-      }
-      const state = ensureElementState(entry.node, entry.text);
-      state.sent = true;
-      entry.node.dataset[AUTO_SENT_FLAG] = '1';
-
-      const lastIndex = readCursorByMessage.get(entry.messageKey);
-      const targetIndex = Number.isInteger(lastIndex) ? Number(lastIndex) + 1 : 0;
-      if (targetIndex >= entry.chunks.length) {
-        setPanelState('Ready', 'No more text');
-        return;
-      }
-      void readChunk(entry, targetIndex, { forceGenerate: false, fallbackGenerateOnCacheFail: true });
+      chrome.runtime.sendMessage({ type: 'ui-command', cmd: 'next' }).catch(() => {});
     });
 
     const regenButton = createButton('Regen', () => {
-      const entry = buildLatestChunkContext();
-      if (!entry) {
-        setPanelState('Error', 'No assistant response');
-        return;
-      }
-      const state = ensureElementState(entry.node, entry.text);
-      state.sent = true;
-      entry.node.dataset[AUTO_SENT_FLAG] = '1';
-      const lastIndex = readCursorByMessage.get(entry.messageKey);
-      const targetIndex = Number.isInteger(lastIndex) && Number(lastIndex) < entry.chunks.length ? Number(lastIndex) : 0;
-      void readChunk(entry, targetIndex, { forceGenerate: true, fallbackGenerateOnCacheFail: false });
+      chrome.runtime.sendMessage({ type: 'ui-command', cmd: 'regen', params: { voiceProfile: getCurrentVoiceProfile() } }).catch(() => {});
     });
 
     replayButton = createButton('Replay', () => {
-      if (!lastAudio || !lastAudio.audioUrl) {
-        setPanelState('Ready', 'No replay source');
-        return;
-      }
-      enqueueAudio(lastAudio.audioUrl, lastAudio.text || '', {
-        cacheKey: lastAudio.cacheKey || null,
-        voiceProfile: lastAudio.voiceProfile || getCurrentVoiceProfile(),
-        onPlaybackError: async () => {
-          if (lastAudio.cacheKey) clearCacheForKey(lastAudio.cacheKey);
-          setLastAudio(null);
-        },
-      });
-      setPanelState('Cached', `Replaying / ${lastAudio.voiceProfile || getCurrentVoiceProfile()}`);
+      chrome.runtime.sendMessage({ type: 'ui-command', cmd: 'replay' }).catch(() => {});
     });
 
-    const stopButton = createButton('Stop', stopPlayback);
-    controls.append(autoButton, readButton, nextButton, regenButton, replayButton, stopButton);
-    panelBody.append(detailNode, voiceRow, volumeRow, controls);
+    const skipButton = createButton('Skip', () => {
+      chrome.runtime.sendMessage({ type: 'ui-command', cmd: 'skip' }).catch(() => {});
+    });
+
+    const stopButton = createButton('Stop', () => {
+      chrome.runtime.sendMessage({ type: 'ui-command', cmd: 'stop' }).catch(() => {});
+    });
+
+    controls.append(autoButton, readButton, nextButton, regenButton, replayButton, skipButton, stopButton);
+    panelBody.append(detailNode, voiceRow, tabRow, volumeRow, controls);
     header.append(titleNode, statusNode);
     panel.append(header, panelBody);
     document.documentElement.appendChild(panel);
@@ -1442,6 +1421,13 @@
     applyPanelPosition(settings[PANEL_POSITION_KEY]);
     void setCollapsed(Boolean(settings[PANEL_COLLAPSED_KEY]), false);
     makePanelDraggable(header);
+
+    // Initial visibility
+    if (isUiOwner === false) {
+      hidePanelForNonOwner();
+    } else {
+      ensurePanelVisible();
+    }
 
     header.addEventListener('click', () => {
       if (dragMovedRecently) return;
@@ -1513,6 +1499,72 @@
     return next;
   }
 
+  function ensurePanelVisible() {
+    console.debug('[local-voice] ensurePanelVisible() called, panel exists:', !!panel, 'pet exists:', !!petContainer);
+    if (!panel) createPanel();
+    if (!petContainer) createPixelPet();
+    if (panel) {
+      panel.style.display = 'flex';
+      console.debug('[local-voice] panel.style.display set to flex');
+    }
+    if (petContainer) {
+      petContainer.style.display = 'flex';
+      console.debug('[local-voice] petContainer.style.display set to flex');
+    }
+  }
+
+  function hidePanelForNonOwner() {
+    console.debug('[local-voice] hidePanelForNonOwner() called');
+    if (panel) panel.style.display = 'none';
+    if (petContainer) petContainer.style.display = 'none';
+  }
+
+  function applyOwnerState(nextIsOwner, payload = null) {
+    if (uiOwnerStateFallbackTimer) {
+      clearTimeout(uiOwnerStateFallbackTimer);
+      uiOwnerStateFallbackTimer = null;
+    }
+
+    isUiOwner = nextIsOwner;
+    console.debug('[local-voice] applyOwnerState:', { nextIsOwner, isUiOwner });
+    
+    if (payload) {
+      globalTabs = payload.tabs || [];
+      selectedTabId = payload.selectedTabId;
+      queueSize = payload.queueSize || 0;
+    }
+
+    if (isUiOwner !== false) { // true or null (fallback)
+      ensurePanelVisible();
+      
+      if (payload) {
+        if (tabSelect) {
+          const currentVal = tabSelect.value;
+          tabSelect.innerHTML = '';
+          for (const t of globalTabs) {
+            const opt = document.createElement('option');
+            opt.value = t.id;
+            opt.textContent = t.title.slice(0, 30) + (t.title.length > 30 ? '...' : '');
+            tabSelect.appendChild(opt);
+          }
+          tabSelect.value = String(selectedTabId || '');
+        }
+
+        if (payload.isPlaying) {
+          const txt = payload.currentPlayingItem?.text || '';
+          const tabName = payload.currentPlayingItem?.tabTitle || 'ChatGPT';
+          setPanelState('Playing', `[${tabName}] ${txt.slice(0, 40)}${txt.length > 40 ? '...' : ''}`);
+          setPixelPetState('talking');
+        } else {
+          setPanelState('Ready', queueSize > 0 ? `Queued ${queueSize}` : 'Ready');
+          setPixelPetState('idle');
+        }
+      }
+    } else {
+      hidePanelForNonOwner();
+    }
+  }
+
   async function loadSettings() {
     if (!globalThis.chrome || !chrome.storage || !chrome.storage.local) {
       settings = { ...DEFAULT_SETTINGS };
@@ -1531,15 +1583,71 @@
   }
 
   async function start() {
+    // 1. Setup message listener FIRST
+    chrome.runtime.onMessage.addListener((message) => {
+      if (!message || typeof message.type !== 'string') return;
+
+      if (message.type === 'state-update') {
+        console.debug('[local-voice] Received state-update:', message.payload);
+        applyOwnerState(message.payload.isUiOwner, message.payload);
+      }
+
+      if (message.type === 'play-audio') {
+        if (isUiOwner !== false) { // true or unknown
+          playItem(message.payload.url, message.payload.text, message.payload.item);
+        }
+      }
+
+      if (message.type === 'stop-audio') {
+        stopPlayback();
+      }
+    });
+
+    // 2. Load settings and probe API
     await loadSettings();
     registerDebugApi();
-    createPanel();
-    createPixelPet();
     markExistingMessagesAsSeen();
     await probeApiStatus();
 
+    // 3. Register tab and handle immediate response
+    console.debug('[local-voice] Registering tab...');
+    try {
+      const response = await runtimeMessage('register-tab', { title: document.title });
+      console.debug('[local-voice] register-tab response:', response);
+      if (response && typeof response.isUiOwner !== 'undefined') {
+        applyOwnerState(response.isUiOwner, response);
+      } else {
+        console.debug('[local-voice] No immediate owner state in response, waiting for fallback/update');
+        // No payload, wait for state-update or fallback
+        uiOwnerStateFallbackTimer = setTimeout(() => {
+          if (isUiOwner === null) {
+            console.debug('[local-voice] Fallback timer triggered: isUiOwner is still null, showing UI');
+            applyOwnerState(null);
+          }
+        }, 2000);
+      }
+    } catch (err) {
+      console.error('[local-voice] Failed to register tab:', err);
+      // Fallback: show UI after some time if no background response
+      uiOwnerStateFallbackTimer = setTimeout(() => {
+        if (isUiOwner === null) {
+          console.debug('[local-voice] Fallback timer triggered (after error): isUiOwner is still null, showing UI');
+          applyOwnerState(null);
+        }
+      }, 2000);
+    }
+
+    // 4. Setup observer
     observer = new MutationObserver(scheduleInspect);
     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+
+    // 5. Periodic re-registration (heartbeat)
+    setInterval(() => {
+      chrome.runtime.sendMessage({
+        type: 'register-tab',
+        title: document.title
+      }).catch(() => {});
+    }, 5000);
   }
 
   function startPetSpriteAnim(animName) {
@@ -1597,9 +1705,11 @@
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
+      console.debug('[local-voice] DOMContentLoaded, starting...');
       void start();
     }, { once: true });
   } else {
+    console.debug('[local-voice] Document already loaded, starting...');
     void start();
   }
 })();
