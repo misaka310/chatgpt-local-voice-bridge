@@ -1,10 +1,12 @@
 const NATIVE_HOST_NAME = 'com.chatgpt.local_voice_bridge';
-const SETTINGS_VERSION = 4;
+const SETTINGS_VERSION = 5;
+const LEGACY_DEFAULT_API_URL = 'http://127.0.0.1:8765/v1/speak';
+const LEGACY_DEFAULT_HEALTH_URL = 'http://127.0.0.1:8765/health';
 const DEFAULT_SETTINGS = {
   settingsVersion: SETTINGS_VERSION,
   enabled: false,
-  apiUrl: 'http://127.0.0.1:8765/v1/speak',
-  healthUrl: 'http://127.0.0.1:8765/health',
+  apiUrl: 'http://127.0.0.1:8717/v1/speak',
+  healthUrl: 'http://127.0.0.1:8717/health',
   voiceProfile: 'irodori-v2',
   voiceVolume: 0.6,
   previewMaxLines: 2,
@@ -13,6 +15,12 @@ const DEFAULT_SETTINGS = {
   previewStableMs: 800,
   panelCollapsed: true,
 };
+
+function preferCurrentUnlessLegacyOrEmpty(currentValue, legacyValue, defaultValue) {
+  const value = String(currentValue || '').trim();
+  if (!value || value === legacyValue) return defaultValue;
+  return value;
+}
 
 // State for multi-tab UI aggregation
 const tabRegistry = new Map();
@@ -36,6 +44,8 @@ async function migrateSettings() {
     ...DEFAULT_SETTINGS,
     ...current,
     settingsVersion: SETTINGS_VERSION,
+    apiUrl: preferCurrentUnlessLegacyOrEmpty(current.apiUrl, LEGACY_DEFAULT_API_URL, DEFAULT_SETTINGS.apiUrl),
+    healthUrl: preferCurrentUnlessLegacyOrEmpty(current.healthUrl, LEGACY_DEFAULT_HEALTH_URL, DEFAULT_SETTINGS.healthUrl),
     voiceProfile: String(current.voiceProfile || DEFAULT_SETTINGS.voiceProfile),
     voiceVolume: Number.isFinite(Number(current.voiceVolume))
       ? Math.min(1, Math.max(0, Number(current.voiceVolume)))
@@ -436,3 +446,4 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   return false;
 });
+

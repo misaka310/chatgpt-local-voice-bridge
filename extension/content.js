@@ -1,11 +1,13 @@
 (() => {
   console.debug('[local-voice] content.js loaded');
-  const SETTINGS_VERSION = 4;
+  const SETTINGS_VERSION = 5;
+  const LEGACY_DEFAULT_API_URL = 'http://127.0.0.1:8765/v1/speak';
+  const LEGACY_DEFAULT_HEALTH_URL = 'http://127.0.0.1:8765/health';
   const DEFAULT_SETTINGS = {
     settingsVersion: SETTINGS_VERSION,
     enabled: false,
-    apiUrl: 'http://127.0.0.1:8765/v1/speak',
-    healthUrl: 'http://127.0.0.1:8765/health',
+    apiUrl: 'http://127.0.0.1:8717/v1/speak',
+    healthUrl: 'http://127.0.0.1:8717/health',
     voiceProfile: 'irodori-v2',
     voiceVolume: 0.6,
     previewMaxLines: 2,
@@ -15,6 +17,12 @@
     panelPosition: null,
     panelCollapsed: true,
   };
+
+  function preferCurrentUnlessLegacyOrEmpty(currentValue, legacyValue, defaultValue) {
+    const value = String(currentValue || '').trim();
+    if (!value || value === legacyValue) return defaultValue;
+    return value;
+  }
 
   const MIN_FALLBACK_CHARS = 20;
   const AUTO_SENT_FLAG = 'localVoiceSent';
@@ -120,7 +128,7 @@
     if (trimmed.length <= maxChars) return { head: trimmed, tail: '' };
 
     const head = trimmed.slice(0, maxChars);
-    const punctRegex = /[。！？.!?]/g;
+    const punctRegex = /[縲ゑｼ・ｼ・!?]/g;
     let punctMatch = null;
     for (const match of head.matchAll(punctRegex)) punctMatch = match;
     if (punctMatch && Number(punctMatch.index) >= Math.floor(minChars * 0.6)) {
@@ -207,7 +215,7 @@
     const len = preview.length;
     if (!len) return false;
     if (len >= maxChars) return true;
-    if (len >= minChars && /[。！？.!?]$/.test(preview)) return true;
+    if (len >= minChars && /[縲ゑｼ・ｼ・!?]$/.test(preview)) return true;
     if (len >= minChars && now - item.lastChangedAt >= stableMs) return true;
     if (len >= MIN_FALLBACK_CHARS && now - item.lastChangedAt >= stableMs + 400) return true;
     return false;
@@ -274,7 +282,7 @@
     if (statusNode) statusNode.textContent = statusText;
     if (detailNode) detailNode.textContent = detailText || `${getCurrentVoiceProfile()} / chunked preview`;
     if (titleNode && settings.panelCollapsed) {
-      titleNode.textContent = `Voice · ${statusText}`;
+      titleNode.textContent = `Voice ﾂｷ ${statusText}`;
     } else if (titleNode) {
       titleNode.textContent = 'Local Voice';
     }
@@ -821,7 +829,7 @@
       panel.style.padding = collapsed ? '8px 10px' : '10px';
     }
     if (titleNode) {
-      titleNode.textContent = collapsed ? `Voice · ${statusNode ? statusNode.textContent : 'Ready'}` : 'Local Voice';
+      titleNode.textContent = collapsed ? `Voice ﾂｷ ${statusNode ? statusNode.textContent : 'Ready'}` : 'Local Voice';
     }
     if (persist && globalThis.chrome && chrome.storage && chrome.storage.local) {
       await chrome.storage.local.set({ [PANEL_COLLAPSED_KEY]: Boolean(collapsed) });
@@ -1489,6 +1497,8 @@
     next.previewMaxChars = DEFAULT_SETTINGS.previewMaxChars;
     next.previewMinChars = DEFAULT_SETTINGS.previewMinChars;
     next.previewStableMs = DEFAULT_SETTINGS.previewStableMs;
+    next.apiUrl = preferCurrentUnlessLegacyOrEmpty(stored.apiUrl, LEGACY_DEFAULT_API_URL, DEFAULT_SETTINGS.apiUrl);
+    next.healthUrl = preferCurrentUnlessLegacyOrEmpty(stored.healthUrl, LEGACY_DEFAULT_HEALTH_URL, DEFAULT_SETTINGS.healthUrl);
     next.voiceProfile = String(stored.voiceProfile || DEFAULT_SETTINGS.voiceProfile);
     next.voiceVolume = clampVolume(stored.voiceVolume);
     next.settingsVersion = SETTINGS_VERSION;
@@ -1710,4 +1720,5 @@
     void start();
   }
 })();
+
 

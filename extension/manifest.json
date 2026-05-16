@@ -5,8 +5,8 @@
   "description": "Reads ChatGPT web responses through a local ComfyUI workflow TTS API.",
   "permissions": ["storage", "nativeMessaging"],
   "host_permissions": [
-    "http://127.0.0.1:8765/*",
-    "http://localhost:8765/*"
+    "http://127.0.0.1:8717/*",
+    "http://localhost:8717/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -50,3 +50,4 @@
     }
   ]
 }
+

@@ -14,7 +14,7 @@ from urllib.request import Request, urlopen
 
 
 ROOT = Path(__file__).resolve().parents[1]
-LOCAL_API_URL = "http://127.0.0.1:8765/v1/speak"
+LOCAL_API_URL = "http://127.0.0.1:8717/v1/speak"
 DEBUG_DIR = ROOT / "local-api" / "runtime" / "debug"
 REPORT_DIR = ROOT / "local-api" / "runtime" / "debug-reproduce"
 

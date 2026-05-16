@@ -2,7 +2,7 @@
 param(
   [string]$ComfyRunBat = "D:\ComfyUI_TTS_E2E_SANDBOX\start_comfyui_tts_sandbox.bat",
   [string]$ComfyBaseUrl = "http://127.0.0.1:8288",
-  [string]$LocalApiBaseUrl = "http://127.0.0.1:8765",
+  [string]$LocalApiBaseUrl = "http://127.0.0.1:8717",
   [int]$ComfyStartupTimeoutSec = 240,
   [int]$LocalApiStartupTimeoutSec = 90
 )

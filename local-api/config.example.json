@@ -1,10 +1,10 @@
-﻿{
+{
   "engine": "comfyui_workflow",
   "voiceProfile": "irodori-v2",
   "defaultVoiceProfile": "irodori-v2",
   "host": "127.0.0.1",
-  "port": 8765,
-  "publicBaseUrl": "http://127.0.0.1:8765",
+  "port": 8717,
+  "publicBaseUrl": "http://127.0.0.1:8717",
   "audioOutputDir": "./runtime/audio",
   "referenceAudioPath": "./reference/voice_irodori.wav",
   "workflowPath": "./reference/tts_e2e_irodori.json",

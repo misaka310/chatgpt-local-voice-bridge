@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = ROOT / "scripts"
 START_SCRIPT = SCRIPTS_DIR / "start-local-api.ps1"
 STOP_SCRIPT = SCRIPTS_DIR / "stop-local-api.ps1"
-HEALTH_URL = "http://127.0.0.1:8765/health"
+HEALTH_URL = "http://127.0.0.1:8717/health"
 
 
 def send_message(message: dict) -> None:

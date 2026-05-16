@@ -1,4 +1,4 @@
-﻿# セキュリティ
+# セキュリティ
 
 ## 基本方針
 
@@ -20,7 +20,8 @@
 
 - `storage`
 - `nativeMessaging`
-- `http://127.0.0.1:8765/*`
-- `http://localhost:8765/*`
+- `http://127.0.0.1:8717/*`
+- `http://localhost:8717/*`
 - `https://chatgpt.com/*`
 - `https://chat.openai.com/*`
+

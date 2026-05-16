@@ -22,7 +22,7 @@ scripts\start-voice-stack.cmd
 
 ## 2. API ヘルス確認
 
-`http://127.0.0.1:8765/health` を確認し、次を満たすこと。
+`http://127.0.0.1:8717/health` を確認し、次を満たすこと。
 
 - `ok=true`
 - `engine=comfyui_workflow`
@@ -53,3 +53,8 @@ Local Voice パネル:
 - `previewMinChars: 25`
 
 コードブロック除外、markdown記号を落とし、句読点（`。！？.!?`）優先で自然に分割します。
+
+## Port Policy
+
+- `local-api` startup port is fixed to `8717`.
+- Before startup, `scripts/start-local-api.ps1` and `scripts/start-voice-stack.ps1` stop any process that is using TCP `8717`.

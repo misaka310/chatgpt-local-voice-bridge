@@ -1,6 +1,7 @@
-﻿$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Stop"
+$LocalApiBaseUrl = "http://127.0.0.1:8717"
 
-$health = Invoke-RestMethod -Uri "http://127.0.0.1:8765/health" -Method GET
+$health = Invoke-RestMethod -Uri "$LocalApiBaseUrl/health" -Method GET
 if (-not $health.ok) {
   throw "health check failed"
 }
@@ -32,7 +33,7 @@ function Invoke-SmokeSpeak {
   }
 
   $body = $payload | ConvertTo-Json -Compress
-  $response = Invoke-RestMethod -Uri "http://127.0.0.1:8765/v1/speak" -Method POST -ContentType "application/json; charset=utf-8" -Body $body
+  $response = Invoke-RestMethod -Uri "$LocalApiBaseUrl/v1/speak" -Method POST -ContentType "application/json; charset=utf-8" -Body $body
   if (-not $response.ok) {
     throw "/v1/speak failed for $VoiceProfile"
   }

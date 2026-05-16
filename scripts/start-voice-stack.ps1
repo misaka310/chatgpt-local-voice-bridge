@@ -2,12 +2,20 @@
 param(
   [string]$ComfyRunBat = "D:\ComfyUI_TTS_E2E_SANDBOX\start_comfyui_tts_sandbox.bat",
   [string]$ComfyBaseUrl = "http://127.0.0.1:8288",
-  [string]$LocalApiBaseUrl = "http://127.0.0.1:8765",
+  [string]$LocalApiBaseUrl = "http://127.0.0.1:8717",
   [int]$ComfyStartupTimeoutSec = 240,
   [int]$LocalApiStartupTimeoutSec = 90
 )
 
 $ErrorActionPreference = "Stop"
+$FixedLocalApiHost = "127.0.0.1"
+$FixedLocalApiPort = 8717
+$FixedLocalApiBaseUrl = ("http://{0}:{1}" -f $FixedLocalApiHost, $FixedLocalApiPort)
+
+if ($LocalApiBaseUrl -ne $FixedLocalApiBaseUrl) {
+  Write-Warning ("Local API base URL is fixed to {0}. Ignoring requested value: {1}" -f $FixedLocalApiBaseUrl, $LocalApiBaseUrl)
+}
+$LocalApiBaseUrl = $FixedLocalApiBaseUrl
 
 $RootDir = Split-Path -Parent $PSScriptRoot
 $LocalApiDir = Join-Path $RootDir "local-api"
@@ -116,6 +124,55 @@ function Stop-ProcessTree {
     } catch {
       Write-Warning ("Failed to stop PID=${TargetProcessId}: {0}" -f $_.Exception.Message)
     }
+  }
+}
+
+function Get-PortOwnerProcessIds {
+  param(
+    [Parameter(Mandatory = $true)][int]$Port
+  )
+
+  $pids = @()
+  try {
+    $pids = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop |
+      Select-Object -ExpandProperty OwningProcess -Unique
+  } catch {
+    $pids = @()
+  }
+
+  if (-not $pids -or $pids.Count -eq 0) {
+    $netstat = netstat -ano -p tcp | Select-String -Pattern (":{0}\s+" -f $Port)
+    $pids = @(
+      $netstat |
+      ForEach-Object {
+        $line = ($_ -replace "^\s+", "") -replace "\s+", " "
+        $parts = $line.Split(" ")
+        if ($parts.Count -ge 5) {
+          [int]$parts[4]
+        }
+      } |
+      Where-Object { $_ -gt 0 } |
+      Select-Object -Unique
+    )
+  }
+
+  return @($pids | Where-Object { $_ -gt 0 -and $_ -ne $PID } | Select-Object -Unique)
+}
+
+function Stop-ProcessesUsingPort {
+  param(
+    [Parameter(Mandatory = $true)][int]$Port
+  )
+
+  $ownerPids = Get-PortOwnerProcessIds -Port $Port
+  if (-not $ownerPids -or $ownerPids.Count -eq 0) {
+    Write-Host ("Port {0} is free." -f $Port)
+    return
+  }
+
+  foreach ($ownerPid in $ownerPids) {
+    Write-Host ("Stopping process on port {0}: PID={1}" -f $Port, $ownerPid)
+    Stop-ProcessTree -TargetProcessId $ownerPid
   }
 }
 
@@ -276,25 +333,28 @@ try {
 
   if (Test-HttpOk -Url $localHealthUrl) {
     $script:LocalApiWasAlreadyRunning = $true
-    Write-Host "local-api: Already running." -ForegroundColor Cyan
-  } else {
-    $pythonCmd = (Get-Command python -ErrorAction Stop).Source
-    $localApiLog = New-LogFilePath -Prefix "local-api"
-    $localApiCommand = '""{0}" "{1}" 1>>"{2}" 2>>&1"' -f $pythonCmd, $ServerPath, $localApiLog
-    
-    Write-Host "local-api: Starting..."
-    $script:StartedLocalApiProcess = Start-Process `
-      -FilePath "cmd.exe" `
-      -ArgumentList @("/c", $localApiCommand) `
-      -WorkingDirectory $LocalApiDir `
-      -WindowStyle Hidden `
-      -PassThru
-    Save-StackState
-    $ok = Wait-HttpOk -Url $localHealthUrl -Name "local-api" -TimeoutSec $LocalApiStartupTimeoutSec -Process $script:StartedLocalApiProcess
-    if (-not $ok) {
-      Show-LogTail -Path $localApiLog -Lines 100
-      throw "local-api failed to start. Check the log above."
-    }
+  }
+
+  Stop-ProcessesUsingPort -Port $FixedLocalApiPort
+  $env:LOCAL_VOICE_PORT = "$FixedLocalApiPort"
+  $env:LOCAL_VOICE_PUBLIC_BASE_URL = $LocalApiBaseUrl
+
+  $pythonCmd = (Get-Command python -ErrorAction Stop).Source
+  $localApiLog = New-LogFilePath -Prefix "local-api"
+  $localApiCommand = '""{0}" "{1}" 1>>"{2}" 2>>&1"' -f $pythonCmd, $ServerPath, $localApiLog
+  
+  Write-Host "local-api: Starting..."
+  $script:StartedLocalApiProcess = Start-Process `
+    -FilePath "cmd.exe" `
+    -ArgumentList @("/c", $localApiCommand) `
+    -WorkingDirectory $LocalApiDir `
+    -WindowStyle Hidden `
+    -PassThru
+  Save-StackState
+  $ok = Wait-HttpOk -Url $localHealthUrl -Name "local-api" -TimeoutSec $LocalApiStartupTimeoutSec -Process $script:StartedLocalApiProcess
+  if (-not $ok) {
+    Show-LogTail -Path $localApiLog -Lines 100
+    throw "local-api failed to start. Check the log above."
   }
 
   Assert-HealthEngine -HealthUrl $localHealthUrl

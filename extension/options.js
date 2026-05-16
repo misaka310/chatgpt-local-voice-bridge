@@ -1,9 +1,11 @@
-const SETTINGS_VERSION = 4;
+const SETTINGS_VERSION = 5;
+const LEGACY_DEFAULT_API_URL = 'http://127.0.0.1:8765/v1/speak';
+const LEGACY_DEFAULT_HEALTH_URL = 'http://127.0.0.1:8765/health';
 const DEFAULT_SETTINGS = {
   settingsVersion: SETTINGS_VERSION,
   enabled: false,
-  apiUrl: 'http://127.0.0.1:8765/v1/speak',
-  healthUrl: 'http://127.0.0.1:8765/health',
+  apiUrl: 'http://127.0.0.1:8717/v1/speak',
+  healthUrl: 'http://127.0.0.1:8717/health',
   voiceProfile: 'irodori-v2',
   voiceVolume: 0.6,
   previewMaxLines: 2,
@@ -32,6 +34,12 @@ function renderVoiceVolumePercent(value) {
   $('voiceVolumeValue').textContent = `${percent}%`;
 }
 
+function preferCurrentUnlessLegacyOrEmpty(currentValue, legacyValue, defaultValue) {
+  const value = String(currentValue || '').trim();
+  if (!value || value === legacyValue) return defaultValue;
+  return value;
+}
+
 async function migrateIfNeeded() {
   const all = await chrome.storage.local.get(null);
   const version = Number(all.settingsVersion || 0);
@@ -40,6 +48,8 @@ async function migrateIfNeeded() {
     ...DEFAULT_SETTINGS,
     ...all,
     settingsVersion: SETTINGS_VERSION,
+    apiUrl: preferCurrentUnlessLegacyOrEmpty(all.apiUrl, LEGACY_DEFAULT_API_URL, DEFAULT_SETTINGS.apiUrl),
+    healthUrl: preferCurrentUnlessLegacyOrEmpty(all.healthUrl, LEGACY_DEFAULT_HEALTH_URL, DEFAULT_SETTINGS.healthUrl),
     voiceProfile: String(all.voiceProfile || DEFAULT_SETTINGS.voiceProfile),
     voiceVolume: clampVolume(all.voiceVolume),
     previewMaxLines: DEFAULT_SETTINGS.previewMaxLines,

@@ -41,7 +41,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "voiceProfile": "irodori-v2",
     "defaultVoiceProfile": "irodori-v2",
     "host": "127.0.0.1",
-    "port": 8765,
+    "port": 8717,
     "publicBaseUrl": "",
     "audioOutputDir": "./runtime/audio",
     "referenceAudioPath": "./reference/voice_irodori.wav",
@@ -208,7 +208,7 @@ def load_config_raw() -> dict[str, Any]:
 
     merged = apply_env_overrides(merged)
     if not merged.get("publicBaseUrl"):
-        merged["publicBaseUrl"] = f"http://{merged.get('host', '127.0.0.1')}:{int(merged.get('port', 8765))}"
+        merged["publicBaseUrl"] = f"http://{merged.get('host', '127.0.0.1')}:{int(merged.get('port', 8717))}"
     return merged
 
 
@@ -239,7 +239,7 @@ class RuntimeConfig:
 
     @property
     def port(self) -> int:
-        return int(self.raw.get("port", 8765))
+        return int(self.raw.get("port", 8717))
 
     @property
     def public_base_url(self) -> str:
