@@ -45,18 +45,17 @@
 
   const stateByElement = new WeakMap();
   const initializedElements = new WeakSet();
-  const audioQueue = [];
-  const audioCache = new Map();
-  const readCursorByMessage = new Map();
-
   let settings = { ...DEFAULT_SETTINGS };
   let enabled = Boolean(DEFAULT_SETTINGS.enabled);
   let availableVoiceProfiles = [...DEFAULT_PROFILE_OPTIONS];
   let observer = null;
   let inspectTimer = null;
-  let sequence = 0;
   let isPlaying = false;
   let currentAudio = null;
+  let currentAudioContext = null;
+  let currentAudioSource = null;
+  let currentObjectUrl = null;
+  let currentPlaybackToken = null;
   let lastAudio = null;
   let lastPreviewEntry = null;
   let dragMovedRecently = false;
@@ -323,35 +322,6 @@
     };
   }
 
-  function cacheAudio(key, audioUrl, text) {
-    audioCache.set(key, {
-      audioUrl,
-      text,
-      createdAt: Date.now(),
-    });
-  }
-
-  function clearCacheForKey(key) {
-    audioCache.delete(key);
-    if (lastAudio && lastAudio.cacheKey === key) {
-      setLastAudio(null);
-    }
-  }
-
-  async function postToLocalApi(text, requestId, voiceProfile) {
-    const apiUrl = String(settings.apiUrl || DEFAULT_SETTINGS.apiUrl);
-    const response = await fetch(apiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, requestId, source: 'chatgpt-web', voiceProfile }),
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok || !payload.ok) {
-      throw new Error(payload.error || `Local API failed: ${response.status}`);
-    }
-    return payload;
-  }
-
   function canUseRuntimeMessaging() {
     return Boolean(globalThis.chrome && chrome.runtime && typeof chrome.runtime.sendMessage === 'function');
   }
@@ -376,25 +346,6 @@
     });
   }
 
-  async function requestSpeech(text, requestId, voiceProfile) {
-    if (canUseRuntimeMessaging()) {
-      try {
-        return await runtimeMessage('speak', { text, requestId, voiceProfile });
-      } catch (_error) {
-        // Fall back to direct fetch in restricted content-script environments.
-      }
-    }
-    return postToLocalApi(text, requestId, voiceProfile);
-  }
-
-  function enqueueAudio(url, text, meta = {}) {
-    audioQueue.push({ url, text, meta });
-    if (!isPlaying) {
-      setPanelState('Ready', audioQueue.length > 0 ? `Queued ${audioQueue.length}` : 'Irodori / preview only');
-    }
-    void playNext();
-  }
-
   async function fetchAudioBlob(url) {
     const cacheBustedUrl = `${url}${url.includes('?') ? '&' : '?'}t=${Date.now()}`;
     const response = await fetch(cacheBustedUrl, { cache: 'no-store' });
@@ -408,34 +359,52 @@
     return blob;
   }
 
-  async function playWithAudioElement(blob) {
+  function isCurrentPlaybackToken(token) {
+    return Boolean(token) && token === currentPlaybackToken;
+  }
+
+  function releaseCurrentObjectUrl() {
+    if (!currentObjectUrl) return;
+    URL.revokeObjectURL(currentObjectUrl);
+    currentObjectUrl = null;
+  }
+
+  async function playWithAudioElement(blob, playbackToken) {
     const objectUrl = URL.createObjectURL(blob);
+    currentObjectUrl = objectUrl;
     return new Promise((resolve, reject) => {
       const audio = new Audio(objectUrl);
       audio.volume = clampVolume(settings.voiceVolume);
       currentAudio = audio;
       audio.onended = () => {
-        URL.revokeObjectURL(objectUrl);
+        releaseCurrentObjectUrl();
         resolve();
       };
       audio.onerror = () => {
-        URL.revokeObjectURL(objectUrl);
+        releaseCurrentObjectUrl();
         reject(new Error('audio element failed to load generated audio'));
       };
       audio.play().catch((error) => {
-        URL.revokeObjectURL(objectUrl);
+        releaseCurrentObjectUrl();
         reject(error);
       });
+      if (!isCurrentPlaybackToken(playbackToken)) {
+        audio.pause();
+        audio.currentTime = 0;
+        releaseCurrentObjectUrl();
+        resolve();
+      }
     });
   }
 
-  async function playWithWebAudio(blob) {
+  async function playWithWebAudio(blob, playbackToken) {
     const AudioContextCtor = globalThis.AudioContext || globalThis.webkitAudioContext;
     if (!AudioContextCtor) {
       throw new Error('Web Audio API is unavailable');
     }
     const buffer = await blob.arrayBuffer();
     const context = new AudioContextCtor();
+    currentAudioContext = context;
     if (context.state === 'suspended') {
       await context.resume();
     }
@@ -447,103 +416,128 @@
       source.buffer = decoded;
       source.connect(gain);
       gain.connect(context.destination);
+      currentAudioSource = source;
       source.onended = resolve;
       try {
         source.start(0);
       } catch (error) {
         reject(error);
       }
+      if (!isCurrentPlaybackToken(playbackToken)) {
+        try {
+          source.stop(0);
+        } catch (_error) {}
+        resolve();
+      }
     });
+    currentAudioSource = null;
     await context.close().catch(() => {});
-  }
-
-  async function playAudioBlob(blob) {
-    try {
-      await playWithAudioElement(blob);
-    } catch (_elementError) {
-      await playWithWebAudio(blob);
+    if (currentAudioContext === context) {
+      currentAudioContext = null;
     }
   }
 
-  async function playItem(url, text, itemMeta = {}) {
-    stopPlayback();
+  async function playAudioBlob(blob, playbackToken) {
+    try {
+      await playWithAudioElement(blob, playbackToken);
+    } catch (_elementError) {
+      await playWithWebAudio(blob, playbackToken);
+    }
+  }
+
+  async function playAudioWithTimeout(blob, playbackToken, timeoutMs = 20000) {
+    let timer = null;
+    try {
+      await Promise.race([
+        playAudioBlob(blob, playbackToken),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('playback timeout')), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  function stopCurrentPlayback(reason = 'stop') {
+    const previousToken = currentPlaybackToken;
+    currentPlaybackToken = null;
+    isPlaying = false;
+    if (currentAudio) {
+      try {
+        currentAudio.pause();
+        currentAudio.currentTime = 0;
+      } catch (_error) {}
+    }
+    currentAudio = null;
+    if (currentAudioSource) {
+      try {
+        currentAudioSource.stop(0);
+      } catch (_error) {}
+      currentAudioSource = null;
+    }
+    if (currentAudioContext) {
+      currentAudioContext.close().catch(() => {});
+      currentAudioContext = null;
+    }
+    releaseCurrentObjectUrl();
+    isPlaying = false;
+    setPixelPetState('idle');
+    if (reason === 'stop') {
+      setPanelState('Ready', 'Playback stopped');
+    }
+    return previousToken;
+  }
+
+  async function playItem(url, text, itemMeta = {}, playbackToken = '') {
+    stopCurrentPlayback('replace');
+    currentPlaybackToken = String(playbackToken || '');
     isPlaying = true;
+    setPixelPetState('talking');
+    setPanelState('Playing', `${String(text || '').slice(0, 60)}${String(text || '').length > 60 ? '...' : ''}`);
     try {
       const blob = await fetchAudioBlob(url);
-      await playAudioBlob(blob);
-      isPlaying = false;
-      chrome.runtime.sendMessage({ type: 'playback-done' }).catch(() => {});
-    } catch (error) {
-      isPlaying = false;
-      setPixelPetState('error');
-      setPanelState('Error', error.message || String(error));
-      chrome.runtime.sendMessage({ type: 'playback-done' }).catch(() => {});
-    }
-  }
-
-  async function playNext() {
-    if (isPlaying || audioQueue.length === 0) return;
-
-    const item = audioQueue.shift();
-    isPlaying = true;
-    currentAudio = null;
-
-    try {
-      setPanelState('Playing', `${item.text.slice(0, 60)}${item.text.length > 60 ? '...' : ''}`);
-      setPixelPetState('talking');
-      const blob = await fetchAudioBlob(item.url);
-      await playAudioBlob(blob);
-
+      if (!isCurrentPlaybackToken(currentPlaybackToken)) return;
+      await playAudioWithTimeout(blob, currentPlaybackToken, 20000);
+      if (!isCurrentPlaybackToken(currentPlaybackToken)) return;
       isPlaying = false;
       currentAudio = null;
-      
-      // Briefly show happy state if possible
+      currentPlaybackToken = null;
       setPixelPetState('happy');
       setTimeout(() => {
         if (petState === 'happy') {
           setPixelPetState('idle');
         }
       }, 1200);
-
       setLastAudio({
-        audioUrl: item.url,
-        text: item.text,
+        audioUrl: url,
+        text: String(text || ''),
         createdAt: Date.now(),
-        cacheKey: item.meta.cacheKey || null,
-        voiceProfile: item.meta.voiceProfile || getCurrentVoiceProfile(),
+        cacheKey: null,
+        voiceProfile: itemMeta && itemMeta.voiceProfile ? itemMeta.voiceProfile : getCurrentVoiceProfile(),
       });
-      setPanelState('Ready', audioQueue.length > 0 ? `Queued ${audioQueue.length}` : 'Irodori / cached');
-      chrome.runtime.sendMessage({ type: 'playback-done' }).catch(() => {});
-      void playNext();
+      setPanelState('Ready', 'Playback done');
+      chrome.runtime.sendMessage({
+        type: 'playback-done',
+        playbackToken,
+        ok: true,
+        stopped: false,
+      }).catch(() => {});
     } catch (error) {
+      if (!isCurrentPlaybackToken(currentPlaybackToken)) return;
       isPlaying = false;
       currentAudio = null;
+      currentPlaybackToken = null;
       setPixelPetState('error');
-      chrome.runtime.sendMessage({ type: 'playback-done' }).catch(() => {});
-      let handled = false;
-      if (typeof item.meta.onPlaybackError === 'function') {
-        try {
-          const result = await item.meta.onPlaybackError(error);
-          handled = Boolean(result && result.handled);
-        } catch (_handlerError) {}
-      }
-      if (!handled) {
-        setPanelState('Error', error.message || String(error));
-      }
-      void playNext();
+      setPanelState('Error', error.message || String(error));
+      chrome.runtime.sendMessage({
+        type: 'playback-done',
+        playbackToken,
+        ok: false,
+        stopped: false,
+        error: error.message || String(error),
+      }).catch(() => {});
     }
-  }
-
-  function stopPlayback() {
-    audioQueue.length = 0;
-    if (currentAudio) {
-      currentAudio.pause();
-      currentAudio.currentTime = 0;
-    }
-    currentAudio = null;
-    isPlaying = false;
-    setPixelPetState('idle');
-    setPanelState('Ready', 'Playback stopped');
   }
 
   function recordLastPreviewEntry(entry, chunkIndex, cacheKey) {
@@ -556,41 +550,6 @@
       chunkIndex,
       voiceProfile: getCurrentVoiceProfile(),
     };
-  }
-
-  async function generateAndQueue(chunkText, cacheKey, node, chunkMeta) {
-    const requestId = `${cacheKey}-${Date.now()}-${sequence++}`.slice(0, 120);
-    const voiceProfile = getCurrentVoiceProfile();
-    setPixelPetState('thinking');
-    setPanelState('Generating', `${chunkText.length} chars / ${voiceProfile}`);
-
-    node.dataset[AUTO_SENT_FLAG] = '1';
-    const nodeState = stateByElement.get(node);
-    if (nodeState) nodeState.sent = true;
-
-    const payload = await requestSpeech(chunkText, requestId, voiceProfile);
-    const audioUrl = payload && payload.audioUrl;
-    if (!audioUrl) {
-      throw new Error('audioUrl is missing in API response');
-    }
-
-    cacheAudio(cacheKey, audioUrl, chunkText);
-    console.debug('[local-voice] speak', {
-      voiceProfile,
-      messageKey: chunkMeta.messageKey,
-      chunkIndex: chunkMeta.chunkIndex,
-      cacheKey,
-      cacheHit: false,
-      text: chunkText,
-    });
-    setPanelState('Cached', `Generated ${voiceProfile}`);
-    enqueueAudio(audioUrl, chunkText, {
-      cacheKey,
-      voiceProfile,
-      onPlaybackError: async () => {
-        clearCacheForKey(cacheKey);
-      },
-    });
   }
 
   async function reportChunks(entry, isAuto = false) {
@@ -612,13 +571,10 @@
   }
 
   async function readChunk(entry, chunkIndex, options = {}) {
-    // In centralized mode, readChunk just reports chunks and the background handles the rest
     await reportChunks(entry, false);
   }
 
   function processNode(node) {
-    if (!enabled || !settings.enabled) return;
-
     const text = extractAssistantText(node);
     if (!text) return;
 
@@ -677,7 +633,7 @@
       });
       item.sent = true;
       node.dataset[AUTO_SENT_FLAG] = '1';
-      void reportChunks(entry, true);
+      void reportChunks(entry, Boolean(enabled && settings.enabled));
       return;
     }
 
@@ -709,7 +665,7 @@
           chunks: pendingChunks,
           capturedAt: Date.now(),
         };
-        void reportChunks(pendingEntry, true);
+        void reportChunks(pendingEntry, Boolean(enabled && settings.enabled));
       }
     }, Number(settings.previewStableMs || DEFAULT_SETTINGS.previewStableMs) + 50);
   }
@@ -757,6 +713,21 @@
     });
     button.addEventListener('click', onClick);
     return button;
+  }
+
+  async function sendUiCommand(cmd, params = {}) {
+    try {
+      const payload = await runtimeMessage('ui-command', { cmd, params });
+      if (payload && payload.statusText) {
+        const level = String(payload.statusLevel || 'info');
+        const title = level === 'error' ? 'Error' : 'Ready';
+        setPanelState(title, String(payload.statusText));
+      }
+      return payload || null;
+    } catch (error) {
+      setPanelState('Error', error.message || String(error));
+      return null;
+    }
   }
 
   function syncVoiceProfileSelect() {
@@ -1326,6 +1297,7 @@
     voiceLabel.textContent = 'Voice';
     voiceLabel.style.cssText = 'font-size:11px;color:#c8d2e8;min-width:34px;';
     voiceProfileSelect = document.createElement('select');
+    voiceProfileSelect.id = 'local-voice-voice-select';
     voiceProfileSelect.style.cssText = [
       'flex:1',
       'min-width:0',
@@ -1350,6 +1322,7 @@
     tabLabel.textContent = 'Tab';
     tabLabel.style.cssText = 'font-size:11px;color:#c8d2e8;min-width:34px;';
     tabSelect = document.createElement('select');
+    tabSelect.id = 'local-voice-tab-select';
     tabSelect.style.cssText = [
       'flex:1',
       'min-width:0',
@@ -1362,11 +1335,7 @@
     ].join(';');
     tabSelect.addEventListener('click', (event) => event.stopPropagation());
     tabSelect.addEventListener('change', () => {
-      chrome.runtime.sendMessage({
-        type: 'ui-command',
-        cmd: 'select-tab',
-        params: { tabId: Number(tabSelect.value) }
-      }).catch(() => {});
+      void sendUiCommand('select-tab', { tabId: Number(tabSelect.value) });
     });
     tabRow.append(tabLabel, tabSelect);
 
@@ -1376,6 +1345,7 @@
     volumeLabel.textContent = 'Volume';
     volumeLabel.style.cssText = 'font-size:11px;color:#c8d2e8;min-width:42px;';
     volumeSlider = document.createElement('input');
+    volumeSlider.id = 'local-voice-volume-slider';
     volumeSlider.type = 'range';
     volumeSlider.min = '0';
     volumeSlider.max = '100';
@@ -1404,7 +1374,6 @@
     autoButton = createButton('Auto', async () => {
       enabled = !enabled;
       settings.enabled = enabled;
-      if (!enabled) stopPlayback();
       autoButton.style.borderColor = enabled ? 'rgba(90,200,140,.5)' : 'rgba(255,255,255,.18)';
       autoButton.style.background = enabled ? 'rgba(73,168,113,.25)' : 'rgba(255,255,255,.08)';
       setPanelState('Ready', enabled ? 'Auto read enabled' : 'Auto read disabled');
@@ -1414,28 +1383,31 @@
       }
     });
 
+    const readButton = createButton('Read', () => {
+      void sendUiCommand('read', { voiceProfile: getCurrentVoiceProfile() });
+    });
 
     const nextButton = createButton('Next', () => {
-      chrome.runtime.sendMessage({ type: 'ui-command', cmd: 'next' }).catch(() => {});
+      void sendUiCommand('next', { voiceProfile: getCurrentVoiceProfile() });
     });
 
     const regenButton = createButton('Regen', () => {
-      chrome.runtime.sendMessage({ type: 'ui-command', cmd: 'regen', params: { voiceProfile: getCurrentVoiceProfile() } }).catch(() => {});
+      void sendUiCommand('regen', { voiceProfile: getCurrentVoiceProfile() });
     });
 
     replayButton = createButton('Replay', () => {
-      chrome.runtime.sendMessage({ type: 'ui-command', cmd: 'replay' }).catch(() => {});
+      void sendUiCommand('replay');
     });
 
     const skipButton = createButton('Skip', () => {
-      chrome.runtime.sendMessage({ type: 'ui-command', cmd: 'skip' }).catch(() => {});
+      void sendUiCommand('skip');
     });
 
     const stopButton = createButton('Stop', () => {
-      chrome.runtime.sendMessage({ type: 'ui-command', cmd: 'stop' }).catch(() => {});
+      void sendUiCommand('stop');
     });
 
-    controls.append(autoButton, nextButton, regenButton, replayButton, skipButton, stopButton);
+    controls.append(autoButton, readButton, nextButton, regenButton, replayButton, skipButton, stopButton);
     panelBody.append(detailNode, voiceRow, tabRow, volumeRow, controls);
     header.append(titleNode, statusNode);
     panel.append(header, panelBody);
@@ -1476,10 +1448,8 @@
   }
 
   function clearAllPreviewCache() {
-    audioCache.clear();
-    readCursorByMessage.clear();
     setLastAudio(null);
-    setPanelState('Ready', 'Preview cache cleared');
+    setPanelState('Ready', 'Local cache cleared');
   }
 
   async function forceGenerateLatestPreview() {
@@ -1491,8 +1461,7 @@
     const state = ensureElementState(entry.node, entry.text);
     state.sent = true;
     entry.node.dataset[AUTO_SENT_FLAG] = '1';
-    const lastIndex = readCursorByMessage.get(entry.messageKey);
-    const targetIndex = Number.isInteger(lastIndex) && Number(lastIndex) < entry.chunks.length ? Number(lastIndex) : 0;
+    const targetIndex = 0;
     try {
       await readChunk(entry, targetIndex, { forceGenerate: true, fallbackGenerateOnCacheFail: false });
       setPanelState('Ready', 'Force regenerated');
@@ -1564,6 +1533,7 @@
       globalTabs = payload.tabs || [];
       selectedTabId = payload.selectedTabId;
       queueSize = payload.queueSize || 0;
+      setLastAudio(payload.lastPlayedItem || null);
     }
 
     if (isUiOwner !== false) { // true or null (fallback)
@@ -1588,7 +1558,9 @@
           setPanelState('Playing', `[${tabName}] ${txt.slice(0, 40)}${txt.length > 40 ? '...' : ''}`);
           setPixelPetState('talking');
         } else {
-          setPanelState('Ready', queueSize > 0 ? `Queued ${queueSize}` : 'Ready');
+          const statusText = String(payload.statusText || '');
+          const queueText = queueSize > 0 ? `Queued ${queueSize}` : 'Queue empty';
+          setPanelState('Ready', statusText ? `${statusText} / ${queueText}` : queueText);
           setPixelPetState('idle');
         }
       }
@@ -1625,13 +1597,19 @@
       }
 
       if (message.type === 'play-audio') {
-        if (isUiOwner !== false) { // true or unknown
-          playItem(message.payload.url, message.payload.text, message.payload.item);
-        }
+        void playItem(
+          message.payload.url,
+          message.payload.text,
+          message.payload.item,
+          String(message.payload.playbackToken || '')
+        );
       }
 
       if (message.type === 'stop-audio') {
-        stopPlayback();
+        const incomingToken = String((message.payload && message.payload.playbackToken) || '');
+        if (!incomingToken || incomingToken === currentPlaybackToken) {
+          stopCurrentPlayback('stop');
+        }
       }
     });
 

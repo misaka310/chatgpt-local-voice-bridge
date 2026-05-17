@@ -16,23 +16,203 @@ const DEFAULT_SETTINGS = {
   panelCollapsed: true,
 };
 
+const tabRegistry = new Map();
+let uiOwnerTabId = null;
+let selectedTabId = null;
+
+let audioQueue = [];
+let isPlaying = false;
+let currentPlayingItem = null;
+let currentPlaybackToken = null;
+let playbackWatchdogTimer = null;
+let playbackEpoch = 0;
+let lastPlayedItem = null;
+let queueSeq = 1;
+const autoQueuedChunk0Keys = new Set();
+const audioCache = new Map();
+let lastStatusText = 'Ready';
+let lastStatusLevel = 'info';
+
+const debugStats = {
+  speakCalls: 0,
+  speakCallsByReason: {},
+  replayCalls: 0,
+  speakEvents: [],
+};
+
 function preferCurrentUnlessLegacyOrEmpty(currentValue, legacyValue, defaultValue) {
   const value = String(currentValue || '').trim();
   if (!value || value === legacyValue) return defaultValue;
   return value;
 }
 
-// State for multi-tab UI aggregation
-const tabRegistry = new Map();
-let uiOwnerTabId = null;
-let selectedTabId = null;
+function normalizeText(text) {
+  return String(text || '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
 
-// Shared Queue State
-let audioQueue = [];
-let isPlaying = false;
-let currentPlayingItem = null;
-let lastPlayedItem = null;
-const autoQueuedChunk0Keys = new Set();
+function clampVolume(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return DEFAULT_SETTINGS.voiceVolume;
+  return Math.min(1, Math.max(0, n));
+}
+
+function cloneItem(item) {
+  if (!item) return null;
+  return {
+    id: item.id,
+    mode: item.mode,
+    reason: item.reason,
+    tabId: item.tabId,
+    tabTitle: item.tabTitle,
+    messageKey: item.messageKey,
+    chunkIndex: item.chunkIndex,
+    text: item.text,
+    voiceProfile: item.voiceProfile,
+    audioUrl: item.audioUrl || null,
+    fromCache: Boolean(item.fromCache),
+    forceRegenerate: Boolean(item.forceRegenerate),
+    playedAt: item.playedAt || null,
+  };
+}
+
+function makeQueueItem(base) {
+  return {
+    id: `q-${Date.now()}-${queueSeq++}`,
+    mode: String(base.mode || 'manual'),
+    reason: String(base.reason || 'manual'),
+    tabId: Number(base.tabId),
+    tabTitle: String(base.tabTitle || 'ChatGPT'),
+    messageKey: String(base.messageKey || ''),
+    chunkIndex: Number(base.chunkIndex || 0),
+    text: String(base.text || ''),
+    voiceProfile: String(base.voiceProfile || DEFAULT_SETTINGS.voiceProfile),
+    audioUrl: base.audioUrl ? String(base.audioUrl) : null,
+    fromCache: Boolean(base.fromCache),
+    forceRegenerate: Boolean(base.forceRegenerate),
+  };
+}
+
+function makeCacheKey(item) {
+  return [
+    String(item.voiceProfile || DEFAULT_SETTINGS.voiceProfile),
+    String(item.tabId || ''),
+    String(item.messageKey || ''),
+    String(Number(item.chunkIndex || 0)),
+    normalizeText(item.text || ''),
+  ].join('::');
+}
+
+function setStatus(text, level = 'info') {
+  lastStatusText = String(text || '').trim() || 'Ready';
+  lastStatusLevel = String(level || 'info');
+}
+
+function ensureOwnerAndSelection() {
+  const ids = Array.from(tabRegistry.keys());
+  if (!ids.length) {
+    uiOwnerTabId = null;
+    selectedTabId = null;
+    return;
+  }
+  if (!uiOwnerTabId || !tabRegistry.has(uiOwnerTabId)) {
+    uiOwnerTabId = ids[0];
+  }
+  if (!selectedTabId || !tabRegistry.has(selectedTabId)) {
+    selectedTabId = uiOwnerTabId;
+  }
+}
+
+function buildStatePayload() {
+  const tabs = Array.from(tabRegistry.entries()).map(([id, info]) => ({
+    id,
+    title: info.title,
+    url: info.url,
+  }));
+  return {
+    uiOwnerTabId,
+    selectedTabId,
+    tabs,
+    queueSize: audioQueue.length,
+    isPlaying,
+    currentPlayingItem: cloneItem(currentPlayingItem),
+    lastPlayedItem: cloneItem(lastPlayedItem),
+    replayAvailable: Boolean(lastPlayedItem && lastPlayedItem.audioUrl),
+    statusText: lastStatusText,
+    statusLevel: lastStatusLevel,
+  };
+}
+
+function broadcastState() {
+  ensureOwnerAndSelection();
+  const base = buildStatePayload();
+  for (const tabId of tabRegistry.keys()) {
+    chrome.tabs.sendMessage(tabId, {
+      type: 'state-update',
+      payload: {
+        ...base,
+        isUiOwner: tabId === uiOwnerTabId,
+      },
+    }).catch(() => {});
+  }
+}
+
+function pushSpeakEvent(event) {
+  debugStats.speakEvents.push({
+    at: new Date().toISOString(),
+    ...event,
+  });
+  if (debugStats.speakEvents.length > 200) {
+    debugStats.speakEvents.splice(0, debugStats.speakEvents.length - 200);
+  }
+}
+
+function incSpeakStats(reason, voiceProfile) {
+  const key = String(reason || 'unknown');
+  debugStats.speakCalls += 1;
+  debugStats.speakCallsByReason[key] = (debugStats.speakCallsByReason[key] || 0) + 1;
+  pushSpeakEvent({
+    type: 'speak',
+    reason: key,
+    voiceProfile: String(voiceProfile || ''),
+  });
+}
+
+function resetPlayback({ advanceEpoch }) {
+  if (playbackWatchdogTimer) {
+    clearTimeout(playbackWatchdogTimer);
+    playbackWatchdogTimer = null;
+  }
+  if (advanceEpoch) {
+    playbackEpoch += 1;
+  }
+  isPlaying = false;
+  currentPlayingItem = null;
+  currentPlaybackToken = null;
+}
+
+function resolveSelectedTarget(senderTabId) {
+  if (selectedTabId && tabRegistry.has(selectedTabId)) return selectedTabId;
+  if (senderTabId && tabRegistry.has(senderTabId)) return senderTabId;
+  const ids = Array.from(tabRegistry.keys());
+  return ids.length ? ids[0] : null;
+}
+
+function enqueueItem(baseItem, options = {}) {
+  const item = makeQueueItem(baseItem);
+  if (options.front) {
+    audioQueue.unshift(item);
+  } else {
+    audioQueue.push(item);
+  }
+  return item;
+}
 
 async function migrateSettings() {
   const current = await chrome.storage.local.get(null);
@@ -48,9 +228,7 @@ async function migrateSettings() {
     apiUrl: preferCurrentUnlessLegacyOrEmpty(current.apiUrl, LEGACY_DEFAULT_API_URL, DEFAULT_SETTINGS.apiUrl),
     healthUrl: preferCurrentUnlessLegacyOrEmpty(current.healthUrl, LEGACY_DEFAULT_HEALTH_URL, DEFAULT_SETTINGS.healthUrl),
     voiceProfile: String(current.voiceProfile || DEFAULT_SETTINGS.voiceProfile),
-    voiceVolume: Number.isFinite(Number(current.voiceVolume))
-      ? Math.min(1, Math.max(0, Number(current.voiceVolume)))
-      : DEFAULT_SETTINGS.voiceVolume,
+    voiceVolume: clampVolume(current.voiceVolume),
     previewMaxLines: DEFAULT_SETTINGS.previewMaxLines,
     previewMaxChars: DEFAULT_SETTINGS.previewMaxChars,
     previewMinChars: DEFAULT_SETTINGS.previewMinChars,
@@ -73,14 +251,12 @@ async function postJson(url, payload) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-
   let body;
   try {
     body = await response.json();
   } catch (_error) {
     throw new Error(`Local API returned non-JSON response: ${response.status}`);
   }
-
   if (!response.ok || !body.ok) {
     throw new Error(body.error || `Local API failed: ${response.status}`);
   }
@@ -145,111 +321,259 @@ function callNativeHost(command) {
   });
 }
 
-// Global UI Logic
-function electUiOwner() {
-  const ids = Array.from(tabRegistry.keys());
-  if (ids.length === 0) {
-    uiOwnerTabId = null;
-    selectedTabId = null;
-    return null;
+async function dispatchPlayAudio(item, playbackToken, epoch) {
+  const targetTabId = uiOwnerTabId;
+  if (!targetTabId || !tabRegistry.has(targetTabId)) {
+    throw new Error('No UI owner tab available');
   }
-  
-  if (!uiOwnerTabId || !tabRegistry.has(uiOwnerTabId)) {
-    uiOwnerTabId = ids[0];
+  if (!currentPlayingItem || currentPlayingItem.id !== item.id || playbackEpoch !== epoch) {
+    return false;
   }
-  
-  if (!selectedTabId || !tabRegistry.has(selectedTabId)) {
-    selectedTabId = uiOwnerTabId;
-  }
-
-  const state = {
-    isUiOwner: false, // will be set per tab
-    uiOwnerTabId,
-    selectedTabId,
-    tabs: Array.from(tabRegistry.entries()).map(([id, info]) => ({
-      id,
-      title: info.title,
-      url: info.url,
-    })),
-    queueSize: audioQueue.length,
-    isPlaying,
-    currentPlayingItem,
-    lastPlayedItem,
-  };
-
-  console.debug('[local-voice] electUiOwner state:', state);
-  broadcastState(state);
-  return state;
+  await chrome.tabs.sendMessage(targetTabId, {
+    type: 'play-audio',
+    payload: {
+      url: item.audioUrl,
+      text: item.text,
+      playbackToken,
+      item: cloneItem(item),
+    },
+  });
+  return true;
 }
 
-function broadcastState(providedState = null) {
-  const tabs = Array.from(tabRegistry.entries()).map(([id, info]) => ({
-    id,
-    title: info.title,
-    url: info.url,
-  }));
+async function prepareAudio(item, epoch) {
+  if (item.audioUrl) return item.audioUrl;
 
-  const baseState = providedState || {
-    uiOwnerTabId,
-    selectedTabId,
-    tabs,
-    queueSize: audioQueue.length,
-    isPlaying,
-    currentPlayingItem,
-    lastPlayedItem,
-  };
-
-  for (const tabId of tabRegistry.keys()) {
-    console.debug('[local-voice] broadcasting state to tab:', tabId, 'isOwner:', tabId === uiOwnerTabId);
-    chrome.tabs.sendMessage(tabId, {
-      type: 'state-update',
-      payload: {
-        ...baseState,
-        isUiOwner: tabId === uiOwnerTabId,
-      }
-    }).catch(() => {});
+  const cacheKey = makeCacheKey(item);
+  if (!item.forceRegenerate && audioCache.has(cacheKey)) {
+    const cached = audioCache.get(cacheKey);
+    item.audioUrl = cached.audioUrl;
+    item.fromCache = true;
+    pushSpeakEvent({
+      type: 'cache-hit',
+      reason: item.reason,
+      voiceProfile: item.voiceProfile,
+    });
+    return item.audioUrl;
   }
+
+  if (!currentPlayingItem || currentPlayingItem.id !== item.id || playbackEpoch !== epoch) {
+    return null;
+  }
+
+  const requestId = `bg-${item.id}-${Date.now()}`.slice(0, 120);
+  incSpeakStats(item.reason, item.voiceProfile);
+  const payload = await speak(item.text, requestId, item.voiceProfile);
+  if (!payload || !payload.audioUrl) {
+    throw new Error('No audioUrl in speak response');
+  }
+  if (!currentPlayingItem || currentPlayingItem.id !== item.id || playbackEpoch !== epoch) {
+    return null;
+  }
+
+  item.audioUrl = payload.audioUrl;
+  item.fromCache = false;
+  pushSpeakEvent({
+    type: 'generated',
+    reason: item.reason,
+    voiceProfile: item.voiceProfile,
+    audioUrl: payload.audioUrl,
+  });
+  audioCache.set(cacheKey, {
+    audioUrl: payload.audioUrl,
+    createdAt: Date.now(),
+  });
+  return item.audioUrl;
 }
 
 async function playNext() {
-  if (isPlaying || audioQueue.length === 0 || !uiOwnerTabId) {
+  ensureOwnerAndSelection();
+  if (isPlaying) return;
+  if (!uiOwnerTabId || !tabRegistry.has(uiOwnerTabId)) {
     broadcastState();
     return;
   }
 
   const item = audioQueue.shift();
+  if (!item) {
+    broadcastState();
+    return;
+  }
+
   isPlaying = true;
   currentPlayingItem = item;
+  const epoch = playbackEpoch;
+  const playbackToken = `pb-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  currentPlaybackToken = playbackToken;
+  if (playbackWatchdogTimer) {
+    clearTimeout(playbackWatchdogTimer);
+    playbackWatchdogTimer = null;
+  }
+  playbackWatchdogTimer = setTimeout(() => {
+    if (!isPlaying || !currentPlayingItem || currentPlaybackToken !== playbackToken) return;
+    resetPlayback({ advanceEpoch: true });
+    setStatus('Playback timed out, moving to next item', 'warn');
+    broadcastState();
+    void playNext();
+  }, 10000);
+  setStatus(`Playing chunk ${item.chunkIndex + 1} (${item.mode})`, 'info');
   broadcastState();
 
   try {
-    const settings = await getSettings();
-    const requestId = `bg-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const payload = await speak(item.text, requestId, item.voiceProfile || settings.voiceProfile);
-    
-    if (payload && payload.audioUrl) {
-      chrome.tabs.sendMessage(uiOwnerTabId, {
-        type: 'play-audio',
-        payload: {
-          url: payload.audioUrl,
-          text: item.text,
-          item: item
-        }
-      }).catch(err => {
-        console.error('Failed to send play-audio to UI owner', err);
-        isPlaying = false;
-        currentPlayingItem = null;
-        playNext();
-      });
-    } else {
-      throw new Error('No audioUrl in speak response');
-    }
+    const audioUrl = await prepareAudio(item, epoch);
+    if (!audioUrl) return;
+    const sent = await dispatchPlayAudio(item, playbackToken, epoch);
+    if (!sent) return;
+    setStatus(`Queued ${audioQueue.length}`, 'info');
+    broadcastState();
   } catch (error) {
-    console.error('Playback error in background:', error);
-    isPlaying = false;
-    currentPlayingItem = null;
-    playNext();
+    if (currentPlayingItem && currentPlayingItem.id === item.id && playbackEpoch === epoch) {
+      resetPlayback({ advanceEpoch: false });
+      setStatus(`Playback failed: ${error.message || String(error)}`, 'error');
+      broadcastState();
+      void playNext();
+    }
   }
+}
+
+function registerOrRefreshTab(tabId, senderTab, title) {
+  const existing = tabRegistry.get(tabId);
+  if (existing) {
+    existing.title = title || existing.title || 'ChatGPT';
+    existing.url = senderTab && senderTab.url ? senderTab.url : existing.url;
+    return existing;
+  }
+
+  const created = {
+    title: title || 'ChatGPT',
+    url: senderTab && senderTab.url ? senderTab.url : '',
+    lastAssistantMessage: null,
+    lastReadIndex: -1,
+  };
+  tabRegistry.set(tabId, created);
+  return created;
+}
+
+function queueManualCommand(cmd, senderTabId, params) {
+  const targetTabId = resolveSelectedTarget(senderTabId);
+  if (!targetTabId || !tabRegistry.has(targetTabId)) {
+    setStatus('No selected ChatGPT tab', 'warn');
+    return { ok: true, payload: { statusText: lastStatusText, statusLevel: lastStatusLevel } };
+  }
+
+  const info = tabRegistry.get(targetTabId);
+  const message = info.lastAssistantMessage;
+  if (!message || !Array.isArray(message.chunks) || message.chunks.length === 0) {
+    setStatus('Selected tab has no assistant response yet', 'warn');
+    return { ok: true, payload: { statusText: lastStatusText, statusLevel: lastStatusLevel } };
+  }
+
+  let chunkIndex = 0;
+  if (cmd === 'read') {
+    chunkIndex = 0;
+    info.lastReadIndex = 0;
+  } else if (cmd === 'next') {
+    const next = Number(info.lastReadIndex || -1) + 1;
+    if (next >= message.chunks.length) {
+      info.lastReadIndex = message.chunks.length - 1;
+      setStatus('No more chunks in this response', 'warn');
+      return { ok: true, payload: { statusText: lastStatusText, statusLevel: lastStatusLevel } };
+    }
+    chunkIndex = Math.max(0, next);
+    info.lastReadIndex = chunkIndex;
+  } else if (cmd === 'regen') {
+    chunkIndex = info.lastReadIndex >= 0 ? info.lastReadIndex : 0;
+    if (chunkIndex >= message.chunks.length) {
+      chunkIndex = message.chunks.length - 1;
+    }
+    info.lastReadIndex = chunkIndex;
+  }
+
+  const chunkText = String(message.chunks[chunkIndex] || '').trim();
+  if (!chunkText) {
+    setStatus('Chunk text is empty', 'warn');
+    return { ok: true, payload: { statusText: lastStatusText, statusLevel: lastStatusLevel } };
+  }
+
+  const voiceProfile = String((params && params.voiceProfile) || DEFAULT_SETTINGS.voiceProfile);
+  enqueueItem({
+    mode: cmd,
+    reason: cmd,
+    tabId: targetTabId,
+    tabTitle: info.title,
+    messageKey: message.messageKey,
+    chunkIndex,
+    text: chunkText,
+    voiceProfile,
+    forceRegenerate: cmd === 'regen',
+  });
+
+  if (cmd === 'regen') {
+    const cacheKey = makeCacheKey({
+      tabId: targetTabId,
+      messageKey: message.messageKey,
+      chunkIndex,
+      text: chunkText,
+      voiceProfile,
+    });
+    audioCache.delete(cacheKey);
+  }
+
+  setStatus(`${cmd.toUpperCase()} chunk ${chunkIndex + 1}`, 'info');
+  void playNext();
+  return { ok: true, payload: { statusText: lastStatusText, statusLevel: lastStatusLevel } };
+}
+
+function replayLast() {
+  if (!lastPlayedItem || !lastPlayedItem.audioUrl) {
+    setStatus('Replay unavailable (nothing played yet)', 'warn');
+    return { ok: true, payload: { statusText: lastStatusText, statusLevel: lastStatusLevel } };
+  }
+
+  debugStats.replayCalls += 1;
+  enqueueItem({
+    mode: 'replay',
+    reason: 'replay',
+    tabId: lastPlayedItem.tabId,
+    tabTitle: lastPlayedItem.tabTitle,
+    messageKey: lastPlayedItem.messageKey,
+    chunkIndex: lastPlayedItem.chunkIndex,
+    text: lastPlayedItem.text,
+    voiceProfile: lastPlayedItem.voiceProfile,
+    audioUrl: lastPlayedItem.audioUrl,
+    fromCache: true,
+  }, { front: true });
+
+  setStatus(`Replay chunk ${Number(lastPlayedItem.chunkIndex) + 1}`, 'info');
+  void playNext();
+  return { ok: true, payload: { statusText: lastStatusText, statusLevel: lastStatusLevel } };
+}
+
+function finalizePlaybackFromMessage(message) {
+  const token = String((message && message.playbackToken) || '');
+  if (!isPlaying || !currentPlayingItem || !currentPlaybackToken || token !== currentPlaybackToken) {
+    return { ok: true, payload: { ignored: true } };
+  }
+
+  const completed = currentPlayingItem;
+  resetPlayback({ advanceEpoch: false });
+
+  if (message.ok && !message.stopped) {
+    lastPlayedItem = {
+      ...cloneItem(completed),
+      audioUrl: completed.audioUrl,
+      playedAt: new Date().toISOString(),
+    };
+    setStatus(`Played ${completed.tabTitle} chunk ${completed.chunkIndex + 1}`, 'info');
+  } else if (message.stopped) {
+    setStatus('Playback stopped', 'info');
+  } else {
+    setStatus(`Playback error: ${String(message.error || 'unknown')}`, 'error');
+  }
+
+  broadcastState();
+  void playNext();
+  return { ok: true, payload: { statusText: lastStatusText, statusLevel: lastStatusLevel } };
 }
 
 chrome.runtime.onInstalled.addListener(async () => {
@@ -261,169 +585,180 @@ chrome.runtime.onStartup.addListener(async () => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  if (tabRegistry.has(tabId)) {
-    tabRegistry.delete(tabId);
-    for (const key of Array.from(autoQueuedChunk0Keys)) {
-      if (key.startsWith(`${tabId}::`)) autoQueuedChunk0Keys.delete(key);
-    }
-    if (uiOwnerTabId === tabId) {
-      uiOwnerTabId = null;
-      electUiOwner();
-    } else if (selectedTabId === tabId) {
-      selectedTabId = null;
-      electUiOwner();
-    } else {
-      broadcastState();
-    }
+  if (!tabRegistry.has(tabId)) return;
+
+  tabRegistry.delete(tabId);
+  for (const key of Array.from(autoQueuedChunk0Keys)) {
+    if (key.startsWith(`${tabId}::`)) autoQueuedChunk0Keys.delete(key);
   }
+  audioQueue = audioQueue.filter((item) => item.tabId !== tabId);
+
+  if (currentPlayingItem && currentPlayingItem.tabId === tabId) {
+    resetPlayback({ advanceEpoch: true });
+  }
+
+  if (uiOwnerTabId === tabId || selectedTabId === tabId) {
+    uiOwnerTabId = null;
+    selectedTabId = null;
+  }
+
+  ensureOwnerAndSelection();
+  setStatus('Tab closed, state updated', 'info');
+  broadcastState();
+  void playNext();
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message.type !== 'string') return false;
 
-  const tabId = sender.tab ? sender.tab.id : null;
+  const senderTabId = sender.tab ? sender.tab.id : null;
 
   if (message.type === 'register-tab') {
-    console.debug('[local-voice] register-tab from:', tabId, message.title);
-    let state = null;
-    if (tabId) {
-      tabRegistry.set(tabId, {
-        title: message.title || 'ChatGPT',
-        url: sender.tab.url,
-        lastAssistantMessage: null,
-        lastReadIndex: -1
-      });
-      state = electUiOwner();
+    if (senderTabId) {
+      registerOrRefreshTab(senderTabId, sender.tab, message.title);
     }
-    const resp = { 
-      ok: true, 
-      payload: state ? { ...state, isUiOwner: tabId === uiOwnerTabId } : null 
-    };
-    console.debug('[local-voice] register-tab response sending:', resp);
-    sendResponse(resp);
+    ensureOwnerAndSelection();
+    const payload = buildStatePayload();
+    sendResponse({
+      ok: true,
+      payload: senderTabId ? { ...payload, isUiOwner: senderTabId === uiOwnerTabId } : payload,
+    });
+    broadcastState();
     return false;
   }
 
   if (message.type === 'report-chunks') {
-    if (tabId && tabRegistry.has(tabId)) {
-      console.debug('[local-voice] bg report-chunks received', {
-        tabId,
-        messageKey: message.messageKey,
-        isAuto: Boolean(message.isAuto),
-        chunkCount: Array.isArray(message.chunks) ? message.chunks.length : 0,
-      });
-      const info = tabRegistry.get(tabId);
+    if (senderTabId && tabRegistry.has(senderTabId)) {
+      const info = tabRegistry.get(senderTabId);
       if (message.title && message.title !== info.title) {
-        info.title = message.title;
+        info.title = String(message.title);
       }
-      
-      const isNewMessage = !info.lastAssistantMessage || info.lastAssistantMessage.messageKey !== message.messageKey;
+
+      const messageKey = String(message.messageKey || '').trim();
+      const chunks = Array.isArray(message.chunks) ? message.chunks.map((x) => String(x || '').trim()).filter(Boolean) : [];
+      const text = String(message.text || '');
+      if (!messageKey || !chunks.length) {
+        sendResponse({ ok: true, payload: { ignored: true } });
+        return false;
+      }
+
+      const isNewMessage = !info.lastAssistantMessage || info.lastAssistantMessage.messageKey !== messageKey;
       if (isNewMessage) {
         info.lastReadIndex = -1;
       }
-      
+
       info.lastAssistantMessage = {
-        messageKey: message.messageKey,
-        text: message.text,
-        chunks: message.chunks,
-        capturedAt: Date.now()
+        messageKey,
+        text,
+        chunks,
+        capturedAt: Date.now(),
       };
 
       if (message.isAuto) {
-        const chunk0 = Array.isArray(message.chunks) ? String(message.chunks[0] || '').trim() : '';
-        const autoKey = `${tabId}::${message.messageKey}::0`;
-        if (!chunk0) {
-          console.debug('[local-voice] bg auto chunk0 skipped: empty', { tabId, messageKey: message.messageKey });
-        } else if (autoQueuedChunk0Keys.has(autoKey)) {
-          console.debug('[local-voice] bg auto chunk0 skipped: duplicate', { tabId, messageKey: message.messageKey });
-        } else {
+        const chunk0 = String(chunks[0] || '').trim();
+        const autoKey = `${senderTabId}::${messageKey}::0`;
+        if (chunk0 && !autoQueuedChunk0Keys.has(autoKey)) {
           autoQueuedChunk0Keys.add(autoKey);
           info.lastReadIndex = 0;
-          audioQueue.push({
-            tabId,
+          enqueueItem({
+            mode: 'auto',
+            reason: 'auto',
+            tabId: senderTabId,
             tabTitle: info.title,
-            messageKey: message.messageKey,
+            messageKey,
             chunkIndex: 0,
             text: chunk0,
-            voiceProfile: message.voiceProfile,
-            isAuto: true
+            voiceProfile: String(message.voiceProfile || DEFAULT_SETTINGS.voiceProfile),
           });
-          console.debug('[local-voice] bg auto chunk0 enqueued', { tabId, messageKey: message.messageKey });
-          playNext();
+          setStatus(`Auto queued ${info.title} chunk 1`, 'info');
+          void playNext();
         }
       }
       broadcastState();
     }
-    sendResponse({ ok: true });
+    sendResponse({ ok: true, payload: { statusText: lastStatusText, statusLevel: lastStatusLevel } });
     return false;
   }
 
   if (message.type === 'playback-done') {
-    isPlaying = false;
-    lastPlayedItem = currentPlayingItem;
-    currentPlayingItem = null;
-    broadcastState();
-    playNext();
+    sendResponse(finalizePlaybackFromMessage(message));
     return false;
   }
 
   if (message.type === 'ui-command') {
-    const { cmd, params } = message;
-    
-    if (cmd === 'select-tab') {
-      selectedTabId = params.tabId;
-      broadcastState();
-    } else if (cmd === 'stop') {
-      audioQueue = [];
-      isPlaying = false;
-      currentPlayingItem = null;
-      if (uiOwnerTabId) {
-        chrome.tabs.sendMessage(uiOwnerTabId, { type: 'stop-audio' }).catch(() => {});
-      }
-      broadcastState();
-    } else if (cmd === 'skip') {
-      if (uiOwnerTabId) {
-        chrome.tabs.sendMessage(uiOwnerTabId, { type: 'stop-audio' }).catch(() => {});
-      }
-      isPlaying = false;
-      playNext();
-    } else if (cmd === 'replay') {
-      if (lastPlayedItem) {
-        audioQueue.unshift(lastPlayedItem);
-        playNext();
-      }
-    } else if (cmd === 'next' || cmd === 'read' || cmd === 'regen') {
-      const targetId = selectedTabId || tabId;
-      if (targetId && tabRegistry.has(targetId)) {
-        const info = tabRegistry.get(targetId);
-        if (info.lastAssistantMessage) {
-          let chunkIndex = 0;
-          if (cmd === 'next') {
-            info.lastReadIndex = (info.lastReadIndex ?? -1) + 1;
-            chunkIndex = info.lastReadIndex;
-          } else if (cmd === 'regen') {
-            chunkIndex = info.lastReadIndex >= 0 ? info.lastReadIndex : 0;
-          } else {
-            // read
-            chunkIndex = 0;
-            info.lastReadIndex = 0;
-          }
+    const cmd = String(message.cmd || '');
+    const params = message.params && typeof message.params === 'object' ? message.params : {};
 
-          if (chunkIndex >= 0 && chunkIndex < info.lastAssistantMessage.chunks.length) {
-            audioQueue.push({
-              tabId: targetId,
-              tabTitle: info.title,
-              messageKey: info.lastAssistantMessage.messageKey,
-              chunkIndex: chunkIndex,
-              text: info.lastAssistantMessage.chunks[chunkIndex],
-              voiceProfile: params ? params.voiceProfile : null
-            });
-            playNext();
-          }
-        }
+    if (cmd === 'select-tab') {
+      const tabId = Number(params.tabId);
+      if (tabRegistry.has(tabId)) {
+        selectedTabId = tabId;
+        setStatus(`Selected tab: ${tabRegistry.get(tabId).title}`, 'info');
+      } else {
+        setStatus('Selected tab is no longer available', 'warn');
       }
+      broadcastState();
+      sendResponse({ ok: true, payload: { statusText: lastStatusText, statusLevel: lastStatusLevel } });
+      return false;
     }
-    sendResponse({ ok: true });
+
+    if (cmd === 'stop') {
+      audioQueue = [];
+      if (uiOwnerTabId) {
+        chrome.tabs.sendMessage(uiOwnerTabId, {
+          type: 'stop-audio',
+          payload: { playbackToken: currentPlaybackToken, reason: 'stop' },
+        }).catch(() => {});
+      }
+      resetPlayback({ advanceEpoch: true });
+      setStatus('Stopped and cleared queue', 'info');
+      broadcastState();
+      sendResponse({ ok: true, payload: { statusText: lastStatusText, statusLevel: lastStatusLevel } });
+      return false;
+    }
+
+    if (cmd === 'skip') {
+      if (uiOwnerTabId) {
+        chrome.tabs.sendMessage(uiOwnerTabId, {
+          type: 'stop-audio',
+          payload: { playbackToken: currentPlaybackToken, reason: 'skip' },
+        }).catch(() => {});
+      }
+      resetPlayback({ advanceEpoch: true });
+      setStatus('Skipped current item', 'info');
+      broadcastState();
+      void playNext();
+      sendResponse({ ok: true, payload: { statusText: lastStatusText, statusLevel: lastStatusLevel } });
+      return false;
+    }
+
+    if (cmd === 'replay') {
+      const response = replayLast();
+      broadcastState();
+      sendResponse(response);
+      return false;
+    }
+
+    if (cmd === 'read' || cmd === 'next' || cmd === 'regen') {
+      getSettings()
+        .then((settings) => {
+          const mergedParams = {
+            ...params,
+            voiceProfile: String(params.voiceProfile || settings.voiceProfile || DEFAULT_SETTINGS.voiceProfile),
+          };
+          const response = queueManualCommand(cmd, senderTabId, mergedParams);
+          broadcastState();
+          sendResponse(response);
+        })
+        .catch((error) => {
+          setStatus(`Command failed: ${error.message || String(error)}`, 'error');
+          broadcastState();
+          sendResponse({ ok: true, payload: { statusText: lastStatusText, statusLevel: lastStatusLevel } });
+        });
+      return true;
+    }
+
+    sendResponse({ ok: true, payload: { statusText: lastStatusText, statusLevel: lastStatusLevel } });
     return false;
   }
 
@@ -462,6 +797,43 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'debug-get-state') {
+    sendResponse({
+      ok: true,
+      payload: {
+        state: buildStatePayload(),
+        queue: audioQueue.map((item) => cloneItem(item)),
+        tabs: Array.from(tabRegistry.entries()).map(([id, info]) => ({
+          id,
+          title: info.title,
+          url: info.url,
+          lastReadIndex: info.lastReadIndex,
+          messageKey: info.lastAssistantMessage ? info.lastAssistantMessage.messageKey : null,
+          chunkCount: info.lastAssistantMessage && Array.isArray(info.lastAssistantMessage.chunks) ? info.lastAssistantMessage.chunks.length : 0,
+        })),
+        debugStats: {
+          speakCalls: debugStats.speakCalls,
+          speakCallsByReason: { ...debugStats.speakCallsByReason },
+          replayCalls: debugStats.replayCalls,
+          speakEvents: debugStats.speakEvents.map((event) => ({ ...event })),
+        },
+      },
+    });
+    return false;
+  }
+
+  if (message.type === 'debug-force-playback-done') {
+    if (!isPlaying || !currentPlaybackToken) {
+      sendResponse({ ok: true, payload: { ignored: true } });
+      return false;
+    }
+    sendResponse(finalizePlaybackFromMessage({
+      playbackToken: currentPlaybackToken,
+      ok: true,
+      stopped: false,
+    }));
+    return false;
+  }
+
   return false;
 });
-
