@@ -128,7 +128,7 @@
     if (trimmed.length <= maxChars) return { head: trimmed, tail: '' };
 
     const head = trimmed.slice(0, maxChars);
-    const punctRegex = /[縲ゑｼ・ｼ・!?]/g;
+    const punctRegex = /[。！？.!?]/g;
     let punctMatch = null;
     for (const match of head.matchAll(punctRegex)) punctMatch = match;
     if (punctMatch && Number(punctMatch.index) >= Math.floor(minChars * 0.6)) {
@@ -215,7 +215,7 @@
     const len = preview.length;
     if (!len) return false;
     if (len >= maxChars) return true;
-    if (len >= minChars && /[縲ゑｼ・ｼ・!?]$/.test(preview)) return true;
+    if (len >= minChars && /[。！？.!?]$/.test(preview)) return true;
     if (len >= minChars && now - item.lastChangedAt >= stableMs) return true;
     if (len >= MIN_FALLBACK_CHARS && now - item.lastChangedAt >= stableMs + 400) return true;
     return false;
@@ -282,7 +282,7 @@
     if (statusNode) statusNode.textContent = statusText;
     if (detailNode) detailNode.textContent = detailText || `${getCurrentVoiceProfile()} / chunked preview`;
     if (titleNode && settings.panelCollapsed) {
-      titleNode.textContent = `Voice ﾂｷ ${statusText}`;
+      titleNode.textContent = `Voice - ${statusText}`;
     } else if (titleNode) {
       titleNode.textContent = 'Local Voice';
     }
@@ -594,6 +594,12 @@
   }
 
   async function reportChunks(entry, isAuto = false) {
+    console.debug('[local-voice] content report-chunks', {
+      messageKey: entry.messageKey,
+      chunkCount: entry.chunks.length,
+      chunk0Chars: entry.chunks[0] ? entry.chunks[0].length : 0,
+      isAuto,
+    });
     chrome.runtime.sendMessage({
       type: 'report-chunks',
       messageKey: entry.messageKey,
@@ -617,13 +623,18 @@
     if (!text) return;
 
     const item = ensureElementState(node, text);
+    console.debug('[local-voice] assistant node detected', {
+      messageKey: item.key,
+      isInitialized: initializedElements.has(node),
+      sent: item.sent,
+      textChars: text.length,
+    });
     if (item.sent) return;
 
     if (!initializedElements.has(node)) {
       initializedElements.add(node);
-      item.lastText = text;
-      item.lastChangedAt = Date.now();
-      return;
+      if (!item.lastText) item.lastText = text;
+      if (!item.lastChangedAt) item.lastChangedAt = Date.now();
     }
 
     if (text !== item.lastText) {
@@ -637,6 +648,12 @@
       minChars: Number(settings.previewMinChars || DEFAULT_SETTINGS.previewMinChars),
     });
     const preview = chunks[0];
+    console.debug('[local-voice] chunk[0] prepared', {
+      messageKey: item.key,
+      hasChunk0: Boolean(preview),
+      chunkCount: chunks.length,
+      chunk0Chars: preview ? preview.length : 0,
+    });
     if (!preview) return;
     const entry = {
       node,
@@ -654,6 +671,10 @@
 
     const now = Date.now();
     if (shouldSendNow(preview, now, item)) {
+      console.debug('[local-voice] shouldSendNow=true', {
+        messageKey: item.key,
+        chunk0Chars: preview.length,
+      });
       item.sent = true;
       node.dataset[AUTO_SENT_FLAG] = '1';
       void reportChunks(entry, true);
@@ -675,6 +696,10 @@
       if (!pendingPreview) return;
 
       if (shouldSendNow(pendingPreview, Date.now(), item)) {
+        console.debug('[local-voice] shouldSendNow=true (idle)', {
+          messageKey: item.key,
+          chunk0Chars: pendingPreview.length,
+        });
         item.sent = true;
         node.dataset[AUTO_SENT_FLAG] = '1';
         const pendingEntry = {
@@ -829,7 +854,7 @@
       panel.style.padding = collapsed ? '8px 10px' : '10px';
     }
     if (titleNode) {
-      titleNode.textContent = collapsed ? `Voice ﾂｷ ${statusNode ? statusNode.textContent : 'Ready'}` : 'Local Voice';
+      titleNode.textContent = collapsed ? `Voice - ${statusNode ? statusNode.textContent : 'Ready'}` : 'Local Voice';
     }
     if (persist && globalThis.chrome && chrome.storage && chrome.storage.local) {
       await chrome.storage.local.set({ [PANEL_COLLAPSED_KEY]: Boolean(collapsed) });

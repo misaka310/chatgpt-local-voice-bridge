@@ -32,6 +32,7 @@ let audioQueue = [];
 let isPlaying = false;
 let currentPlayingItem = null;
 let lastPlayedItem = null;
+const autoQueuedChunk0Keys = new Set();
 
 async function migrateSettings() {
   const current = await chrome.storage.local.get(null);
@@ -262,6 +263,9 @@ chrome.runtime.onStartup.addListener(async () => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (tabRegistry.has(tabId)) {
     tabRegistry.delete(tabId);
+    for (const key of Array.from(autoQueuedChunk0Keys)) {
+      if (key.startsWith(`${tabId}::`)) autoQueuedChunk0Keys.delete(key);
+    }
     if (uiOwnerTabId === tabId) {
       uiOwnerTabId = null;
       electUiOwner();
@@ -302,6 +306,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'report-chunks') {
     if (tabId && tabRegistry.has(tabId)) {
+      console.debug('[local-voice] bg report-chunks received', {
+        tabId,
+        messageKey: message.messageKey,
+        isAuto: Boolean(message.isAuto),
+        chunkCount: Array.isArray(message.chunks) ? message.chunks.length : 0,
+      });
       const info = tabRegistry.get(tabId);
       if (message.title && message.title !== info.title) {
         info.title = message.title;
@@ -320,17 +330,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       };
 
       if (message.isAuto) {
-        if (isNewMessage && info.lastReadIndex === -1) {
+        const chunk0 = Array.isArray(message.chunks) ? String(message.chunks[0] || '').trim() : '';
+        const autoKey = `${tabId}::${message.messageKey}::0`;
+        if (!chunk0) {
+          console.debug('[local-voice] bg auto chunk0 skipped: empty', { tabId, messageKey: message.messageKey });
+        } else if (autoQueuedChunk0Keys.has(autoKey)) {
+          console.debug('[local-voice] bg auto chunk0 skipped: duplicate', { tabId, messageKey: message.messageKey });
+        } else {
+          autoQueuedChunk0Keys.add(autoKey);
           info.lastReadIndex = 0;
           audioQueue.push({
             tabId,
             tabTitle: info.title,
             messageKey: message.messageKey,
             chunkIndex: 0,
-            text: message.chunks[0],
+            text: chunk0,
             voiceProfile: message.voiceProfile,
             isAuto: true
           });
+          console.debug('[local-voice] bg auto chunk0 enqueued', { tabId, messageKey: message.messageKey });
           playNext();
         }
       }
