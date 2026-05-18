@@ -473,7 +473,8 @@ function queueManualCommand(cmd, senderTabId, params) {
     chunkIndex = 0;
     info.lastReadIndex = 0;
   } else if (cmd === 'next') {
-    const next = Number(info.lastReadIndex || -1) + 1;
+    const currentIndex = Number.isInteger(info.lastReadIndex) ? Number(info.lastReadIndex) : -1;
+    const next = currentIndex + 1;
     if (next >= message.chunks.length) {
       info.lastReadIndex = message.chunks.length - 1;
       setStatus('No more chunks in this response', 'warn');
@@ -802,6 +803,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       ok: true,
       payload: {
         state: buildStatePayload(),
+        currentPlaybackToken,
         queue: audioQueue.map((item) => cloneItem(item)),
         tabs: Array.from(tabRegistry.entries()).map(([id, info]) => ({
           id,
@@ -833,6 +835,66 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       stopped: false,
     }));
     return false;
+  }
+
+  if (message.type === 'debug-get-owner-content-state') {
+    if (!uiOwnerTabId || !tabRegistry.has(uiOwnerTabId)) {
+      sendResponse({ ok: false, error: 'ui owner tab is unavailable' });
+      return false;
+    }
+    chrome.tabs.sendMessage(uiOwnerTabId, { type: 'debug-content-state' }, (response) => {
+      if (chrome.runtime.lastError) {
+        sendResponse({ ok: false, error: chrome.runtime.lastError.message });
+        return;
+      }
+      if (!response || !response.ok) {
+        sendResponse({ ok: false, error: (response && response.error) || 'content debug response failed' });
+        return;
+      }
+      sendResponse({ ok: true, payload: response.payload });
+    });
+    return true;
+  }
+
+  if (message.type === 'debug-force-owner-web-audio-next') {
+    if (!uiOwnerTabId || !tabRegistry.has(uiOwnerTabId)) {
+      sendResponse({ ok: false, error: 'ui owner tab is unavailable' });
+      return false;
+    }
+    chrome.tabs.sendMessage(uiOwnerTabId, { type: 'debug-force-web-audio-next' }, (response) => {
+      if (chrome.runtime.lastError) {
+        sendResponse({ ok: false, error: chrome.runtime.lastError.message });
+        return;
+      }
+      if (!response || !response.ok) {
+        sendResponse({ ok: false, error: (response && response.error) || 'failed to set owner fallback flag' });
+        return;
+      }
+      sendResponse({ ok: true, payload: response.payload });
+    });
+    return true;
+  }
+
+  if (message.type === 'debug-set-owner-playback-simulated') {
+    if (!uiOwnerTabId || !tabRegistry.has(uiOwnerTabId)) {
+      sendResponse({ ok: false, error: 'ui owner tab is unavailable' });
+      return false;
+    }
+    chrome.tabs.sendMessage(uiOwnerTabId, {
+      type: 'debug-set-playback-simulated',
+      enabled: Boolean(message.enabled),
+    }, (response) => {
+      if (chrome.runtime.lastError) {
+        sendResponse({ ok: false, error: chrome.runtime.lastError.message });
+        return;
+      }
+      if (!response || !response.ok) {
+        sendResponse({ ok: false, error: (response && response.error) || 'failed to set playback simulation mode' });
+        return;
+      }
+      sendResponse({ ok: true, payload: response.payload });
+    });
+    return true;
   }
 
   return false;

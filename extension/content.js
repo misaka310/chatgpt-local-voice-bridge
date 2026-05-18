@@ -58,6 +58,10 @@
   let currentPlaybackToken = null;
   let lastAudio = null;
   let lastPreviewEntry = null;
+  let lastElementVolumeApplied = null;
+  let lastGainVolumeApplied = null;
+  let forceWebAudioNextPlayback = false;
+  let debugSimulatedPlayback = false;
   let dragMovedRecently = false;
 
   // Pixel Pet variables
@@ -370,11 +374,16 @@
   }
 
   async function playWithAudioElement(blob, playbackToken) {
+    if (forceWebAudioNextPlayback) {
+      forceWebAudioNextPlayback = false;
+      throw new Error('forced webaudio fallback');
+    }
     const objectUrl = URL.createObjectURL(blob);
     currentObjectUrl = objectUrl;
     return new Promise((resolve, reject) => {
       const audio = new Audio(objectUrl);
       audio.volume = clampVolume(settings.voiceVolume);
+      lastElementVolumeApplied = audio.volume;
       currentAudio = audio;
       audio.onended = () => {
         releaseCurrentObjectUrl();
@@ -413,6 +422,7 @@
       const source = context.createBufferSource();
       const gain = context.createGain();
       gain.gain.value = clampVolume(settings.voiceVolume);
+      lastGainVolumeApplied = gain.gain.value;
       source.buffer = decoded;
       source.connect(gain);
       gain.connect(context.destination);
@@ -495,6 +505,17 @@
     isPlaying = true;
     setPixelPetState('talking');
     setPanelState('Playing', `${String(text || '').slice(0, 60)}${String(text || '').length > 60 ? '...' : ''}`);
+    if (debugSimulatedPlayback) {
+      const volume = clampVolume(settings.voiceVolume);
+      if (forceWebAudioNextPlayback) {
+        forceWebAudioNextPlayback = false;
+        lastGainVolumeApplied = volume;
+      } else {
+        lastElementVolumeApplied = volume;
+      }
+      setPanelState('Playing', `${String(text || '').slice(0, 60)}${String(text || '').length > 60 ? '...' : ''} (simulated)`);
+      return;
+    }
     try {
       const blob = await fetchAudioBlob(url);
       if (!isCurrentPlaybackToken(currentPlaybackToken)) return;
@@ -684,10 +705,14 @@
     }, 200);
   }
 
-  function createButton(label, onClick) {
+  function createButton(label, onClick, testId = '') {
     const button = document.createElement('button');
     button.type = 'button';
     button.textContent = label;
+    if (testId) {
+      button.dataset.testid = testId;
+      button.id = testId;
+    }
     button.style.cssText = [
       'font:600 11px/1.1 "Segoe UI",sans-serif',
       'padding:5px 6px',
@@ -1298,6 +1323,7 @@
     voiceLabel.style.cssText = 'font-size:11px;color:#c8d2e8;min-width:34px;';
     voiceProfileSelect = document.createElement('select');
     voiceProfileSelect.id = 'local-voice-voice-select';
+    voiceProfileSelect.dataset.testid = 'local-voice-profile';
     voiceProfileSelect.style.cssText = [
       'flex:1',
       'min-width:0',
@@ -1323,6 +1349,7 @@
     tabLabel.style.cssText = 'font-size:11px;color:#c8d2e8;min-width:34px;';
     tabSelect = document.createElement('select');
     tabSelect.id = 'local-voice-tab-select';
+    tabSelect.dataset.testid = 'local-voice-tab';
     tabSelect.style.cssText = [
       'flex:1',
       'min-width:0',
@@ -1346,6 +1373,7 @@
     volumeLabel.style.cssText = 'font-size:11px;color:#c8d2e8;min-width:42px;';
     volumeSlider = document.createElement('input');
     volumeSlider.id = 'local-voice-volume-slider';
+    volumeSlider.dataset.testid = 'local-voice-volume';
     volumeSlider.type = 'range';
     volumeSlider.min = '0';
     volumeSlider.max = '100';
@@ -1381,31 +1409,31 @@
       if (globalThis.chrome && chrome.storage && chrome.storage.local) {
         await chrome.storage.local.set({ enabled });
       }
-    });
+    }, 'local-voice-auto');
 
     const readButton = createButton('Read', () => {
       void sendUiCommand('read', { voiceProfile: getCurrentVoiceProfile() });
-    });
+    }, 'local-voice-read');
 
     const nextButton = createButton('Next', () => {
       void sendUiCommand('next', { voiceProfile: getCurrentVoiceProfile() });
-    });
+    }, 'local-voice-next');
 
     const regenButton = createButton('Regen', () => {
       void sendUiCommand('regen', { voiceProfile: getCurrentVoiceProfile() });
-    });
+    }, 'local-voice-regen');
 
     replayButton = createButton('Replay', () => {
       void sendUiCommand('replay');
-    });
+    }, 'local-voice-replay');
 
     const skipButton = createButton('Skip', () => {
       void sendUiCommand('skip');
-    });
+    }, 'local-voice-skip');
 
     const stopButton = createButton('Stop', () => {
       void sendUiCommand('stop');
-    });
+    }, 'local-voice-stop');
 
     controls.append(autoButton, readButton, nextButton, regenButton, replayButton, skipButton, stopButton);
     panelBody.append(detailNode, voiceRow, tabRow, volumeRow, controls);
@@ -1480,6 +1508,33 @@
         return { ok: true };
       },
       getLastPreview: () => (lastPreviewEntry ? { ...lastPreviewEntry } : null),
+      getUiSnapshot: () => ({
+        isUiOwner,
+        enabled,
+        selectedTabId,
+        queueSize,
+        voiceProfile: getCurrentVoiceProfile(),
+        voiceVolume: clampVolume(settings.voiceVolume),
+        currentAudioVolume: currentAudio ? Number(currentAudio.volume) : null,
+        isPlaying,
+        lastElementVolumeApplied,
+        lastGainVolumeApplied,
+      }),
+    };
+  }
+
+  function getDebugContentState() {
+    return {
+      isUiOwner,
+      enabled,
+      selectedTabId,
+      queueSize,
+      voiceProfile: getCurrentVoiceProfile(),
+      voiceVolume: clampVolume(settings.voiceVolume),
+      currentAudioVolume: currentAudio ? Number(currentAudio.volume) : null,
+      isPlaying,
+      lastElementVolumeApplied,
+      lastGainVolumeApplied,
     };
   }
 
@@ -1588,7 +1643,7 @@
 
   async function start() {
     // 1. Setup message listener FIRST
-    chrome.runtime.onMessage.addListener((message) => {
+    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (!message || typeof message.type !== 'string') return;
 
       if (message.type === 'state-update') {
@@ -1610,6 +1665,23 @@
         if (!incomingToken || incomingToken === currentPlaybackToken) {
           stopCurrentPlayback('stop');
         }
+      }
+
+      if (message.type === 'debug-content-state') {
+        sendResponse({ ok: true, payload: getDebugContentState() });
+        return false;
+      }
+
+      if (message.type === 'debug-force-web-audio-next') {
+        forceWebAudioNextPlayback = true;
+        sendResponse({ ok: true, payload: { forced: true } });
+        return false;
+      }
+
+      if (message.type === 'debug-set-playback-simulated') {
+        debugSimulatedPlayback = Boolean(message.enabled);
+        sendResponse({ ok: true, payload: { enabled: debugSimulatedPlayback } });
+        return false;
       }
     });
 

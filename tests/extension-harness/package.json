@@ -1,0 +1,16 @@
+{
+  "name": "extension-harness",
+  "version": "1.0.0",
+  "description": "",
+  "main": "e2e-playwright.js",
+  "scripts": {
+    "e2e": "node e2e-playwright.js",
+    "test": "npm run e2e"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "playwright": "^1.60.0"
+  }
+}
