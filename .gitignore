@@ -46,6 +46,13 @@ local-api/reference/*.ogg
 local-api/reference/*.aac
 local-api/reference/*.txt
 local-api/reference/*.json
+local-api/reference/voice-presets/**/*.wav
+local-api/reference/voice-presets/**/*.mp3
+local-api/reference/voice-presets/**/*.flac
+local-api/reference/voice-presets/**/*.m4a
+local-api/reference/voice-presets/**/*.ogg
+local-api/reference/voice-presets/**/*.aac
+local-api/reference/voice-presets/**/*.txt
 !local-api/reference/README.md
 !local-api/reference/.gitkeep
 !local-api/workflows/README.md

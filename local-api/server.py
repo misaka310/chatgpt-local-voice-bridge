@@ -8,11 +8,12 @@ import hashlib
 import json
 import mimetypes
 import os
+import re
 import shutil
 import sys
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -35,6 +36,10 @@ DEFAULT_SAVE_CLASS_HINTS = ("SaveAudio", "VHS_SaveAudio")
 DEFAULT_SAVE_KEYS = ("filename_prefix", "filename", "output_name", "basename")
 DEFAULT_REF_CLASS_HINTS = ("LoadAudio", "ReferenceAudio", "IrodoriTTSReferenceAudio", "Audio")
 DEFAULT_REF_KEYS = ("ref_audio", "audio", "filename", "file", "path")
+DEFAULT_REF_TEXT_CLASS_HINTS = ("ReferenceText", "RefText", "IrodoriTTSReferenceText", "VoiceClone", "Qwen3")
+DEFAULT_REF_TEXT_KEYS = ("ref_text", "reference_text", "referenceText", "prompt_ref", "audio_prompt_text")
+VOICE_PRESETS_DIR = ROOT / "reference" / "voice-presets"
+VOICE_PRESET_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "engine": "comfyui_workflow",
@@ -430,6 +435,8 @@ class ActiveVoiceProfile:
     reference_audio_path: Path
     workflow_path: Path
     workflow_patch: dict[str, Any]
+    reference_text_path: Path | None = None
+    voice_preset_id: str | None = None
 
 
 def selector_from_config(raw: dict[str, Any], key: str, fallback_classes: tuple[str, ...], fallback_keys: tuple[str, ...], default_enabled: bool = True) -> PatchSelector:
@@ -480,6 +487,83 @@ def resolve_voice_profile_id(config: RuntimeConfig, payload: dict[str, Any]) -> 
     return config.resolve_profile_id(None)
 
 
+def validate_voice_preset_id(raw: Any) -> str | None:
+    if raw in (None, ""):
+        return None
+    preset_id = str(raw).strip()
+    if not preset_id:
+        raise BridgeError("voicePreset is empty")
+    if not VOICE_PRESET_ID_PATTERN.fullmatch(preset_id):
+        raise BridgeError("invalid voicePreset; use only [A-Za-z0-9_-]")
+    if "/" in preset_id or "\\" in preset_id:
+        raise BridgeError("invalid voicePreset; path separators are not allowed")
+    if Path(preset_id).is_absolute():
+        raise BridgeError("invalid voicePreset; absolute paths are not allowed")
+    return preset_id
+
+
+def resolve_voice_preset_paths(preset_id: str) -> tuple[Path, Path]:
+    root = VOICE_PRESETS_DIR.resolve()
+    preset_dir = (root / preset_id).resolve()
+    if preset_dir.parent != root:
+        raise BridgeError("invalid voicePreset path")
+
+    audio_path = (preset_dir / "voice.wav").resolve()
+    text_path = (preset_dir / "voice.txt").resolve()
+    if not audio_path.is_file() or not text_path.is_file():
+        raise BridgeError(f"voicePreset not found or incomplete: {preset_id} (need voice.wav and voice.txt)")
+    return audio_path, text_path
+
+
+def resolve_speak_profile(config: RuntimeConfig, payload: dict[str, Any]) -> ActiveVoiceProfile:
+    profile_id = resolve_voice_profile_id(config, payload)
+    base_profile = config.profile_config(profile_id)
+
+    preset_id = validate_voice_preset_id(payload.get("voicePreset"))
+    if not preset_id:
+        return base_profile
+
+    reference_audio_path, reference_text_path = resolve_voice_preset_paths(preset_id)
+    return replace(
+        base_profile,
+        reference_audio_path=reference_audio_path,
+        reference_text_path=reference_text_path,
+        voice_preset_id=preset_id,
+    )
+
+
+def read_reference_text(path: Path) -> str:
+    value = path.read_text(encoding="utf-8-sig").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not value:
+        raise BridgeError(f"referenceTextPath is empty: {path}")
+    return value
+
+
+def list_voice_presets() -> list[dict[str, Any]]:
+    presets: list[dict[str, Any]] = []
+    root = VOICE_PRESETS_DIR.resolve()
+    if not root.exists() or not root.is_dir():
+        return presets
+
+    for child in sorted(root.iterdir(), key=lambda p: p.name.lower()):
+        if not child.is_dir():
+            continue
+        preset_id = child.name
+        audio_path = (child / "voice.wav").resolve()
+        text_path = (child / "voice.txt").resolve()
+        available = VOICE_PRESET_ID_PATTERN.fullmatch(preset_id) is not None and audio_path.is_file() and text_path.is_file()
+        presets.append(
+            {
+                "id": preset_id,
+                "name": preset_id,
+                "referenceAudioPath": str(audio_path),
+                "referenceTextPath": str(text_path),
+                "available": available,
+            }
+        )
+    return presets
+
+
 def available_voice_profiles_payload(config: RuntimeConfig) -> list[dict[str, str]]:
     payload: list[dict[str, str]] = []
     for profile_id in config.available_profile_ids():
@@ -492,6 +576,8 @@ def ensure_required_files(config: RuntimeConfig, profile: ActiveVoiceProfile) ->
         raise BridgeError(f"workflowPath not found for {profile.id}: {profile.workflow_path}")
     if not profile.reference_audio_path.is_file():
         raise BridgeError(f"referenceAudioPath not found for {profile.id}: {profile.reference_audio_path}")
+    if profile.reference_text_path is not None and not profile.reference_text_path.is_file():
+        raise BridgeError(f"referenceTextPath not found for {profile.id}: {profile.reference_text_path}")
     if not config.comfyui_input_dir.is_dir():
         raise BridgeError(f"comfyui.inputDir not found: {config.comfyui_input_dir}")
     if not config.comfyui_output_dir.is_dir():
@@ -810,9 +896,11 @@ def build_summary(
         "requestId": request_id,
         "promptId": result.prompt_id,
         "voiceProfile": profile.id,
+        "voicePreset": profile.voice_preset_id,
         "engine": config.engine,
         "workflowPath": str(profile.workflow_path),
         "referenceAudioPath": str(profile.reference_audio_path),
+        "referenceTextPath": str(profile.reference_text_path) if profile.reference_text_path else None,
         "textHash": text_hash,
         "workflowHash": result.workflow_hash,
         "patchedPromptHash": result.patched_prompt_hash,
@@ -859,6 +947,7 @@ def persist_debug_bundle(
         "textLength": len(text),
         "receivedAt": received_at,
         "voiceProfile": profile.id,
+        "voicePreset": profile.voice_preset_id,
         "engine": config.engine,
     }
     summary_payload = build_summary(config=config, profile=profile, request_id=request_id, text_hash=text_hash, result=result)
@@ -999,6 +1088,13 @@ def patch_workflow_prompt(
         DEFAULT_REF_KEYS,
         default_enabled=True,
     )
+    reference_text_selector = selector_from_config(
+        patch_cfg,
+        "referenceText",
+        DEFAULT_REF_TEXT_CLASS_HINTS,
+        DEFAULT_REF_TEXT_KEYS,
+        default_enabled=True,
+    )
 
     text_target = find_patch_target(prompt, text_selector, "text")
     if text_target is None:
@@ -1047,6 +1143,12 @@ def patch_workflow_prompt(
             input_filename=copied_name,
             fallback_input_filename=fallback_name,
         )
+
+    if profile.reference_text_path is not None:
+        reference_text_target = find_patch_target(prompt, reference_text_selector, "referenceText")
+        if reference_text_target is not None:
+            reference_text = read_reference_text(profile.reference_text_path)
+            apply_patch_value(prompt, reference_text_target, reference_text)
 
     return prompt, text_target, save_target, reference_target, reference_debug
 
@@ -1197,6 +1299,17 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
 
+            if parsed.path == "/v1/voice-presets":
+                json_response(
+                    self,
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "presets": list_voice_presets(),
+                    },
+                )
+                return
+
             if parsed.path.startswith("/audio/"):
                 self.serve_audio(config, parsed.path[len("/audio/") :])
                 return
@@ -1218,8 +1331,7 @@ class Handler(BaseHTTPRequestHandler):
             request_id = safe_request_id(str(payload.get("requestId") or ""))
             received_at = utc_now_iso()
             text_hash = sha1_text(text)
-            profile_id = resolve_voice_profile_id(config, payload)
-            profile = config.profile_config(profile_id)
+            profile = resolve_speak_profile(config, payload)
 
             result = synthesize_comfyui_workflow(config, profile, text, request_id)
             persist_debug_bundle(
@@ -1241,6 +1353,7 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": True,
                     "engine": config.engine,
                     "voiceProfile": profile.id,
+                    "voicePreset": profile.voice_preset_id,
                     "requestId": request_id,
                     "audioUrl": audio_url,
                     "audioPath": str(result.audio_path),
