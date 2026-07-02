@@ -1,0 +1,32 @@
+{
+  "engine": "irodori_direct",
+  "host": "127.0.0.1",
+  "port": 8717,
+  "publicBaseUrl": "http://127.0.0.1:8717",
+  "audioOutputDir": "./runtime/audio",
+  "allowedOrigins": ["https://chatgpt.com", "https://chat.openai.com"],
+  "defaultModel": "irodori-v3",
+  "models": {
+    "irodori-v3": {
+      "label": "Irodori v3 direct",
+      "runtime": "irodori_direct",
+      "hfCheckpoint": "Aratako/Irodori-TTS-500M-v3"
+    }
+  },
+  "referenceVoicesDir": "./reference/voices",
+  "irodori": {
+    "hfCheckpoint": "Aratako/Irodori-TTS-500M-v3",
+    "codecRepo": "Aratako/Semantic-DACVAE-Japanese-32dim",
+    "modelDevice": "auto",
+    "codecDevice": "auto",
+    "modelPrecision": "auto",
+    "codecPrecision": "auto",
+    "requireCuda": true,
+    "numSteps": 16,
+    "tScheduleMode": "sway",
+    "swayCoeff": -1.0,
+    "durationScale": 1.0,
+    "decodeMode": "sequential",
+    "contextKvCache": true
+  }
+}

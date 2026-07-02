@@ -1,0 +1,13 @@
+{
+  "name": "chatgpt-local-voice-bridge",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "test:e2e:extension": "playwright test tests/e2e/extension-playback-ok.spec.js --headed --workers=1",
+    "test:e2e:auto": "playwright test tests/e2e/extension-auto-irodori.spec.js --headed --workers=1",
+    "test:e2e:multichunk": "playwright test tests/e2e/extension-multichunk-irodori.spec.js --headed --workers=1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0"
+  }
+}

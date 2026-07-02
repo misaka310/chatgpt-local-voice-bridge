@@ -1,0 +1,6 @@
+{
+  "irodori": {
+    "requireCuda": true,
+    "numSteps": 16
+  }
+}
