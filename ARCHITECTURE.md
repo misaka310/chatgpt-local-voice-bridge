@@ -1,128 +1,100 @@
-# Architecture
+# アーキテクチャ
 
-This repository provides a Chrome / Brave extension that reads ChatGPT assistant replies through a local text-to-speech API.
+このリポジトリは、ChatGPT の返答を検知し、PC 上のローカル音声合成 API で読み上げる Chrome / Brave 拡張です。
 
-The main design goal is local-first playback: ChatGPT text is detected in the browser, sent only to a localhost API, converted into audio, and played back in the active ChatGPT tab.
+中心方針は、ローカル完結です。ChatGPT 画面上の返答テキストをブラウザ内で検知し、localhost の API に送り、生成された音声を現在の ChatGPT タブで再生します。
 
-## Components
+## 構成
 
-### Chrome extension
+- `extension/manifest.json`: 拡張の設定、content script、background service worker、権限、アイコン、ペット用アセットを定義します。
+- `extension/content.js`: ChatGPT のページ上で動きます。返答の検知、テキスト整形、パネル UI、ペット UI、音声再生を担当します。
+- `extension/background.js`: タブ管理、再生キュー、ローカル API 呼び出し、再生状態の配信を担当します。
+- `extension/options.html` / `extension/options.js`: 拡張の設定画面を担当します。
+- `local-api/`: 音声生成 API を置く領域です。
+- `tests/e2e/`: Playwright による E2E テストです。
 
-The extension is loaded from `extension/` as a Manifest V3 extension.
+## 実行時の流れ
 
-- `manifest.json` declares the content script, background service worker, storage permission, localhost host permissions, options page, icons, and pet assets.
-- `content.js` runs on `https://chatgpt.com/*` and `https://chat.openai.com/*`.
-- `background.js` owns queueing, TTS API calls, audio fetch validation, and playback coordination between tabs.
-- `options.html` / `options.js` provide extension settings.
+### 1. タブ登録
 
-The extension intentionally limits host permissions to ChatGPT pages and the local API endpoints.
+ChatGPT のタブが開かれると、`content.js` が `background.js` にタブを登録します。
 
-## Runtime flow
+`background.js` は開いている ChatGPT タブを管理し、どのタブに操作パネルを表示するかを決めます。操作パネルとペット UI は、選ばれたタブだけに表示します。
 
-### 1. Tab registration
+### 2. 返答の検知
 
-When a ChatGPT tab loads, `content.js` registers the tab with `background.js`.
+`content.js` は `MutationObserver` でページの変化を監視します。
 
-`background.js` tracks known ChatGPT tabs, selects one UI owner, and broadcasts shared playback state back to content scripts.
+assistant の返答が追加されると、その DOM からテキストを取り出します。起動前から画面にあった返答は読み上げ対象にしません。Auto を ON にした瞬間に過去の返答を読み始めないようにするためです。
 
-Only the UI owner tab shows the floating Local Voice panel and pet UI.
+### 3. テキスト整形と分割
 
-### 2. Assistant reply detection
+読み上げ前に、コードブロック、ボタン、メニュー、入力欄など、読み上げに不要な要素を取り除きます。
 
-`content.js` observes the ChatGPT page with a `MutationObserver`.
+その後、テキストを整形し、短い preview chunk に分割します。
 
-It looks for assistant message nodes using ChatGPT-specific attributes first, then falls back to article-based detection.
+現在の Auto は全文読み上げではありません。
 
-Existing assistant messages are marked as already seen on startup and when Auto is enabled. This prevents the extension from replaying old replies when the user turns Auto on.
+- Auto は最初の preview chunk だけを読みます。
+- preview は既定で最大 2 行 / 80 文字です。
+- `Next` で次の chunk を手動再生します。
+- `Regen` で現在の chunk を再生成・再生します。
 
-### 3. Text cleanup and chunking
+長い返答を勝手に全文読み上げしないため、この動作にしています。
 
-Before playback, `content.js` removes elements that should not be spoken, including code blocks, buttons, menus, inputs, and scripts.
+### 4. キュー投入と音声生成
 
-The text is normalized, markdown-like formatting is stripped from preview lines, and the result is split into preview chunks.
+`content.js` が検知した chunk は `background.js` に送られます。
 
-Current Auto behavior is intentionally conservative:
-
-- Auto reads only the first preview chunk.
-- Preview defaults to a maximum of 2 lines / 80 characters.
-- `Next` manually advances to later preview chunks.
-- `Regen` replays the current chunk.
-
-This avoids turning long ChatGPT replies into unexpected full-length autoplay.
-
-### 4. Queueing and TTS generation
-
-`background.js` receives detected chunks from `content.js` and stores the latest assistant message for each tab.
-
-When Auto, Next, Regen, or Replay requests playback, `background.js` enqueues one item and calls the local API:
+`background.js` は Auto、Next、Regen、Replay の操作に応じて再生 item をキューに入れ、ローカル API を呼びます。
 
 ```text
 POST http://127.0.0.1:8717/v1/speak
 ```
 
-The request includes the text, request id, source, voice profile, and reference voice id.
+API は音声ファイルの URL を返します。
 
-The local API returns an audio URL, usually under:
+### 5. 再生
 
-```text
-http://127.0.0.1:8717/audio/...
-```
+`background.js` は、操作パネルを持つタブの `content.js` に再生を依頼します。
 
-### 5. Audio safety check
+`content.js` は音声を取得して Blob URL に変換し、`Audio` 要素で再生します。再生が終わると、結果を `background.js` に返します。
 
-Before fetching audio, `background.js` validates the audio URL.
+## 状態管理
 
-Allowed audio URLs must:
+`background.js` が持つ状態:
 
-- use `127.0.0.1` or `localhost`
-- match the configured local API port
-- have a path starting with `/audio/`
+- 開いている ChatGPT タブ
+- 操作パネルを表示するタブ
+- 再生対象のタブ
+- 再生キュー
+- 現在再生中の item
+- 最後に再生した item
+- ステータス文言
 
-This prevents the extension from fetching arbitrary remote audio URLs.
+`content.js` が持つ状態:
 
-### 6. Browser playback
+- DOM 監視
+- 検知済みメッセージ
+- 操作パネル DOM
+- ペット UI DOM
+- 現在の `Audio` 要素
+- 再生 token
 
-`background.js` asks the UI owner content script to play the audio.
+Chrome storage に保存する設定:
 
-`content.js` fetches the audio through `background.js`, converts it into a Blob URL, creates an `Audio` element, and reports completion or failure back to `background.js`.
-
-`background.js` then updates queue state and broadcasts the next panel status.
-
-## State ownership
-
-`background.js` owns shared extension state:
-
-- known ChatGPT tabs
-- selected playback target
-- UI owner tab
-- playback queue
-- current item
-- last played item
-- status text
-
-`content.js` owns page-local state:
-
-- DOM observation
-- detected assistant message state
-- floating panel DOM
-- pet UI DOM
-- current audio element
-- local playback token
-
-Chrome storage owns persisted user settings:
-
-- Auto enabled state
-- local API URL
+- Auto の ON / OFF
+- ローカル API URL
 - health URL
 - voice profile
 - reference voice id
-- volume
-- panel position / collapsed state
-- pet position / pet selection
+- 音量
+- パネル位置
+- ペット位置
 
-## Local API boundary
+## ローカル API
 
-The extension assumes a local API with these endpoints:
+拡張は、次の endpoint を持つローカル API を前提にしています。
 
 ```text
 GET  /health
@@ -130,32 +102,30 @@ POST /v1/speak
 GET  /audio/<file>
 ```
 
-`/health` returns whether the API is ready.
+`/health` は API が起動しているかを確認します。
 
-`/v1/speak` generates audio and returns an `audioUrl`.
+`/v1/speak` はテキストから音声を生成し、音声 URL を返します。
 
-`/audio/<file>` serves the generated WAV file.
+`/audio/<file>` は生成された WAV ファイルを返します。
 
-The extension does not require ChatGPT data to be sent to a remote server.
+## テスト
 
-## Testing
+E2E テストは `tests/e2e/` にあります。
 
-The repository has Playwright E2E tests under `tests/e2e/`.
+テストでは、Chromium に unpacked extension を読み込み、偽の ChatGPT ページを表示し、assistant 返答 DOM を追加して、パネルが再生成功状態まで進むことを確認します。
 
-The tests load the unpacked extension into Chromium, serve a fake ChatGPT page, inject assistant message DOM, and verify that the panel reaches a successful playback state.
+CI では、本物の Irodori ランタイムではなく、軽量な localhost のモック音声 API を使います。大きなモデルファイルを落とさずに、拡張側の再生フローだけを確認するためです。
 
-CI uses a lightweight localhost mock voice API instead of the real Irodori runtime. The mock API keeps the browser-extension path testable without downloading large model files.
+## 現在の実装メモ
 
-## Current implementation note
+`content.js` は現在、DOM 検知、テキスト整形、chunk 分割、パネル UI、ペット UI、再生処理を 1 ファイルで持っています。
 
-`content.js` currently contains several responsibilities in one file: DOM detection, text cleanup, chunking, panel UI, pet UI, and playback.
+これは今は意図的にそのままにしています。分割すると壊れる可能性があるため、先に E2E テストを安定させてから分割する方針です。
 
-This is intentionally left unchanged for now to avoid behavior drift. A future refactor should split these responsibilities only after the current E2E tests are stable enough to catch regressions.
+## 既知の制限
 
-## Known limitations
-
-- ChatGPT DOM selectors may change.
-- Auto mode intentionally reads only a preview, not the full response.
-- Real voice quality is not verified in CI because CI uses a mock voice API.
-- The local API must be running for real playback outside CI.
-- The extension is intended for local personal use, not Chrome Web Store distribution in its current form.
+- ChatGPT 側の DOM 構造が変わると検知が壊れる可能性があります。
+- Auto は全文読み上げではなく preview のみを読みます。
+- CI はモック音声 API を使うため、実際の音質は確認しません。
+- 実運用ではローカル API が起動している必要があります。
+- 現状は個人利用向けです。
