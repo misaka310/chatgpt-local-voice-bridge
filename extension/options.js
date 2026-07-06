@@ -1,4 +1,4 @@
-﻿const SETTINGS_VERSION = 7;
+const SETTINGS_VERSION = 7;
 const LEGACY_DEFAULT_API_URL = 'http://127.0.0.1:8765/v1/speak';
 const LEGACY_DEFAULT_HEALTH_URL = 'http://127.0.0.1:8765/health';
 const DEFAULT_SETTINGS = {
@@ -45,7 +45,7 @@ function preferCurrentUnlessLegacyOrEmpty(currentValue, legacyValue, defaultValu
 
 function normalizeReferenceVoice(value) {
   const normalized = String(value || '').trim();
-  if (!normalized || ['none', 'suguha', 'misaka', 'qwen3', 'qwen'].includes(normalized.toLowerCase())) return '';
+  if (!normalized || ['none', 'qwen3', 'qwen'].includes(normalized.toLowerCase())) return '';
   return normalized;
 }
 

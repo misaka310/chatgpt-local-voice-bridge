@@ -95,6 +95,8 @@ playwright-report/
 npm-cache/
 .DS_Store
 Thumbs.db
+
+# local VM/browser verification screenshots
 .codex-vm-*.png
 .vm-*.png
 vm-*.png

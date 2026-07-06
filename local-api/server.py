@@ -183,7 +183,7 @@ def reference_voice_list(config: dict[str, Any]) -> list[dict[str, str]]:
 
 def normalize_reference_id(value: Any) -> str:
     voice_id = str(value or "").strip()
-    if voice_id.lower() in {"none", "suguha", "misaka", "qwen3", "qwen"}:
+    if voice_id.lower() in {"none", "qwen3", "qwen"}:
         return ""
     return voice_id
 

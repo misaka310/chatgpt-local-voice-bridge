@@ -1,10 +1,11 @@
-﻿const SETTINGS_VERSION = 7;
+const SETTINGS_VERSION = 7;
 const DEFAULT_SETTINGS = {
   settingsVersion: SETTINGS_VERSION,
   enabled: false,
   apiUrl: 'http://127.0.0.1:8717/v1/speak',
   healthUrl: 'http://127.0.0.1:8717/health',
   voiceProfile: 'irodori-v3',
+  voiceId: '',
   referenceVoice: '',
   voicePrompt: '',
   voiceVolume: 0.6,
@@ -34,7 +35,7 @@ function normalizeModel(_value) {
 
 function normalizeStoredReference(value) {
   const normalized = normalizeReferenceVoice(value);
-  if (!normalized || ['suguha', 'misaka', 'qwen3', 'qwen', 'none'].includes(normalized.toLowerCase())) return '';
+  if (!normalized || ['qwen3', 'qwen', 'none'].includes(normalized.toLowerCase())) return '';
   return normalized;
 }
 
@@ -112,7 +113,7 @@ function broadcastState() {
 
 function normalizeReferenceVoice(value) {
   const normalized = String(value ?? '').trim();
-  if (!normalized || ['none', 'suguha', 'misaka', 'qwen3', 'qwen'].includes(normalized.toLowerCase())) return '';
+  if (!normalized || ['none', 'qwen3', 'qwen'].includes(normalized.toLowerCase())) return '';
   return normalized;
 }
 
@@ -129,7 +130,7 @@ async function speak(text, requestId, voiceProfile, referenceVoice, voicePrompt)
   const response = await fetch(settings.apiUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, requestId, source: 'chatgpt-web', model: pickedProfile, voiceProfile: pickedProfile, referenceVoice: pickedReferenceVoice, voicePrompt: pickedVoicePrompt, instruct: pickedVoicePrompt }),
+    body: JSON.stringify({ text, requestId, source: 'chatgpt-web', model: pickedProfile, voiceProfile: pickedProfile, voiceId: pickedReferenceVoice, referenceVoice: pickedReferenceVoice, voicePrompt: pickedVoicePrompt, instruct: pickedVoicePrompt }),
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok || !body.ok) throw new Error(body.error || `HTTP ${response.status}`);
@@ -183,6 +184,31 @@ async function fetchAudioPayload(url) {
   const buffer = await response.arrayBuffer();
   if (!buffer || buffer.byteLength === 0) throw new Error('audio blob is empty');
   return { base64: arrayBufferToBase64(buffer), contentType, size: buffer.byteLength };
+}
+
+async function fetchReferenceVoices() {
+  const settings = await getSettings();
+  const candidates = [];
+  try {
+    const healthUrl = new URL(settings.healthUrl || DEFAULT_SETTINGS.healthUrl);
+    const refUrl = new URL(healthUrl.toString());
+    refUrl.pathname = '/v1/reference-voices';
+    refUrl.search = '';
+    candidates.push(refUrl.toString(), healthUrl.toString());
+  } catch (_error) {
+    candidates.push('http://127.0.0.1:8717/v1/reference-voices', settings.healthUrl || DEFAULT_SETTINGS.healthUrl);
+  }
+
+  for (const url of candidates) {
+    try {
+      const response = await fetch(url, { cache: 'no-store' });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || !body) continue;
+      const voices = Array.isArray(body.voices) ? body.voices : Array.isArray(body.referenceVoices) ? body.referenceVoices : Array.isArray(body.availableReferenceVoices) ? body.availableReferenceVoices : [];
+      return { ok: true, voices };
+    } catch (_error) {}
+  }
+  return { ok: true, voices: [] };
 }
 
 function enqueue(base, front = false) {
@@ -374,6 +400,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'fetch-audio') {
     fetchAudioPayload(message.url)
+      .then((payload) => sendResponse({ ok: true, payload }))
+      .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
+    return true;
+  }
+
+  if (message.type === 'reference-voices') {
+    fetchReferenceVoices()
       .then((payload) => sendResponse({ ok: true, payload }))
       .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
     return true;

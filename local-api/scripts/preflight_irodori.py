@@ -7,6 +7,11 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from ffmpeg_env import configure_ffmpeg_dll_path
+
 DEFAULT_MODEL = "Aratako/Irodori-TTS-500M-v3"
 DEFAULT_CODEC = "Aratako/Semantic-DACVAE-Japanese-32dim"
 
@@ -52,12 +57,19 @@ def main() -> int:
     else:
         print("[warn] CUDA is not available. CPU fallback is very slow.")
 
-    try:
-        import irodori_tts  # noqa: F401
-    except Exception as exc:
-        print(f"[ng] irodori_tts import failed: {exc}", file=sys.stderr)
-        return 4
-    print("[ok] irodori_tts import")
+    ffmpeg_bin = configure_ffmpeg_dll_path()
+    if ffmpeg_bin:
+        print(f"[ok] ffmpeg_bin={ffmpeg_bin}")
+    else:
+        print("[warn] shared FFmpeg DLLs not found under local-api/runtime/ffmpeg-shared/bin")
+
+    for module_name in ("torchaudio", "torchcodec", "irodori_tts", "dacvae", "silentcipher", "audiotools"):
+        try:
+            __import__(module_name)
+        except Exception as exc:
+            print(f"[ng] {module_name} import failed: {exc}", file=sys.stderr)
+            return 4
+        print(f"[ok] {module_name} import")
 
     config = load_config()
     irodori = config.get("irodori") if isinstance(config.get("irodori"), dict) else {}

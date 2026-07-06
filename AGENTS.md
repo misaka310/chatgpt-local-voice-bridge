@@ -52,7 +52,7 @@ These protections are allowed and should be preserved unless the user asks other
 - Auto ON establishes a baseline and must not read assistant messages already visible before Auto was enabled.
 - Auto OFF -> ON establishes a new baseline.
 - The same assistant message or normalized text must not be queued twice.
-- Stale reference voices such as `suguha`, `misaka`, `qwen3`, `qwen`, `none`, and empty strings normalize to `referenceVoice=""` unless the user selects an existing reference voice.
+- Stale reference voices such as `qwen3`, `qwen`, `none`, and empty strings normalize to `referenceVoice=""` unless the user selects an existing reference voice.
 - Empty Ref must not fall back to stale storage values.
 - `run-voice-stack.cmd` should detect an existing `8717` listener and stop with a clear PID/tasklist message rather than silently starting against the wrong process.
 

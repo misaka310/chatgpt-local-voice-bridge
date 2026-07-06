@@ -125,7 +125,7 @@ test('stale reference voice storage is normalized to empty before speak', async 
   try {
     await routeDefaultApiToTestServer(ctx);
     const worker = ctx.serviceWorkers()[0] || await ctx.waitForEvent('serviceworker', { timeout: 15000 });
-    await configureExtension(worker, { voiceId: 'suguha', referenceVoice: 'suguha' });
+    await configureExtension(worker, { voiceId: 'qwen3', referenceVoice: 'qwen3' });
     const page = await ctx.newPage();
     await page.route('https://chatgpt.com/**', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: html() }));
     await page.goto('https://chatgpt.com/', { waitUntil: 'domcontentloaded' });

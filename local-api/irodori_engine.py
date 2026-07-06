@@ -6,6 +6,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ffmpeg_env import configure_ffmpeg_dll_path
+
 _MODEL_CACHE: dict[tuple[Any, ...], Any] = {}
 
 
@@ -70,6 +72,7 @@ def _reference_audio_for(reference_voice: str | None, config: dict[str, Any]) ->
 
 
 def _get_runtime(*, model_cfg: dict[str, Any]) -> Any:
+    configure_ffmpeg_dll_path()
     import torch
     from huggingface_hub import hf_hub_download
     from irodori_tts.inference_runtime import InferenceRuntime, RuntimeKey
@@ -108,6 +111,7 @@ def synthesize_irodori_direct(
     reference_voice: str | None = None,
     voice_prompt: str | None = None,
 ) -> tuple[Path, str]:
+    configure_ffmpeg_dll_path()
     from irodori_tts.inference_runtime import SamplingRequest, resolve_cfg_scales, save_wav
 
     cfg = dict(raw_config.get("irodori") or {})

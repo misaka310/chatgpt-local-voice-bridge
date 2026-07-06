@@ -1,4 +1,4 @@
-﻿(() => {
+(() => {
   const SETTINGS_VERSION = 7;
   const DEFAULT_SETTINGS = {
     settingsVersion: SETTINGS_VERSION,
@@ -6,6 +6,9 @@
     apiUrl: 'http://127.0.0.1:8717/v1/speak',
     healthUrl: 'http://127.0.0.1:8717/health',
     voiceProfile: 'irodori-v3',
+    voiceId: '',
+    referenceVoice: '',
+    voicePrompt: '',
     voiceVolume: 0.6,
     previewMaxLines: 2,
     previewMaxChars: 80,
@@ -21,6 +24,7 @@
   const SELECTED_PET_ID_STORAGE = 'selectedPetId';
   const DEFAULT_PET_ID = 'placeholder';
   const MANUAL_PET_IDS = new Set(['placeholder']);
+  const DEFAULT_REFERENCE_VOICES = [{ id: '', label: 'none' }];
   const DEFAULT_PET_SIZE = { width: 88, height: 104 };
   const DEFAULT_CODEX_PET_SHEET = {
     width: 1536,
@@ -47,6 +51,8 @@
   let detailNode = null;
   let titleNode = null;
   let voiceProfileInput = null;
+  let referenceVoiceSelect = null;
+  let petSelect = null;
   let tabSelect = null;
   let autoButton = null;
   let actionButtons = [];
@@ -67,6 +73,7 @@
   let petConfigVoiceKey = '';
   let petConfigLoadToken = 0;
   let petSpriteEl = null;
+  let availableReferenceVoices = DEFAULT_REFERENCE_VOICES.slice();
 
   function normalizeText(text) {
     return String(text || '')
@@ -107,9 +114,14 @@
     return normalized;
   }
 
-  function normalizeManualPetId(value) {
+  function normalizePetId(value) {
     const petId = normalizeVoiceId(value).toLowerCase();
-    return MANUAL_PET_IDS.has(petId) ? petId : DEFAULT_PET_ID;
+    if (!petId || petId === 'none' || petId === '.' || petId === '..' || /[\\/]/.test(petId)) return DEFAULT_PET_ID;
+    return petId;
+  }
+
+  function normalizeManualPetId(value) {
+    return normalizePetId(value);
   }
 
   async function getCurrentPetSelection() {
@@ -151,7 +163,7 @@
 
   function normalizeReferenceVoice(value) {
     const normalized = String(value || '').trim();
-    if (!normalized || ['none', 'suguha', 'misaka', 'qwen3', 'qwen'].includes(normalized.toLowerCase())) return '';
+    if (!normalized || ['none', 'qwen3', 'qwen'].includes(normalized.toLowerCase())) return '';
     return normalized;
   }
 
@@ -172,6 +184,20 @@
 
   function getCurrentVoiceProfile() {
     return DEFAULT_SETTINGS.voiceProfile;
+  }
+
+  function getCurrentReferenceVoice() {
+    return normalizeReferenceVoice(settings.voiceId || settings.referenceVoice);
+  }
+
+  function getSpeakParams() {
+    const referenceVoice = getCurrentReferenceVoice();
+    return {
+      voiceProfile: getCurrentVoiceProfile(),
+      voiceId: referenceVoice,
+      referenceVoice,
+      voicePrompt: '',
+    };
   }
 
   function splitChunkByMaxChars(text, maxChars, minChars) {
@@ -317,6 +343,7 @@
       autoPreview: entry.autoPreview,
       isAuto,
       voiceProfile: getCurrentVoiceProfile(),
+      ...getSpeakParams(),
       title: document.title,
     }).catch(() => {});
   }
@@ -394,7 +421,10 @@
 
   function setPanelState(statusText, detailText = '') {
     if (statusNode) statusNode.textContent = statusText;
-    if (detailNode) detailNode.textContent = detailText || `${getCurrentVoiceProfile()} / ${queueSize ? `Queued ${queueSize}` : 'ready'}`;
+    if (detailNode) {
+      const refText = getCurrentReferenceVoice() || 'none';
+      detailNode.textContent = detailText || `${getCurrentVoiceProfile()} Ref=${refText} / ${queueSize ? `Queued ${queueSize}` : 'ready'}`;
+    }
     if (titleNode) titleNode.textContent = settings.panelCollapsed ? 'Voice' : 'Local Voice';
   }
 
@@ -507,6 +537,125 @@
     await chrome.storage.local.set({ voiceProfile: DEFAULT_SETTINGS.voiceProfile, model: DEFAULT_SETTINGS.voiceProfile });
   }
 
+  function createSelectOption(value, label) {
+    const opt = document.createElement('option');
+    opt.value = String(value);
+    opt.textContent = String(label || value || 'none');
+    opt.style.backgroundColor = '#ffffff';
+    opt.style.color = '#111827';
+    return opt;
+  }
+
+  function setSelectOptions(select, options, selectedValue) {
+    if (!select) return;
+    select.innerHTML = '';
+    for (const option of options) select.appendChild(createSelectOption(option.id, option.label));
+    select.value = String(selectedValue || '');
+  }
+
+  function normalizeReferenceVoiceList(rawVoices) {
+    const result = DEFAULT_REFERENCE_VOICES.slice();
+    const seen = new Set(['']);
+    for (const item of Array.isArray(rawVoices) ? rawVoices : []) {
+      const id = normalizeReferenceVoice(typeof item === 'string' ? item : item && item.id);
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      result.push({ id, label: String((item && item.label) || id) });
+    }
+    const current = getCurrentReferenceVoice();
+    if (current && !seen.has(current)) result.push({ id: current, label: current });
+    return result;
+  }
+
+  function referenceVoicesUrl() {
+    try {
+      const url = new URL(settings.healthUrl || DEFAULT_SETTINGS.healthUrl);
+      url.pathname = '/v1/reference-voices';
+      url.search = '';
+      return url.toString();
+    } catch (_error) {
+      return 'http://127.0.0.1:8717/v1/reference-voices';
+    }
+  }
+
+  async function loadReferenceVoiceChoices() {
+    try {
+      const payload = await runtimeMessage('reference-voices');
+      const voices = payload && (payload.voices || payload.referenceVoices || payload.availableReferenceVoices);
+      if (voices) {
+        availableReferenceVoices = normalizeReferenceVoiceList(voices);
+        return;
+      }
+    } catch (_error) {}
+
+    const urls = [referenceVoicesUrl(), settings.healthUrl || DEFAULT_SETTINGS.healthUrl];
+    for (const url of urls) {
+      try {
+        const response = await fetch(url, { cache: 'no-store' });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !payload) continue;
+        const voices = payload.voices || payload.referenceVoices || payload.availableReferenceVoices;
+        availableReferenceVoices = normalizeReferenceVoiceList(voices);
+        return;
+      } catch (_error) {}
+    }
+    availableReferenceVoices = normalizeReferenceVoiceList([]);
+  }
+
+  function syncReferenceVoiceSelect() {
+    setSelectOptions(referenceVoiceSelect, availableReferenceVoices, getCurrentReferenceVoice());
+  }
+
+  function syncPetSelect() {
+    if (!petSelect) return;
+    const options = [{ id: 'auto', label: `Auto by Ref (${getCurrentReferenceVoice() || 'none'})` }, { id: `manual:${DEFAULT_PET_ID}`, label: DEFAULT_PET_ID }];
+    const seen = new Set(options.map((item) => item.id));
+    for (const voice of availableReferenceVoices) {
+      const petId = normalizePetId(voice.id);
+      const optionId = `manual:${petId}`;
+      if (!voice.id || seen.has(optionId)) continue;
+      seen.add(optionId);
+      options.push({ id: optionId, label: `${voice.label || petId} pet` });
+    }
+    const mode = settings[PET_MODE_STORAGE] === 'manual' ? 'manual' : 'auto';
+    const selected = mode === 'manual' ? `manual:${normalizeManualPetId(settings[SELECTED_PET_ID_STORAGE])}` : 'auto';
+    if (!seen.has(selected)) options.push({ id: selected, label: selected.replace(/^manual:/, '') });
+    setSelectOptions(petSelect, options, selected);
+  }
+
+  async function refreshReferenceVoiceChoices() {
+    await loadReferenceVoiceChoices();
+    syncReferenceVoiceSelect();
+    syncPetSelect();
+  }
+
+  async function persistReferenceVoice(value) {
+    const referenceVoice = normalizeReferenceVoice(value);
+    settings.voiceId = referenceVoice;
+    settings.referenceVoice = referenceVoice;
+    await chrome.storage.local.set({ voiceId: referenceVoice, referenceVoice, voicePrompt: '' });
+    syncReferenceVoiceSelect();
+    syncPetSelect();
+    await refreshPetConfig(true);
+    setPanelState('Ready', `Ref=${referenceVoice || 'none'}`);
+  }
+
+  async function persistPetSelection(value) {
+    const raw = String(value || 'auto');
+    if (raw.startsWith('manual:')) {
+      const petId = normalizeManualPetId(raw.slice('manual:'.length));
+      settings[PET_MODE_STORAGE] = 'manual';
+      settings[SELECTED_PET_ID_STORAGE] = petId;
+      await chrome.storage.local.set({ [PET_MODE_STORAGE]: 'manual', [SELECTED_PET_ID_STORAGE]: petId });
+    } else {
+      settings[PET_MODE_STORAGE] = 'auto';
+      await chrome.storage.local.set({ [PET_MODE_STORAGE]: 'auto' });
+    }
+    syncPetSelect();
+    await refreshPetConfig(true);
+    setPanelState('Ready');
+  }
+
   function syncTabs() {
     if (!tabSelect) return;
     tabSelect.innerHTML = '';
@@ -562,6 +711,26 @@
     voiceProfileInput.addEventListener('change', async () => { await persistVoiceProfile(voiceProfileInput.value); setPanelState('Ready', `Voice switched to ${getCurrentVoiceProfile()}`); });
     voiceRow.append(voiceLabel, voiceProfileInput);
 
+    const refRow = document.createElement('div');
+    refRow.style.cssText = 'display:flex;align-items:center;gap:6px';
+    const refLabel = document.createElement('div');
+    refLabel.textContent = 'Ref';
+    refLabel.style.cssText = 'font-size:11px;color:#c8d2e8;min-width:34px';
+    referenceVoiceSelect = document.createElement('select');
+    referenceVoiceSelect.style.cssText = 'flex:1;min-width:0;font:600 11px system-ui,sans-serif;padding:4px 6px;border-radius:8px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.08);color:#f7f9ff';
+    referenceVoiceSelect.addEventListener('change', async () => { await persistReferenceVoice(referenceVoiceSelect.value); });
+    refRow.append(refLabel, referenceVoiceSelect);
+
+    const petRow = document.createElement('div');
+    petRow.style.cssText = 'display:flex;align-items:center;gap:6px';
+    const petLabel = document.createElement('div');
+    petLabel.textContent = 'Pet';
+    petLabel.style.cssText = 'font-size:11px;color:#c8d2e8;min-width:34px';
+    petSelect = document.createElement('select');
+    petSelect.style.cssText = 'flex:1;min-width:0;font:600 11px system-ui,sans-serif;padding:4px 6px;border-radius:8px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.08);color:#f7f9ff';
+    petSelect.addEventListener('change', async () => { await persistPetSelection(petSelect.value); });
+    petRow.append(petLabel, petSelect);
+
     const tabRow = document.createElement('div');
     tabRow.style.cssText = 'display:flex;align-items:center;gap:6px';
     const tabLabel = document.createElement('div');
@@ -603,12 +772,12 @@
     const nextButton = createButton('Next', () => {
       setPanelState('Queued', 'Generating audio...');
       setPixelPetState('thinking');
-      void sendUiCommand('next', { voiceProfile: getCurrentVoiceProfile() });
+      void sendUiCommand('next', getSpeakParams());
     });
     const regenButton = createButton('Regen', () => {
       setPanelState('Queued', 'Regenerating current chunk...');
       setPixelPetState('thinking');
-      void sendUiCommand('regen', { voiceProfile: getCurrentVoiceProfile() });
+      void sendUiCommand('regen', getSpeakParams());
     });
     const replayButton = createButton('Replay', () => { void sendUiCommand('replay'); });
     for (const button of [autoButton, nextButton, regenButton, replayButton]) {
@@ -621,17 +790,20 @@
     controls.append(autoButton, nextButton, regenButton, replayButton);
 
     header.append(titleNode, statusNode);
-    panelBody.append(detailNode, voiceRow, tabRow, volumeRow, controls);
+    panelBody.append(detailNode, voiceRow, refRow, petRow, tabRow, volumeRow, controls);
     panel.append(header, panelBody);
     document.documentElement.appendChild(panel);
     syncTabs();
+    syncReferenceVoiceSelect();
+    syncPetSelect();
+    void refreshReferenceVoiceChoices();
     syncVolumeSlider();
     autoButton.style.background = enabled ? 'rgba(73,168,113,.25)' : 'rgba(255,255,255,.08)';
     applyPanelPosition(settings[PANEL_POSITION_KEY]);
     void setCollapsed(Boolean(settings[PANEL_COLLAPSED_KEY]), false);
     makePanelDraggable(header);
     header.addEventListener('click', () => { if (!dragMovedRecently) void setCollapsed(!Boolean(settings[PANEL_COLLAPSED_KEY]), true); });
-    setPanelState('Ready', `${getCurrentVoiceProfile()} / ready`);
+    setPanelState('Ready');
   }
 
   function petBaseStyle() {
@@ -840,9 +1012,9 @@
   }
 
   async function loadPetConfig(voiceId = '') {
-    try {
-      if (!globalThis.chrome || !chrome.runtime || !chrome.runtime.getURL) return null;
-      for (const resourcePath of buildPetConfigCandidates(voiceId)) {
+    if (!globalThis.chrome || !chrome.runtime || !chrome.runtime.getURL) return null;
+    for (const resourcePath of buildPetConfigCandidates(voiceId)) {
+      try {
         const jsonUrl = chrome.runtime.getURL(resourcePath);
         const response = await fetch(jsonUrl, { cache: 'no-store' });
         if (!response.ok) continue;
@@ -894,9 +1066,9 @@
           },
         };
         return petConfig;
+      } catch (_error) {
+        continue;
       }
-    } catch (error) {
-      console.warn('[local-voice] Failed to load pet assets', error);
     }
     petConfig = null;
     return null;
@@ -1259,6 +1431,8 @@
       if (!wasEnabled && enabled) rebaselineAutoMessages();
       settings.voiceVolume = clampVolume(settings.voiceVolume);
       if (voiceProfileInput) voiceProfileInput.value = getCurrentVoiceProfile();
+      syncReferenceVoiceSelect();
+      syncPetSelect();
       syncVolumeSlider();
       if (autoButton) autoButton.style.background = enabled ? 'rgba(73,168,113,.25)' : 'rgba(255,255,255,.08)';
       setPixelPetState(petState);
