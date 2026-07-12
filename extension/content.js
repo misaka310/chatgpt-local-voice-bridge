@@ -219,12 +219,16 @@
     return { head: normalizeText(head), tail: normalizeText(trimmed.slice(maxChars)) };
   }
 
+  function normalizeSpeakableLines(fullText) {
+    let text = normalizeText(fullText);
+    if (!text) return [];
+    text = text.replace(/```[\s\S]*?```/g, ' ').replace(/`[^`]*`/g, ' ').replace(/\n{2,}/g, '\n');
+    return text.split('\n').map((line) => normalizeMarkdownLine(line)).filter(Boolean);
+  }
+
   function buildPreviewSourceText(fullText, options = {}) {
     const maxLines = Number(options.maxLines || DEFAULT_SETTINGS.previewMaxLines);
-    let text = normalizeText(fullText);
-    if (!text) return '';
-    text = text.replace(/```[\s\S]*?```/g, ' ').replace(/`[^`]*`/g, ' ').replace(/\n{2,}/g, '\n');
-    const lines = text.split('\n').map((line) => normalizeMarkdownLine(line)).filter(Boolean);
+    const lines = normalizeSpeakableLines(fullText);
     const picked = lines.slice(0, Math.max(1, maxLines));
     const merged = normalizeText(picked.join(' '));
     return merged;
@@ -241,16 +245,18 @@
   function splitSpeakChunks(fullText, options = {}) {
     const maxChars = Number(options.maxChars || DEFAULT_SETTINGS.previewMaxChars);
     const minChars = Number(options.minChars || DEFAULT_SETTINGS.previewMinChars);
-    const merged = buildPreviewSourceText(fullText, options);
-    if (!merged) return [];
+    const maxLines = Math.max(1, Number(options.maxLines || DEFAULT_SETTINGS.previewMaxLines));
+    const lines = normalizeSpeakableLines(fullText);
     const chunks = [];
-    let pending = merged;
-    while (pending) {
-      const split = splitChunkByMaxChars(pending, maxChars, minChars);
-      if (!split.head) break;
-      chunks.push(split.head);
-      if (!split.tail || split.tail === pending) break;
-      pending = split.tail;
+    for (let index = 0; index < lines.length; index += maxLines) {
+      let pending = normalizeText(lines.slice(index, index + maxLines).join(' '));
+      while (pending) {
+        const split = splitChunkByMaxChars(pending, maxChars, minChars);
+        if (!split.head) break;
+        chunks.push(split.head);
+        if (!split.tail || split.tail === pending) break;
+        pending = split.tail;
+      }
     }
     return chunks;
   }

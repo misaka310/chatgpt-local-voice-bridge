@@ -259,7 +259,11 @@ function queueCommand(cmd, senderTabId, params = {}) {
   const lastReadIndex = Number.isInteger(info.lastReadIndex) ? info.lastReadIndex : -1;
   let chunkIndex = 0;
   if (cmd === 'next') {
-    chunkIndex = lastReadIndex < 0 ? 0 : Math.min(message.chunks.length - 1, lastReadIndex + 1);
+    chunkIndex = lastReadIndex < 0 ? 0 : lastReadIndex + 1;
+    if (chunkIndex >= message.chunks.length) {
+      setStatus('End of response', 'info');
+      return { ok: true, payload: { statusText: lastStatusText, statusLevel: lastStatusLevel } };
+    }
   }
   if (cmd === 'regen') {
     chunkIndex = Math.min(message.chunks.length - 1, Math.max(0, lastReadIndex));
@@ -381,7 +385,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             info.lastAutoQueueSignature = autoQueueSignature;
             info.lastReadIndex = autoText ? 0 : -1;
             if (autoText) {
-              enqueue({ mode: 'auto', reason: 'auto', tabId: senderTabId, tabTitle: info.title, messageKey, chunkIndex: 0, chunkCount: 1, text: autoText, voiceProfile: DEFAULT_SETTINGS.voiceProfile, referenceVoice: normalizeStoredReference(message.referenceVoice || ''), voicePrompt: '' });
+              enqueue({ mode: 'auto', reason: 'auto', tabId: senderTabId, tabTitle: info.title, messageKey, chunkIndex: 0, chunkCount: chunks.length, text: autoText, voiceProfile: DEFAULT_SETTINGS.voiceProfile, referenceVoice: normalizeStoredReference(message.referenceVoice || ''), voicePrompt: '' });
               void playNext();
             }
           }
