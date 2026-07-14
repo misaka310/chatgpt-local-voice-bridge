@@ -22,6 +22,6 @@ setup完了表示は、モデルとcodecの取得確認後にだけ出ます。
 
 通常は `%USERPROFILE%\.cache\huggingface` です。`HF_HOME` を指定している場合はその場所です。
 
-## CPUで試す場合
+## CUDA を使えない場合
 
-公開初回UXでは NVIDIA GPU を前提にします。CUDAが使えない場合、setupは止まります。CPUで試す場合は `local-api/config.local.json` で `irodori.requireCuda=false` にできますが、かなり遅くなります。
+公開初回導線は NVIDIA GPU/CUDA を前提にしています。CUDA が使えない場合、setup は止まります。CPU 実行へ設定を書き換える方法は通常利用としてサポートしていません。GPU要件を満たせない場合でも、拡張の通信確認だけなら `npm run test:ci` を利用できます。

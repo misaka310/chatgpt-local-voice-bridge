@@ -88,6 +88,7 @@ exports/
 *.swp
 .tmp-verify/
 .e2e-profile*/
+.demo-profile*/
 test-results/
 playwright-report/
 =/

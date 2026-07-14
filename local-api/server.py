@@ -42,6 +42,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "contextKvCache": True,
     },
 }
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 class BridgeError(RuntimeError):
@@ -64,6 +65,20 @@ def load_json(path: Path) -> Any:
 
 
 def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
+    # This API accepts text and can serve locally generated voice audio.  It is
+    # intentionally a same-PC service, never a LAN or public endpoint.
+    host = str(config.get("host") or "127.0.0.1").strip().lower()
+    if host not in LOOPBACK_HOSTS:
+        raise BridgeError("このAPIはローカル専用です。host は 127.0.0.1、localhost、::1 のいずれかにしてください")
+    config["host"] = "127.0.0.1" if host in {"localhost", "::1"} else host
+    public_base_url = str(config.get("publicBaseUrl") or "").strip()
+    if public_base_url:
+        parsed = urlparse(public_base_url)
+        if parsed.scheme != "http" or parsed.hostname not in LOOPBACK_HOSTS:
+            raise BridgeError("このAPIはローカル専用です。publicBaseUrl は loopback の http URL にしてください")
+        if parsed.path not in {"", "/"} or parsed.params or parsed.query or parsed.fragment:
+            raise BridgeError("このAPIはローカル専用です。publicBaseUrl に path、query、fragment は指定できません")
+        config["publicBaseUrl"] = f"http://127.0.0.1:{parsed.port or config.get('port', 8717)}"
     config["engine"] = "irodori_direct"
     existing = config.get("models") if isinstance(config.get("models"), dict) else {}
     irodori_model = copy.deepcopy(DEFAULT_CONFIG["models"]["irodori-v3"])

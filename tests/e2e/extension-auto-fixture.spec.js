@@ -10,6 +10,10 @@ const EXTENSION_ARG = EXTENSION_DIR.split(String.fromCharCode(92)).join('/');
 const PROFILE_DIR = path.join(ROOT, `.e2e-profile-auto-fixture-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+test.afterEach(() => {
+  fs.rmSync(PROFILE_DIR, { recursive: true, force: true });
+});
+
 async function healthy() {
   try {
     const res = await fetch(`${API_BASE}/health`);

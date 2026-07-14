@@ -11,6 +11,23 @@ const EXTENSION_DIR = path.join(ROOT, 'extension');
 const EXTENSION_ARG = EXTENSION_DIR.split(String.fromCharCode(92)).join('/');
 const PROFILE_DIR = path.join(ROOT, '.e2e-profile-playback-' + process.pid + '-' + Date.now() + '-' + Math.random().toString(36).slice(2));
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+let playbackNetworkEvents = null;
+
+test.afterEach(() => {
+  fs.rmSync(PROFILE_DIR, { recursive: true, force: true });
+});
+
+test.afterEach(async ({}, testInfo) => {
+  if (testInfo.title !== 'extension playback generates, fetches, and finishes one chunk') return;
+  const events = playbackNetworkEvents || [];
+  const speakResponse = events.find((event) => event.method === 'POST' && new URL(event.url).pathname === '/v1/speak');
+  const audioResponse = events.find((event) => event.method === 'GET' && new URL(event.url).pathname.startsWith('/audio/'));
+  expect(speakResponse).toBeDefined();
+  expect(speakResponse.status).toBe(200);
+  expect(audioResponse).toBeDefined();
+  expect(audioResponse.status).toBe(200);
+  playbackNetworkEvents = null;
+});
 
 async function healthy() {
   try {
@@ -85,6 +102,7 @@ test('extension playback generates, fetches, and finishes one chunk', async () =
     args: [onlyArg, loadArg, '--autoplay-policy=no-user-gesture-required', '--no-first-run', '--mute-audio'],
   });
   const apiEvents = [];
+  playbackNetworkEvents = apiEvents;
   try {
     await routeDefaultApiToTestServer(ctx);
     const worker = ctx.serviceWorkers()[0] || await ctx.waitForEvent('serviceworker', { timeout: 15000 });
@@ -92,8 +110,10 @@ test('extension playback generates, fetches, and finishes one chunk', async () =
     await configureExtension(worker);
     const page = await ctx.newPage();
     await page.route('https://chatgpt.com/**', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: html() }));
-    page.on('response', (res) => {
-      if (res.url().startsWith(API_BASE)) apiEvents.push({ url: res.url(), status: res.status() });
+    ctx.on('response', (res) => {
+      if (res.url().startsWith(API_BASE)) {
+        apiEvents.push({ url: res.url(), status: res.status(), method: res.request().method() });
+      }
     });
     await page.goto('https://chatgpt.com/', { waitUntil: 'domcontentloaded' });
     const panel = page.locator('#local-voice-bridge-panel');
@@ -104,8 +124,6 @@ test('extension playback generates, fetches, and finishes one chunk', async () =
     await page.waitForTimeout(2500);
     await panel.getByRole('button', { name: 'Regen' }).click();
     await expect(panel).toContainText('Played chunk 1/1', { timeout: 180000 });
-    expect(true).toBeTruthy();
-    expect(true).toBeTruthy();
   } finally {
     await ctx.close().catch(() => {});
     if (api) api.kill();

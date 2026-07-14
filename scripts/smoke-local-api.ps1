@@ -8,8 +8,8 @@ $BaseUrl = $BaseUrl.TrimEnd("/")
 
 Write-Host "Health: $BaseUrl/health"
 $health = Invoke-RestMethod -Uri "$BaseUrl/health" -Method GET
-if (-not $health.ok) {
-  throw "Health check failed"
+if (-not $health.ok -or $health.engine -ne "irodori_direct") {
+  throw "Expected healthy irodori_direct API"
 }
 
 Write-Host "Models: $BaseUrl/v1/models"
@@ -18,8 +18,8 @@ if (-not $models.ok) {
   throw "Models check failed"
 }
 $modelIds = @($models.models | ForEach-Object { [string]$_.id })
-if ($modelIds -notcontains "qwen3") {
-  throw "Expected qwen3 in /v1/models"
+if ($modelIds -notcontains "irodori-v3") {
+  throw "Expected irodori-v3 in /v1/models"
 }
 
 Write-Host "Reference voices: $BaseUrl/v1/reference-voices"
@@ -28,4 +28,4 @@ if (-not $voices.ok) {
   throw "Reference voices check failed"
 }
 
-Write-Host "OK"
+Write-Host "OK: irodori_direct / irodori-v3"

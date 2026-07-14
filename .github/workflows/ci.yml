@@ -8,7 +8,7 @@ on:
 
 jobs:
   extension-e2e:
-    name: Extension E2E
+    name: Mock extension E2E
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -22,97 +22,16 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Install dependencies
         run: npm ci
 
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
 
-      - name: Start mock local voice API
-        shell: bash
-        run: |
-          cat > /tmp/mock-voice-api.js <<'NODE'
-          const http = require('http');
-
-          const port = Number(process.env.LOCAL_VOICE_PORT || 8717);
-
-          function makeSilentWav() {
-            const sampleRate = 8000;
-            const channels = 1;
-            const bitsPerSample = 16;
-            const durationSeconds = 0.15;
-            const sampleCount = Math.floor(sampleRate * durationSeconds);
-            const dataSize = sampleCount * channels * (bitsPerSample / 8);
-            const buffer = Buffer.alloc(44 + dataSize);
-
-            buffer.write('RIFF', 0);
-            buffer.writeUInt32LE(36 + dataSize, 4);
-            buffer.write('WAVE', 8);
-            buffer.write('fmt ', 12);
-            buffer.writeUInt32LE(16, 16);
-            buffer.writeUInt16LE(1, 20);
-            buffer.writeUInt16LE(channels, 22);
-            buffer.writeUInt32LE(sampleRate, 24);
-            buffer.writeUInt32LE(sampleRate * channels * (bitsPerSample / 8), 28);
-            buffer.writeUInt16LE(channels * (bitsPerSample / 8), 32);
-            buffer.writeUInt16LE(bitsPerSample, 34);
-            buffer.write('data', 36);
-            buffer.writeUInt32LE(dataSize, 40);
-            return buffer;
-          }
-
-          const wav = makeSilentWav();
-
-          const server = http.createServer((req, res) => {
-            if (req.method === 'GET' && req.url === '/health') {
-              res.writeHead(200, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ ok: true }));
-              return;
-            }
-
-            if (req.method === 'POST' && req.url === '/v1/speak') {
-              req.resume();
-              res.writeHead(200, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({
-                ok: true,
-                audioUrl: `http://127.0.0.1:${port}/audio/mock.wav`,
-                voiceProfile: 'irodori-v3',
-                referenceVoice: '',
-                usedReferenceAudio: '',
-              }));
-              return;
-            }
-
-            if (req.method === 'GET' && req.url.startsWith('/audio/mock.wav')) {
-              res.writeHead(200, {
-                'Content-Type': 'audio/wav',
-                'Content-Length': wav.length,
-                'Cache-Control': 'no-store',
-              });
-              res.end(wav);
-              return;
-            }
-
-            res.writeHead(404, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ ok: false, error: 'not found' }));
-          });
-
-          server.listen(port, '127.0.0.1', () => {
-            console.log(`mock local voice api listening on http://127.0.0.1:${port}`);
-          });
-          NODE
-          node /tmp/mock-voice-api.js &
-          echo $! > /tmp/mock-voice-api.pid
-          sleep 1
-          curl --fail http://127.0.0.1:8717/health
-
-      - name: Run extension playback E2E
-        run: xvfb-run -a npx playwright test tests/e2e/extension-playback-ok.spec.js --workers=1
-
-      - name: Stop mock local voice API
-        if: always()
-        shell: bash
-        run: |
-          if [ -f /tmp/mock-voice-api.pid ]; then
-            kill "$(cat /tmp/mock-voice-api.pid)" || true
-          fi
+      - name: Run local-only config tests and mock extension E2E
+        run: xvfb-run -a npm run test:ci

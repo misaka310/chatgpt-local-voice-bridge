@@ -2,11 +2,11 @@
 
 ## Unreleased
 
-- Simplified the Chrome panel controls to `Auto`, `Next`, `Regen`, and `Replay`.
-- Fixed manual `Next` so the first press reads chunk `1/N` instead of skipping ahead.
-- Added `Regen`/`Replay` distinction in docs and status text.
-- Made Qwen direct TTS the public default path.
-- Treated Irodori v3 via ComfyUI as an optional advanced path requiring local workflow files.
-- Clarified that `Prompt` is used for Qwen direct TTS and is not wired into the current Irodori workflow path.
-- Strengthened ignore rules for local reference voices, generated audio, runtime debug files, local workflows, and local pet assets.
-- Removed old agent task handoff documents from the public-ready tree.
+- Made Irodori v3 direct the supported local TTS path while preserving the preview-only Auto UX.
+- Kept Auto from reading replies that were already visible before it was enabled.
+- Preserved the `Next`, `Regen`, and `Replay` controls and added mock E2E coverage for their network behavior.
+- Added a GPU-free Chromium demo that uses the real extension code and a shared mock voice API.
+- Added loopback-only API enforcement, automated boundary tests, and `SECURITY.md`.
+- Added a concise public README, an explicit environment matrix, limitations, and a lightweight visual demo.
+- Added a reproducible public-tree check for private files, generated files, broken documentation links, and media limits.
+- Fixed repeated FFmpeg path registration and synchronized the PowerShell startup and smoke scripts with Irodori v3.

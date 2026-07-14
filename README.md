@@ -1,119 +1,70 @@
 # ChatGPT Local Voice Bridge
 
-ChatGPT の assistant 返答を、PC 上でローカル音声読み上げする Chrome / Brave 拡張です。
+ChatGPTの新しい返答の冒頭プレビューを、同じPCで動くIrodori v3へ渡して読み上げるChrome / Brave拡張です。
 
-## できること
+[![ChatGPT Local Voice Bridge demo](docs/media/demo.gif)](docs/media/demo.mp4)
 
-- ChatGPT の assistant 返答を検知して読み上げる
-- Auto では返答の冒頭 preview だけを読む
-- preview の上限は最大 2行 / 80文字
-- 返答全文を自動で最後まで読む動作ではない
-- 必要に応じて Ref を使った参照音声読み上げに切り替えられる
-- 画面上に小さなペットが表示され、待機中と再生中で動きが変わる
+映像は実ChatGPTアカウントではなく、安全なローカルフィクスチャで拡張機能の実コードを動かしたものです。音声付きMP4ではローカルIrodori v3の読み上げも確認できます。
 
-## セットアップ
+## 主な機能
 
-### 1. ダウンロード
+- Autoをオンにした後の新しい返答だけを検出し、最大2行・80文字の冒頭を一度だけ再生
+- Autoをオンにする前から表示されていた返答は読み上げない
+- `Next`で続き、`Replay`で聞き直し、`Regen`で現在の部分を再生成
+- API・生成音声・任意の参照音声を同じPC内で管理
+- 実モデル不要のデモとCIで、拡張機能の通信・再生境界を確認可能
+
+## GPU不要の2分デモ
 
 ```bat
-git clone https://github.com/misaka310/chatgpt-local-voice-bridge.git
-cd chatgpt-local-voice-bridge
+npm ci
+npx playwright install chromium
+npm run demo
 ```
 
-zip で取得した場合も、展開したフォルダをそのまま使えます。
+Node.js 22とChromiumだけで起動します。Python、CUDA、GPU、Hugging Faceモデル、ChatGPTへのログインは不要です。表示される画面は「ローカルデモフィクスチャ」であり、実ChatGPT画面ではありません。終了時はChromiumを閉じるか`Ctrl+C`を押してください。
 
-### 2. 初回セットアップ
+終了コードで検証する場合：
+
+```bat
+npm run demo:check
+```
+
+## 実際のローカル音声を使うセットアップ
 
 ```bat
 setup-voice-env.cmd
-```
-
-必要な依存を入れて、ローカル音声環境を準備します。初回は CUDA 対応 PyTorch、Irodori direct 依存、Irodori モデル、codec を取得するため、時間がかかります。NVIDIA GPU / CUDA が使えない場合はここで止まります。
-
-### 3. 音声 API を起動
-
-```bat
 run-voice-stack.cmd
 ```
 
-起動後、次で確認できます。
+`http://127.0.0.1:8717/health`を開き、`ok=true`と`engine=irodori_direct`を確認します。その後、Chrome / Braveの拡張機能画面でDeveloper modeを有効にし、**Load unpacked**から`extension/`を選択してください。
 
-```text
-http://127.0.0.1:8717/health
-```
+最初は`Ref=none`のまま、Local VoiceパネルでAutoをオンにしてから新しいメッセージを送ります。新しい返答の先頭プレビューが再生されれば完了です。参照音声の追加方法は[参照音声](docs/reference-audio.md)を参照してください。
 
-`ok=true` なら起動完了です。
+## 対応環境
 
-### 4. 拡張を読み込む
+| モード | 必須 | 検証済み | 未対応・未検証 |
+| --- | --- | --- | --- |
+| 軽量デモ / mock CI | Node.js 22、Chromium | Windows 11のPlaywright Chromium | Firefox、macOSの実行は未検証 |
+| 実音声 | Windows、Python、NVIDIA GPU、CUDA、Irodori v3 | Windows 11、Playwright Chromium、NVIDIA CUDA環境 | Chrome / Braveの手動確認、CPUのみ、macOS、Linux、Firefox、Edgeは未検証または未対応 |
 
-1. Chrome / Brave で `chrome://extensions` を開く
-2. Developer mode を ON にする
-3. Load unpacked を押す
-4. このリポジトリの `extension/` を選ぶ
-5. ChatGPT のタブを開き直す
+GPU、VRAM、ブラウザごとの扱いは[動作環境](docs/hardware.md)にまとめています。未検証の環境を対応済みとはしていません。
 
-## 使い方
+## 制約
 
-1. ChatGPT を開く
-2. 右上の Local Voice パネルを見る
-3. Voice は `irodori-v3` のまま使う
-4. Ref はまず `none` のまま使う
-5. Auto を ON にする
-6. そのあとに新しくメッセージを送る
-7. 新しく出た assistant 返答の冒頭 preview だけが自動で再生される
-8. `Next` は同じ返答の次 preview chunk を手動で読む
+- ChatGPTのDOM変更により、返答検出が一時的に動作しなくなる可能性があります。
+- CIはChatGPTに似た固定フィクスチャを使い、将来の実ChatGPT DOMを保証しません。
+- 軽量デモは統合動作の確認用で、Irodoriの音声品質評価ではありません。
+- 実モデルE2EにはWindows、NVIDIA GPU、CUDA、モデル取得が必要です。
+- ローカルAPIには認証がないため、LAN、インターネット、トンネルへ公開できません。
 
-## ペット表示
+## 詳細ドキュメント
 
-- 画面右側に小さなペットが表示されます
-- 待機中と再生中でアニメーションが切り替わります
-- ローカルで自分用のペットに差し替えたい場合は [docs/pet.md](docs/pet.md) を見てください
-
-## 読み上げの単位
-
-- ChatGPT の assistant 返答を検知すると、冒頭 preview だけをローカル TTS API に送ります
-- preview の上限は最大 2行 / 80文字 です
-- Auto は返答全文を自動で最後まで読むものではありません
-- Auto ON 前から画面にある返答は読みません
-- Auto を OFF にしてから再度 ON にした場合も、その時点までの返答は読みません
-- `Next` は Auto 用の自動全文読みではなく、同じ返答の preview chunk を手動で進めるボタンです
-
-## 初期設定
-
-- Voice: `irodori-v3`
-- Ref: `none`
-- 音量: 60%
-
-まずは `Ref=none` のまま動作確認してください。
-
-## 参照音声を使う
-
-参照音声を使う場合は、次のようにファイルを置きます。
-
-```text
-local-api/reference/voices/sample/voice.wav
-local-api/reference/voices/sample/text.txt
-```
-
-この場合、Options の Ref に `sample` を入れて使います。
-
-- `voice.wav`: 参照したい音声
-- `text.txt`: その音声で話している文字起こし
-
-配置後に `run-voice-stack.cmd` を再起動し、拡張を reload して ChatGPT タブを開き直してください。
-
-## よくある確認ポイント
-
-### Auto ON だけで過去の返答を読み始める
-
-これは不具合です。Auto ON 後に新しく出た assistant 返答だけを読むのが正しい動作です。
-
-### `reference voice not found` と出る
-
-まずは `Ref=none` に戻してください。参照音声を使う場合は、`voice.wav` と `text.txt` の配置を確認してください。
-
-### 音が出ない
-
-- `/health` で `ok=true` になるか確認する
-- パネルが `Playing` まで進むか確認する
-- `local-api/runtime/audio/` に wav が出ているか確認する
+- [初回セットアップ](docs/setup.md)
+- [起動とヘルス確認](docs/startup.md)
+- [操作とテスト](docs/operation.md)
+- [動作環境](docs/hardware.md)
+- [困ったとき](docs/troubleshooting.md)
+- [参照音声](docs/reference-audio.md)
+- [セキュリティ境界](SECURITY.md)
+- [構成](ARCHITECTURE.md)

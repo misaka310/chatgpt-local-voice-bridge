@@ -3,6 +3,13 @@
   "private": true,
   "version": "0.1.0",
   "scripts": {
+    "check:public": "python scripts/check-public-tree.py",
+    "test:python": "python -m unittest tests.test_server_loopback",
+    "test:e2e:mock": "node scripts/run-mock-e2e.js",
+    "test:e2e:real": "playwright test tests/e2e/extension-*-irodori.spec.js tests/e2e/extension-playback-ok.spec.js --headed --workers=1",
+    "test:ci": "npm run check:public && npm run test:python && npm run test:e2e:mock",
+    "demo": "node scripts/run-extension-demo.js",
+    "demo:check": "npm run test:e2e:mock",
     "test:e2e:extension": "playwright test tests/e2e/extension-playback-ok.spec.js --headed --workers=1",
     "test:e2e:auto": "playwright test tests/e2e/extension-auto-irodori.spec.js --headed --workers=1",
     "test:e2e:multichunk": "playwright test tests/e2e/extension-multichunk-irodori.spec.js --headed --workers=1"
