@@ -1,10 +1,12 @@
 # ChatGPT Local Voice Bridge
 
-ChatGPTの新しい返答の冒頭プレビューを、同じPCで動くIrodori v3へ渡して読み上げるChrome / Brave拡張です。
+ChatGPTの新しい返答を検出し、その冒頭をPC内で音声に変換して自動で読み上げるChrome / Brave拡張です。
 
 [![ChatGPT Local Voice Bridge demo](docs/media/demo.gif)](docs/media/demo.mp4)
 
-映像は実ChatGPTアカウントではなく、安全なローカルフィクスチャで拡張機能の実コードを動かしたものです。音声付きMP4ではローカルIrodori v3の読み上げも確認できます。
+上の動くプレビューはGIFのため無音です。音声を確認するには、画像をクリックするか、[音声付きMP4を開いてください](docs/media/demo.mp4)。
+
+映像は実ChatGPTアカウントではなく、安全なローカルフィクスチャで拡張機能の実コードを動かしたものです。実際のローカル音声生成にはIrodori v3を使用しています。
 
 ## 主な機能
 
