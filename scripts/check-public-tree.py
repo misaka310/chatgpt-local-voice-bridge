@@ -43,6 +43,10 @@ SENSITIVE_PATTERNS = {
     ),
 }
 MARKDOWN_LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
+GITHUB_VIDEO_ATTACHMENT = re.compile(
+    r"(?m)^https://github\.com/user-attachments/assets/"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
 
 
 def git_public_candidates() -> list[str]:
@@ -132,9 +136,11 @@ def main() -> int:
             errors.append(f"public demo file too large: {relative} ({path.stat().st_size} bytes)")
 
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    expected_preview = "[![ChatGPT Local Voice Bridge demo](docs/media/demo.gif)](docs/media/demo.mp4)"
-    if expected_preview not in readme:
-        errors.append("README does not link the animated preview to the MP4")
+    if not GITHUB_VIDEO_ATTACHMENT.search(readme):
+        errors.append("README does not contain a GitHub user-attachments video URL on its own line")
+    legacy_preview = "[![ChatGPT Local Voice Bridge demo](docs/media/demo.gif)](docs/media/demo.mp4)"
+    if legacy_preview in readme:
+        errors.append("README still contains the legacy GIF-to-MP4 preview link")
 
     if errors:
         print("PUBLIC TREE CHECK: FAIL", file=sys.stderr)

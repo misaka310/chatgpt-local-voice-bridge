@@ -2,11 +2,11 @@
 
 ChatGPTの新しい返答を検出し、その冒頭をPC内で音声に変換して自動で読み上げるChrome / Brave拡張です。
 
-[![ChatGPT Local Voice Bridge demo](docs/media/demo.gif)](docs/media/demo.mp4)
+https://github.com/user-attachments/assets/55580bbe-1325-4548-a03b-d70f7004a7fb
 
-上の動くプレビューはGIFのため無音です。音声を確認するには、画像をクリックするか、[音声付きMP4を開いてください](docs/media/demo.mp4)。
+再生ボタンから、ChatGPTの新しい返答を自動で読み上げる流れを映像と音声で確認できます。
 
-映像は実ChatGPTアカウントではなく、安全なローカルフィクスチャで拡張機能の実コードを動かしたものです。実際のローカル音声生成にはIrodori v3を使用しています。
+映像は実ChatGPTアカウントではなく、安全なローカルフィクスチャで実際の拡張機能コードを動かしています。ローカル音声生成エンジンにはIrodori v3を使用しています。
 
 ## 主な機能
 
