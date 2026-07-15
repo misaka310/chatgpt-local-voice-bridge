@@ -4,7 +4,10 @@ import argparse
 import json
 import os
 import sys
+from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
+
+from packaging.version import Version
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -14,6 +17,10 @@ from ffmpeg_env import configure_ffmpeg_dll_path
 
 DEFAULT_MODEL = "Aratako/Irodori-TTS-500M-v3"
 DEFAULT_CODEC = "Aratako/Semantic-DACVAE-Japanese-32dim"
+SECURITY_BASELINES = {
+    "transformers": (Version("5.5.0"), Version("6")),
+    "huggingface-hub": (Version("1.5.0"), Version("2")),
+}
 
 
 def cache_dir() -> str:
@@ -31,6 +38,23 @@ def load_config() -> dict:
         if isinstance(data, dict):
             out.update(data)
     return out
+
+
+def security_baselines_ok() -> bool:
+    for package_name, (minimum, maximum) in SECURITY_BASELINES.items():
+        try:
+            installed = Version(package_version(package_name))
+        except PackageNotFoundError:
+            print(f"[ng] {package_name} is not installed.", file=sys.stderr)
+            return False
+        if installed < minimum or installed >= maximum:
+            print(
+                f"[ng] {package_name}={installed}; required >= {minimum}, < {maximum}.",
+                file=sys.stderr,
+            )
+            return False
+        print(f"[ok] {package_name}={installed}")
+    return True
 
 
 def main() -> int:
@@ -56,6 +80,9 @@ def main() -> int:
         return 3
     else:
         print("[warn] CUDA is not available. CPU fallback is very slow.")
+
+    if not security_baselines_ok():
+        return 6
 
     ffmpeg_bin = configure_ffmpeg_dll_path()
     if ffmpeg_bin:

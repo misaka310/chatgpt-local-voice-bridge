@@ -28,6 +28,9 @@ echo [6/11] Install venv bootstrap for shared FFmpeg DLL loading
 
 echo [7/11] Install Irodori direct runtime dependencies
 "%PY%" -m pip install --upgrade --upgrade-strategy only-if-needed -r "%CD%\local-api\requirements.txt" || goto :fail
+rem Upstream Irodori metadata still caps transformers below the security-fixed release.
+rem Dependencies are installed above; install the verified pinned Irodori source without re-resolving them.
+"%PY%" -m pip install --upgrade --no-deps -r "%CD%\local-api\requirements-irodori.txt" || goto :fail
 
 echo [8/11] Verify CUDA/Torch and runtime imports
 "%PY%" "%CD%\local-api\scripts\preflight_irodori.py" --strict-cuda --quick || goto :fail

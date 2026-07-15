@@ -1,7 +1,7 @@
-huggingface-hub>=0.34.0,<1.0
+huggingface-hub==1.23.0
 soundfile>=0.12.0
 descript-audiotools>=0.7.2
-transformers<5
+transformers==5.5.0
 sentencepiece>=0.1.99,<0.2
 safetensors>=0.7.0
 pyyaml>=6.0
@@ -14,4 +14,3 @@ gradio>=5.0.0
 wandb>=0.17.0
 dacvae @ git+https://github.com/facebookresearch/dacvae.git
 silentcipher @ git+https://github.com/SesameAILabs/silentcipher.git@d46d7d0893a583d8968ab3a6626e2289faec9152
-irodori-tts @ git+https://github.com/Aratako/Irodori-TTS.git

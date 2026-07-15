@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Pinned `transformers` to the security-fixed 5.5.0 release, pinned `huggingface-hub` to the verified 1.23.0 release, and pinned the verified Irodori source commit.
 - Made Irodori v3 direct the supported local TTS path while preserving the preview-only Auto UX.
 - Kept Auto from reading replies that were already visible before it was enabled.
 - Preserved the `Next`, `Regen`, and `Replay` controls and added mock E2E coverage for their network behavior.
