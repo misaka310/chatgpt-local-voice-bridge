@@ -1,0 +1,65 @@
+from __future__ import annotations
+
+import importlib.util
+import sys
+import types
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+
+ROOT = Path(__file__).resolve().parents[1]
+ENGINE_PATH = ROOT / "local-api" / "irodori_engine.py"
+
+
+def load_engine_module():
+    fake_ffmpeg_env = types.ModuleType("ffmpeg_env")
+    fake_ffmpeg_env.configure_ffmpeg_dll_path = lambda: None
+
+    spec = importlib.util.spec_from_file_location("irodori_engine_for_test", ENGINE_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("could not load irodori_engine.py")
+    module = importlib.util.module_from_spec(spec)
+    with patch.dict(sys.modules, {"ffmpeg_env": fake_ffmpeg_env}):
+        spec.loader.exec_module(module)
+    return module
+
+
+engine = load_engine_module()
+
+
+class FakeCuda:
+    def __init__(self) -> None:
+        self.empty_cache_calls = 0
+
+    def is_available(self) -> bool:
+        return True
+
+    def empty_cache(self) -> None:
+        self.empty_cache_calls += 1
+
+
+class IrodoriCudaCacheTests(unittest.TestCase):
+    def test_releases_unused_cache_for_cuda_runtime(self):
+        fake_torch = types.ModuleType("torch")
+        fake_torch.cuda = FakeCuda()
+        runtime = types.SimpleNamespace(model_device="cuda", codec_device="cuda")
+
+        with patch.dict(sys.modules, {"torch": fake_torch}):
+            engine._release_unused_cuda_cache(runtime)
+
+        self.assertEqual(fake_torch.cuda.empty_cache_calls, 1)
+
+    def test_skips_cache_release_for_cpu_runtime(self):
+        fake_torch = types.ModuleType("torch")
+        fake_torch.cuda = FakeCuda()
+        runtime = types.SimpleNamespace(model_device="cpu", codec_device="cpu")
+
+        with patch.dict(sys.modules, {"torch": fake_torch}):
+            engine._release_unused_cuda_cache(runtime)
+
+        self.assertEqual(fake_torch.cuda.empty_cache_calls, 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

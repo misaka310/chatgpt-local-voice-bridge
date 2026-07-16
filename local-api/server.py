@@ -40,6 +40,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "durationScale": 1.0,
         "decodeMode": "sequential",
         "contextKvCache": True,
+        "releaseUnusedCudaCache": True,
     },
 }
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}

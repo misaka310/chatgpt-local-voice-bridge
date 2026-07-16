@@ -27,6 +27,7 @@
     "swayCoeff": -1.0,
     "durationScale": 1.0,
     "decodeMode": "sequential",
-    "contextKvCache": true
+    "contextKvCache": true,
+    "releaseUnusedCudaCache": true
   }
 }
