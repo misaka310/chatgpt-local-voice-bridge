@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import hashlib
 import os
 import time
@@ -13,6 +14,26 @@ _MODEL_CACHE: dict[tuple[Any, ...], Any] = {}
 
 class IrodoriError(RuntimeError):
     pass
+
+
+def _release_unused_cuda_cache(runtime: Any) -> None:
+    devices = (
+        getattr(runtime, "model_device", ""),
+        getattr(runtime, "codec_device", ""),
+    )
+    if not any(str(device).startswith("cuda") for device in devices):
+        return
+
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return
+        gc.collect()
+        torch.cuda.empty_cache()
+    except Exception:
+        # Cache cleanup must never turn a successful synthesis into an API error.
+        return
 
 
 def _safe_name(text: str, request_id: str | None) -> str:
@@ -152,8 +173,14 @@ def synthesize_irodori_direct(
         context_kv_cache=_bool(cfg.get("contextKvCache"), True),
         trim_tail=_bool(cfg.get("trimTail"), True),
     )
-    result = runtime.synthesize(request, log_fn=None)
-    save_wav(out_file, result.audio, result.sample_rate)
+    result = None
+    try:
+        result = runtime.synthesize(request, log_fn=None)
+        save_wav(out_file, result.audio, result.sample_rate)
+    finally:
+        result = None
+        if _bool(cfg.get("releaseUnusedCudaCache"), True):
+            _release_unused_cuda_cache(runtime)
     return out_file, str(ref_wav or "")
 
 
