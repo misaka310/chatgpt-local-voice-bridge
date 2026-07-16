@@ -1,0 +1,195 @@
+'use strict';
+
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const test = require('node:test');
+const vm = require('node:vm');
+
+const ROOT = path.resolve(__dirname, '..');
+const BACKGROUND_PATH = path.join(ROOT, 'extension', 'background.js');
+
+function waitFor(predicate, timeoutMs = 2000) {
+  const startedAt = Date.now();
+  return new Promise((resolve, reject) => {
+    const poll = () => {
+      if (predicate()) return resolve();
+      if (Date.now() - startedAt >= timeoutMs) return reject(new Error('timed out waiting for background queue'));
+      setTimeout(poll, 5);
+    };
+    poll();
+  });
+}
+
+function createHarness() {
+  const posts = [];
+  const storage = {
+    enabled: true,
+    apiUrl: 'http://127.0.0.1:8717/v1/speak',
+    healthUrl: 'http://127.0.0.1:8717/health',
+    voiceProfile: 'irodori-v3',
+    voiceId: 'sample',
+    referenceVoice: 'sample',
+  };
+  let runtimeListener = null;
+
+  const chrome = {
+    storage: {
+      local: {
+        async get(query) {
+          if (query === null || query === undefined) return { ...storage };
+          if (Array.isArray(query)) return Object.fromEntries(query.map((key) => [key, storage[key]]));
+          if (typeof query === 'object') return { ...query, ...storage };
+          return { [query]: storage[query] };
+        },
+        async set(values) {
+          Object.assign(storage, values);
+        },
+      },
+    },
+    runtime: {
+      onInstalled: { addListener() {} },
+      onStartup: { addListener() {} },
+      onMessage: {
+        addListener(listener) {
+          runtimeListener = listener;
+        },
+      },
+    },
+    tabs: {
+      onRemoved: { addListener() {} },
+      async sendMessage() {
+        return { ok: true };
+      },
+    },
+  };
+
+  async function fetch(url, options = {}) {
+    if (String(url).endsWith('/v1/speak') && options.method === 'POST') {
+      posts.push(JSON.parse(options.body || '{}'));
+      throw new Error('captured request');
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  }
+
+  const context = vm.createContext({
+    chrome,
+    console,
+    crypto: { randomUUID: () => 'playback-id' },
+    fetch,
+    setTimeout,
+    clearTimeout,
+    URL,
+    Uint8Array,
+    btoa: (value) => Buffer.from(value, 'binary').toString('base64'),
+  });
+  vm.runInContext(fs.readFileSync(BACKGROUND_PATH, 'utf8'), context, { filename: BACKGROUND_PATH });
+  assert.equal(typeof runtimeListener, 'function');
+
+  function send(message, tabId, title) {
+    let response;
+    runtimeListener(message, {
+      tab: {
+        id: tabId,
+        title,
+        url: `https://chatgpt.com/c/${tabId}`,
+      },
+    }, (value) => { response = value; });
+    return response;
+  }
+
+  return { posts, send };
+}
+
+test('continuous queue keeps the selected reference voice when one tab omits legacy voice fields', async () => {
+  const harness = createHarness();
+  harness.send({ type: 'register-tab', title: 'Tab A' }, 101, 'Tab A');
+  harness.send({ type: 'register-tab', title: 'Tab B' }, 202, 'Tab B');
+
+  harness.send({
+    type: 'report-chunks',
+    messageKey: 'reply-a',
+    chunks: ['最初のタブです。'],
+    autoPreview: '最初のタブです。',
+    isAuto: true,
+    voiceId: 'sample',
+    referenceVoice: 'sample',
+  }, 101, 'Tab A');
+
+  harness.send({
+    type: 'report-chunks',
+    messageKey: 'reply-b',
+    chunks: ['次のタブです。'],
+    autoPreview: '次のタブです。',
+    isAuto: true,
+  }, 202, 'Tab B');
+
+  await waitFor(() => harness.posts.length === 2);
+  assert.deepEqual(harness.posts.map((body) => body.referenceVoice), ['sample', 'sample']);
+  assert.deepEqual(harness.posts.map((body) => body.voiceId), ['sample', 'sample']);
+});
+
+test('an explicit empty reference voice remains Ref=none instead of falling back', async () => {
+  const harness = createHarness();
+  harness.send({ type: 'register-tab', title: 'Tab A' }, 101, 'Tab A');
+  harness.send({
+    type: 'report-chunks',
+    messageKey: 'reply-none',
+    chunks: ['参照音声なしです。'],
+    autoPreview: '参照音声なしです。',
+    isAuto: true,
+    voiceId: '',
+    referenceVoice: '',
+  }, 101, 'Tab A');
+
+  await waitFor(() => harness.posts.length === 1);
+  assert.equal(harness.posts[0].referenceVoice, '');
+  assert.equal(harness.posts[0].voiceId, '');
+});
+
+test('an explicit empty voiceId wins over a stale referenceVoice value', async () => {
+  const harness = createHarness();
+  harness.send({ type: 'register-tab', title: 'Tab A' }, 101, 'Tab A');
+  harness.send({
+    type: 'report-chunks',
+    messageKey: 'reply-mixed-none',
+    chunks: ['参照音声なしを優先します。'],
+    autoPreview: '参照音声なしを優先します。',
+    isAuto: true,
+    voiceId: '',
+    referenceVoice: 'sample',
+  }, 101, 'Tab A');
+
+  await waitFor(() => harness.posts.length === 1);
+  assert.equal(harness.posts[0].referenceVoice, '');
+  assert.equal(harness.posts[0].voiceId, '');
+});
+
+test('Next and Regen use the saved reference voice when legacy fields are omitted', async () => {
+  const harness = createHarness();
+  harness.send({ type: 'register-tab', title: 'Tab A' }, 101, 'Tab A');
+  harness.send({
+    type: 'report-chunks',
+    messageKey: 'reply-controls',
+    chunks: ['最初の部分です。', '次の部分です。'],
+    autoPreview: '最初の部分です。',
+    isAuto: false,
+  }, 101, 'Tab A');
+
+  harness.send({
+    type: 'ui-command',
+    cmd: 'next',
+    params: {},
+  }, 101, 'Tab A');
+  await waitFor(() => harness.posts.length === 1);
+
+  harness.send({
+    type: 'ui-command',
+    cmd: 'regen',
+    params: {},
+  }, 101, 'Tab A');
+  await waitFor(() => harness.posts.length === 2);
+
+  assert.deepEqual(harness.posts.map((body) => body.referenceVoice), ['sample', 'sample']);
+  assert.deepEqual(harness.posts.map((body) => body.voiceId), ['sample', 'sample']);
+});
