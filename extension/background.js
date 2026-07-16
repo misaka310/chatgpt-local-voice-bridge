@@ -122,6 +122,17 @@ function resolveReferenceVoice(explicitValue, fallbackValue = '') {
   return normalizeReferenceVoice(fallbackValue);
 }
 
+function referenceVoiceFromPayload(payload) {
+  if (!payload || typeof payload !== 'object') return undefined;
+  if (Object.prototype.hasOwnProperty.call(payload, 'voiceId')) {
+    return normalizeStoredReference(payload.voiceId);
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, 'referenceVoice')) {
+    return normalizeStoredReference(payload.referenceVoice);
+  }
+  return undefined;
+}
+
 async function speak(text, requestId, voiceProfile, referenceVoice, voicePrompt) {
   const settings = await getSettings();
   const pickedProfile = DEFAULT_SETTINGS.voiceProfile;
@@ -223,7 +234,7 @@ function enqueue(base, front = false) {
     chunkCount: Number(base.chunkCount || 0),
     text: String(base.text || ''),
     voiceProfile: DEFAULT_SETTINGS.voiceProfile,
-    referenceVoice: normalizeStoredReference(base.referenceVoice || ''),
+    referenceVoice: base.referenceVoice === undefined ? undefined : normalizeStoredReference(base.referenceVoice),
     voicePrompt: '',
     audioUrl: base.audioUrl ? String(base.audioUrl) : null,
   };
@@ -281,7 +292,7 @@ function queueCommand(cmd, senderTabId, params = {}) {
     chunkCount: message.chunks.length,
     text,
     voiceProfile: DEFAULT_SETTINGS.voiceProfile,
-    referenceVoice: normalizeStoredReference(params.voiceId || params.referenceVoice || ''),
+    referenceVoice: referenceVoiceFromPayload(params),
     voicePrompt: '',
   });
   setStatus(`${cmd === 'regen' ? 'Regen' : 'Next'} chunk ${chunkIndex + 1}/${message.chunks.length}`, 'info');
@@ -385,7 +396,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             info.lastAutoQueueSignature = autoQueueSignature;
             info.lastReadIndex = autoText ? 0 : -1;
             if (autoText) {
-              enqueue({ mode: 'auto', reason: 'auto', tabId: senderTabId, tabTitle: info.title, messageKey, chunkIndex: 0, chunkCount: chunks.length, text: autoText, voiceProfile: DEFAULT_SETTINGS.voiceProfile, referenceVoice: normalizeStoredReference(message.referenceVoice || ''), voicePrompt: '' });
+              enqueue({ mode: 'auto', reason: 'auto', tabId: senderTabId, tabTitle: info.title, messageKey, chunkIndex: 0, chunkCount: chunks.length, text: autoText, voiceProfile: DEFAULT_SETTINGS.voiceProfile, referenceVoice: referenceVoiceFromPayload(message), voicePrompt: '' });
               void playNext();
             }
           }

@@ -152,3 +152,73 @@ test('Ref list, pet rendering, storage sync, and speak payload all use the selec
     if (api) api.kill();
   }
 });
+
+test('two ChatGPT tabs keep a real reference voice through the continuous Auto queue', async () => {
+  test.setTimeout(300000);
+  const api = await startApi();
+  const referencePayload = await fetch(`${API_BASE}/v1/reference-voices`).then((response) => response.json());
+  const referenceVoice = (referencePayload.voices || []).map((voice) => String(voice.id || '')).find(Boolean);
+  expect(referenceVoice).toBeTruthy();
+
+  fs.rmSync(PROFILE_DIR, { recursive: true, force: true });
+  const loadArg = '--' + 'load-extension=' + EXTENSION_ARG;
+  const onlyArg = '--' + 'disable-extensions-except=' + EXTENSION_ARG;
+  const ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
+    headless: false,
+    args: [onlyArg, loadArg, '--autoplay-policy=no-user-gesture-required', '--no-first-run', '--mute-audio'],
+  });
+
+  const speakResponses = [];
+  const audioResponses = [];
+  ctx.on('response', async (res) => {
+    if (res.url().startsWith(`${API_BASE}/v1/speak`)) {
+      speakResponses.push({ status: res.status(), body: await res.json().catch(() => null) });
+    }
+    if (res.url().startsWith(`${API_BASE}/audio/`) && res.status() === 200) audioResponses.push(res.url());
+  });
+
+  try {
+    const worker = ctx.serviceWorkers()[0] || await ctx.waitForEvent('serviceworker', { timeout: 15000 });
+    await configureExtension(worker, {
+      enabled: false,
+      panelCollapsed: false,
+    });
+
+    const pages = [await ctx.newPage(), await ctx.newPage()];
+    for (const page of pages) {
+      await page.route('https://chatgpt.com/**', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: html() }));
+    }
+    await Promise.all(pages.map((page, index) => page.goto(`https://chatgpt.com/c/ref-queue-${index}`, { waitUntil: 'domcontentloaded' })));
+
+    await expect.poll(async () => {
+      const visible = await Promise.all(pages.map((page) => page.locator('#local-voice-bridge-panel').isVisible().catch(() => false)));
+      return visible.filter(Boolean).length;
+    }, { timeout: 30000 }).toBe(1);
+
+    const ownerPage = (await pages[0].locator('#local-voice-bridge-panel').isVisible()) ? pages[0] : pages[1];
+    const ownerPanel = ownerPage.locator('#local-voice-bridge-panel');
+    if (!(await ownerPanel.getByText('Voice', { exact: true }).isVisible().catch(() => false))) {
+      await ownerPanel.click({ position: { x: 40, y: 12 } });
+    }
+    const referenceSelect = ownerPanel.locator('select').nth(0);
+    await expect.poll(async () => referenceSelect.locator(`option[value="${referenceVoice}"]`).count(), { timeout: 30000 }).toBe(1);
+    await referenceSelect.selectOption(referenceVoice);
+    await expect.poll(async () => worker.evaluate(async () => chrome.storage.local.get(['voiceId', 'referenceVoice'])))
+      .toEqual({ voiceId: referenceVoice, referenceVoice });
+    await expect(referenceSelect).toHaveValue(referenceVoice);
+    await expect.poll(async () => ownerPanel.locator('select').last().locator('option').count()).toBe(2);
+
+    await ownerPanel.getByRole('button', { name: 'Auto' }).click();
+    await expect.poll(async () => worker.evaluate(async () => (await chrome.storage.local.get('enabled')).enabled)).toBe(true);
+    await Promise.all(pages.map((page) => page.evaluate(() => window.addAssistant())));
+
+    await expect.poll(() => speakResponses.length, { timeout: 240000 }).toBe(2);
+    await expect.poll(() => audioResponses.length, { timeout: 60000 }).toBe(2);
+    expect(speakResponses.every((entry) => entry.status === 200)).toBe(true);
+    expect(speakResponses.map((entry) => entry.body.referenceVoice)).toEqual([referenceVoice, referenceVoice]);
+    expect(speakResponses.every((entry) => Boolean(entry.body.usedReferenceAudio))).toBe(true);
+  } finally {
+    await ctx.close().catch(() => {});
+    if (api) api.kill();
+  }
+});

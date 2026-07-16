@@ -156,3 +156,73 @@ test('mock CI protects Auto baseline and proves Next, Regen, Replay, audio fetch
     fs.rmSync(PROFILE, { recursive: true, force: true });
   }
 });
+
+test('two ChatGPT tabs keep the selected reference voice across a continuous Auto queue', async () => {
+  test.setTimeout(90000);
+  const api = await startMock();
+  fs.rmSync(PROFILE, { recursive: true, force: true });
+  const context = await chromium.launchPersistentContext(PROFILE, {
+    headless: false,
+    viewport: { width: 1280, height: 720 },
+    args: [
+      `--disable-extensions-except=${EXTENSION}`,
+      `--load-extension=${EXTENSION}`,
+      '--autoplay-policy=no-user-gesture-required',
+      '--no-first-run',
+      '--mute-audio',
+    ],
+  });
+
+  try {
+    const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
+    await worker.evaluate(async (apiUrl) => {
+      await chrome.storage.local.clear();
+      await chrome.storage.local.set({
+        apiUrl: `${apiUrl}/v1/speak`,
+        healthUrl: `${apiUrl}/health`,
+        voiceVolume: 0,
+        enabled: false,
+        panelCollapsed: false,
+        voiceId: 'sample',
+        referenceVoice: 'sample',
+      });
+    }, API);
+
+    const pages = [await context.newPage(), await context.newPage()];
+    for (const page of pages) {
+      await page.route('https://chatgpt.com/**', (route) => route.fulfill({
+        status: 200,
+        contentType: 'text/html; charset=utf-8',
+        body: fixtureHtml(),
+      }));
+    }
+    await Promise.all(pages.map((page, index) => page.goto(`https://chatgpt.com/c/mock-${index}`, { waitUntil: 'domcontentloaded' })));
+
+    await expect.poll(async () => {
+      const states = await Promise.all(pages.map((page) => page.locator('#local-voice-bridge-panel').isVisible().catch(() => false)));
+      return states.filter(Boolean).length;
+    }, { timeout: 15000 }).toBe(1);
+
+    const ownerPage = (await pages[0].locator('#local-voice-bridge-panel').isVisible()) ? pages[0] : pages[1];
+    const ownerPanel = ownerPage.locator('#local-voice-bridge-panel');
+    if (!(await ownerPanel.getByText('Voice', { exact: true }).isVisible().catch(() => false))) {
+      await ownerPanel.click({ position: { x: 40, y: 12 } });
+    }
+    await expect(ownerPanel.locator('select').nth(0)).toHaveValue('sample');
+    await expect.poll(async () => ownerPanel.locator('select').last().locator('option').count()).toBe(2);
+
+    await ownerPanel.getByRole('button', { name: 'Auto' }).click();
+    await expect.poll(async () => worker.evaluate(async () => (await chrome.storage.local.get('enabled')).enabled)).toBe(true);
+    await Promise.all(pages.map((page) => page.locator('#add-reply').click()));
+
+    await waitForCounts(2, 2);
+    const events = await apiEvents();
+    const posts = events.filter((event) => event.method === 'POST' && event.path === '/v1/speak');
+    expect(posts.map((event) => event.body.referenceVoice)).toEqual(['sample', 'sample']);
+    expect(posts.map((event) => event.body.voiceId)).toEqual(['sample', 'sample']);
+  } finally {
+    await context.close().catch(() => {});
+    if (api) api.kill();
+    fs.rmSync(PROFILE, { recursive: true, force: true });
+  }
+});
