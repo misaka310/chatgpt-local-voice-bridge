@@ -37,6 +37,16 @@ if ($preflightProcess.ExitCode -ne 0) {
 
 Write-Host "Local API: http://127.0.0.1:$Port"
 Write-Host "Health: http://127.0.0.1:$Port/health"
-Write-Host "Keep this window open while using the extension."
-$serverProcess = Start-Process -FilePath $Python -ArgumentList "server.py" -WorkingDirectory $LocalApiDir -NoNewWindow -Wait -PassThru
-exit $serverProcess.ExitCode
+Write-Host "Keep this window open while using the extension. Closing it stops the local API."
+
+Push-Location $LocalApiDir
+try {
+  # Run Python as this PowerShell process's direct foreground child.
+  # Do not use Start-Process here: it can survive after the terminal is closed.
+  & $Python -u "server.py"
+  $serverExitCode = $LASTEXITCODE
+} finally {
+  Pop-Location
+}
+
+exit $serverExitCode
