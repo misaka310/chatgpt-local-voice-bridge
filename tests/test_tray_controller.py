@@ -73,7 +73,7 @@ class TrayControllerContractTests(unittest.TestCase):
         home = Path("voice-test-home")
         with (
             mock.patch.dict(os.environ, {}, clear=True),
-            mock.patch.object(tray.os, "name", "nt"),
+            mock.patch.object(tray, "IS_WINDOWS", True),
             mock.patch.object(tray.Path, "home", return_value=home),
         ):
             self.assertEqual(
@@ -95,7 +95,7 @@ class TrayControllerContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             directory = Path(temp_dir) / "generated-audio"
             with (
-                mock.patch.object(tray.os, "name", "nt"),
+                mock.patch.object(tray, "IS_WINDOWS", True),
                 mock.patch.object(tray.subprocess, "Popen") as popen,
             ):
                 tray.open_path(directory)

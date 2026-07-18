@@ -37,6 +37,7 @@ CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 MUTEX_NAME = "Local\\ChatGPTLocalVoiceBridgeTray"
 ERROR_ALREADY_EXISTS = 183
+IS_WINDOWS = os.name == "nt"
 
 LOGGER = logging.getLogger("chatgpt-local-voice-bridge-tray")
 _MUTEX_HANDLE: int | None = None
@@ -95,7 +96,7 @@ def preflight_command(python_executable: Path = SERVER_PYTHON) -> list[str]:
 
 def startup_folder() -> Path:
     appdata = os.environ.get("APPDATA")
-    if not appdata and os.name == "nt":
+    if not appdata and IS_WINDOWS:
         appdata = str(Path.home() / "AppData" / "Roaming")
     if not appdata:
         raise RuntimeError("APPDATA is not available")
@@ -135,16 +136,16 @@ def set_startup_enabled(enabled: bool) -> None:
 def open_path(path: Path) -> None:
     is_directory = path.suffix == ""
     path.mkdir(parents=True, exist_ok=True) if is_directory else path.parent.mkdir(parents=True, exist_ok=True)
-    if os.name == "nt" and is_directory:
+    if IS_WINDOWS and is_directory:
         subprocess.Popen(["explorer.exe", str(path)], creationflags=CREATE_NO_WINDOW)
-    elif os.name == "nt":
+    elif IS_WINDOWS:
         os.startfile(str(path))  # type: ignore[attr-defined]
     else:
         subprocess.Popen(["xdg-open", str(path)])
 
 
 def show_message(title: str, message: str, error: bool = False) -> None:
-    if os.name == "nt":
+    if IS_WINDOWS:
         flags = 0x10 if error else 0x40
         ctypes.windll.user32.MessageBoxW(None, message, title, flags)
     else:
@@ -153,7 +154,7 @@ def show_message(title: str, message: str, error: bool = False) -> None:
 
 def acquire_single_instance() -> bool:
     global _MUTEX_HANDLE
-    if os.name != "nt":
+    if not IS_WINDOWS:
         return True
     handle = ctypes.windll.kernel32.CreateMutexW(None, False, MUTEX_NAME)
     if not handle:
@@ -390,7 +391,7 @@ class VoiceBridgeController:
             show_message("ChatGPT Local Voice Bridge", f"自動起動を変更できませんでした。\n\n{exc}", error=True)
 
     def exit_and_run_setup(self, *_: Any) -> None:
-        if os.name != "nt" or not SETUP_SCRIPT.is_file():
+        if not IS_WINDOWS or not SETUP_SCRIPT.is_file():
             show_message("ChatGPT Local Voice Bridge", "setup-voice-env.cmd が見つかりません。", error=True)
             return
         command = f'timeout /t 2 /nobreak >nul & call "{SETUP_SCRIPT}"'
@@ -424,7 +425,7 @@ def create_icon_image() -> Any:
 
 def main() -> int:
     configure_logging()
-    if os.name != "nt":
+    if not IS_WINDOWS:
         LOGGER.error("Tray mode is supported only on Windows")
         return 2
     if not acquire_single_instance():
