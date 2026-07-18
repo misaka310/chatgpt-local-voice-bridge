@@ -95,6 +95,8 @@ def preflight_command(python_executable: Path = SERVER_PYTHON) -> list[str]:
 
 def startup_folder() -> Path:
     appdata = os.environ.get("APPDATA")
+    if not appdata and os.name == "nt":
+        appdata = str(Path.home() / "AppData" / "Roaming")
     if not appdata:
         raise RuntimeError("APPDATA is not available")
     return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
@@ -131,8 +133,11 @@ def set_startup_enabled(enabled: bool) -> None:
 
 
 def open_path(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True) if path.suffix == "" else path.parent.mkdir(parents=True, exist_ok=True)
-    if os.name == "nt":
+    is_directory = path.suffix == ""
+    path.mkdir(parents=True, exist_ok=True) if is_directory else path.parent.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt" and is_directory:
+        subprocess.Popen(["explorer.exe", str(path)], creationflags=CREATE_NO_WINDOW)
+    elif os.name == "nt":
         os.startfile(str(path))  # type: ignore[attr-defined]
     else:
         subprocess.Popen(["xdg-open", str(path)])

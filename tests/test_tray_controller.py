@@ -69,11 +69,47 @@ class TrayControllerContractTests(unittest.TestCase):
                 tray.set_startup_enabled(False)
                 self.assertFalse(entry.exists())
 
+    def test_startup_folder_falls_back_when_appdata_is_missing(self) -> None:
+        home = Path("voice-test-home")
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch.object(tray.os, "name", "nt"),
+            mock.patch.object(tray.Path, "home", return_value=home),
+        ):
+            self.assertEqual(
+                tray.startup_folder(),
+                home / "AppData" / "Roaming" / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup",
+            )
+
     def test_launcher_uses_pythonw_and_checks_tray_dependencies(self) -> None:
         launcher = (ROOT / "start-voice-bridge.vbs").read_text(encoding="utf-8")
         self.assertIn(r"\pythonw.exe", launcher)
         self.assertIn("import pystray; from PIL import Image", launcher)
         self.assertIn("shell.Run runCommand, 0, False", launcher)
+
+    def test_launcher_is_ascii_safe_for_windows_script_host(self) -> None:
+        launcher = (ROOT / "start-voice-bridge.vbs").read_text(encoding="utf-8")
+        launcher.encode("ascii")
+
+    def test_windows_directories_open_with_explicit_explorer_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir) / "generated-audio"
+            with (
+                mock.patch.object(tray.os, "name", "nt"),
+                mock.patch.object(tray.subprocess, "Popen") as popen,
+            ):
+                tray.open_path(directory)
+            popen.assert_called_once_with(
+                ["explorer.exe", str(directory)],
+                creationflags=tray.CREATE_NO_WINDOW,
+            )
+
+    def test_server_disables_only_implicit_hugging_face_tokens(self) -> None:
+        source = (ROOT / "local-api" / "server.py").read_text(encoding="utf-8")
+        setting = 'os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")'
+        engine_import = "from irodori_engine import IrodoriError"
+        self.assertIn(setting, source)
+        self.assertLess(source.index(setting), source.index(engine_import))
 
     def test_controller_has_no_autohotkey_dependency(self) -> None:
         source = MODULE_PATH.read_text(encoding="utf-8").lower()

@@ -4,6 +4,8 @@
 
 通常起動ではターミナルは表示されません。Windows右下の通知領域に`ChatGPT Local Voice Bridge`アイコンが表示されます。隠れている場合は、タスクバー右端の上向き矢印を開いてください。
 
+`.venv`や通知領域用依存関係がない場合は、何も起きずに終了せず、`setup-voice-env.cmd`の実行を案内します。セットアップを再実行すると`pystray`と`Pillow`も既存の`local-api/.venv`へ追加されます。
+
 ## 通知領域メニュー
 
 - `Status: ...`: APIの現在状態
@@ -37,6 +39,17 @@
 - `defaultModel=irodori-v3`
 
 最初の`/v1/speak`は、モデルをGPUメモリへ読み込むため時間がかかります。
+
+## Windowsで確認した手順
+
+1. `start-voice-bridge.vbs`をダブルクリックする
+2. 通知領域のアイコンで`Status: Ready`を確認する
+3. `http://127.0.0.1:8717/health`が成功することを確認する
+4. 拡張機能から音声を1回生成する
+5. 必要に応じて通知領域の`Restart Voice Bridge`、ログ、各フォルダ、Windows自動起動を操作する
+6. 終了時は通知領域の`Exit`を使う
+
+`Exit`は通知領域アプリが起動した`server.py`だけを停止します。`run-voice-stack.cmd`などで先に起動した互換APIへ接続している場合、その外部プロセスは停止しません。
 
 ## 診断用の前面起動
 
