@@ -285,3 +285,68 @@ test('two ChatGPT tabs keep the selected reference voice across a continuous Aut
     fs.rmSync(PROFILE, { recursive: true, force: true });
   }
 });
+
+test('Auto reads a complete assistant reply shorter than 20 characters', async () => {
+  test.setTimeout(90000);
+  const api = await startMock();
+  fs.rmSync(PROFILE, { recursive: true, force: true });
+  const context = await chromium.launchPersistentContext(PROFILE, {
+    headless: process.env.PLAYWRIGHT_HEADED !== '1',
+    channel: 'chromium',
+    viewport: { width: 1280, height: 720 },
+    args: [
+      `--disable-extensions-except=${EXTENSION}`,
+      `--load-extension=${EXTENSION}`,
+      '--autoplay-policy=no-user-gesture-required',
+      '--no-first-run',
+      '--mute-audio',
+    ],
+  });
+
+  try {
+    const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
+    await worker.evaluate(async (apiUrl) => {
+      await chrome.storage.local.clear();
+      await chrome.storage.local.set({
+        apiUrl: `${apiUrl}/v1/speak`,
+        healthUrl: `${apiUrl}/health`,
+        voiceVolume: 0,
+        enabled: false,
+        panelCollapsed: false,
+        voiceId: '',
+        referenceVoice: '',
+      });
+    }, API);
+
+    const page = await context.newPage();
+    await page.route('https://chatgpt.com/**', (route) => route.fulfill({
+      status: 200,
+      contentType: 'text/html; charset=utf-8',
+      body: `<!doctype html><html><head><meta charset="utf-8"><title>ChatGPT short reply fixture</title></head><body><main><button id="add-short-reply">Add reply</button></main><script>
+        document.querySelector('#add-short-reply').addEventListener('click', () => {
+          const turn = document.createElement('article');
+          turn.setAttribute('data-testid', 'conversation-turn-2');
+          turn.innerHTML = '<div data-message-author-role="assistant" data-message-id="short-reply">はい、返事できます。</div>';
+          document.querySelector('main').appendChild(turn);
+        });
+      </script></body></html>`,
+    }));
+    await page.goto('https://chatgpt.com/c/short-reply', { waitUntil: 'domcontentloaded' });
+
+    const panel = page.locator('#local-voice-bridge-panel');
+    await expect(panel).toBeVisible({ timeout: 15000 });
+    await panel.getByRole('button', { name: 'Auto' }).click();
+    await expect.poll(async () => worker.evaluate(async () => (await chrome.storage.local.get('enabled')).enabled)).toBe(true);
+    await page.waitForTimeout(1000);
+    await page.locator('#add-short-reply').click();
+    await expect(page.locator('[data-message-id="short-reply"]')).toHaveText('はい、返事できます。');
+
+    await waitForCounts(1, 1);
+    const posts = (await apiEvents()).filter((event) => event.method === 'POST' && event.path === '/v1/speak');
+    expect(posts[0].body.text).toBe('はい、返事できます。');
+  } finally {
+    await context.close().catch(() => {});
+    if (api) api.kill();
+    fs.rmSync(PROFILE, { recursive: true, force: true });
+  }
+});
