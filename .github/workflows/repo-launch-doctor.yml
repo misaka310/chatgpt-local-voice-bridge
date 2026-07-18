@@ -1,0 +1,63 @@
+# managed-by: repo-launch-doctor-public-guard-v1
+name: Repo Launch Doctor
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  doctor:
+    name: public-readiness
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out target repository
+        uses: actions/checkout@v4
+        with:
+          path: target
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check out Repo Launch Doctor
+        uses: actions/checkout@v4
+        with:
+          repository: misaka310/repo-launch-doctor
+          ref: 274bb52d229e1f1f0a5a0ceef03748209da36f95
+          path: doctor
+
+      - name: Scan current repository state
+        working-directory: doctor
+        run: >-
+          python -m repo_launch_doctor scan ../target
+          --output "${{ runner.temp }}/repo-launch-doctor/current"
+          --fail-on high
+
+      - name: Scan pull request commit history
+        if: github.event_name == 'pull_request'
+        working-directory: doctor
+        run: >-
+          python -m repo_launch_doctor history-scan ../target
+          --range "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          --output "${{ runner.temp }}/repo-launch-doctor/history"
+
+      - name: Scan full history on manual run
+        if: github.event_name == 'workflow_dispatch'
+        working-directory: doctor
+        run: >-
+          python -m repo_launch_doctor history-scan ../target
+          --all-history
+          --output "${{ runner.temp }}/repo-launch-doctor/history"
+
+      - name: Upload Repo Launch Doctor reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repo-launch-doctor-report
+          path: ${{ runner.temp }}/repo-launch-doctor
+          if-no-files-found: warn
