@@ -4,7 +4,7 @@
 
 Do not change the ChatGPT reading UX unless the user explicitly asks for a UX change.
 
-The `main` branch README is the source of truth for the public UX. Before changing `README.md`, `extension/content.js`, `extension/background.js`, `extension/options.js`, or E2E expectations, first read the main README and identify the existing UX contract.
+The `main` branch README is the source of truth for the public UX. Before changing `README.md`, `extension/content.js`, `extension/background.js`, or E2E expectations, first read the main README and identify the existing UX contract.
 
 Current public UX contract:
 
@@ -77,3 +77,7 @@ Do not put internal comparisons, postmortem text, or developer-only reasoning in
 When running E2E, Playwright, or manual browser verification in this repository, set `voiceVolume=0` first and launch the browser with `--mute-audio` unless the user explicitly asks to verify audible playback volume.
 
 Keep the public default volume in product docs unchanged unless the user asks for a product default change. This rule is only for agent-driven verification so local checks do not blast audio unexpectedly.
+
+## Windows launcher rule
+
+Use a small Windows EXE as the primary user-facing launcher. Do not introduce VBS as the normal startup path. VBS may remain only as a temporary backward-compatibility forwarder for existing users. Setup, documentation, and Windows login startup must point to `ChatGPTLocalVoiceBridge.exe`.

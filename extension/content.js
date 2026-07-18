@@ -1,5 +1,5 @@
 (() => {
-  const SETTINGS_VERSION = 7;
+  const SETTINGS_VERSION = 8;
   const DEFAULT_SETTINGS = {
     settingsVersion: SETTINGS_VERSION,
     enabled: false,
@@ -19,24 +19,9 @@
   const AUTO_SENT_FLAG = 'localVoiceSent';
   const PANEL_POSITION_KEY = 'panelPosition';
   const PANEL_COLLAPSED_KEY = 'panelCollapsed';
-  const PET_POSITION_KEY = 'petPosition';
-  const PET_MODE_STORAGE = 'petMode';
-  const SELECTED_PET_ID_STORAGE = 'selectedPetId';
   const DEFAULT_PET_ID = 'placeholder';
-  const MANUAL_PET_IDS = new Set(['placeholder']);
+  const LEGACY_PET_STORAGE_KEYS = ['petMode', 'selectedPetId', 'petPosition'];
   const DEFAULT_REFERENCE_VOICES = [{ id: '', label: 'none' }];
-  const DEFAULT_PET_SIZE = { width: 88, height: 104 };
-  const DEFAULT_CODEX_PET_SHEET = {
-    width: 1536,
-    height: 1872,
-    columns: 8,
-    rows: 9,
-    frameWidth: 192,
-    frameHeight: 208,
-  };
-  const PET_DEFAULT_RIGHT = 24;
-  const PET_DEFAULT_BOTTOM = 140;
-  const PET_EDGE_MARGIN = 8;
   const MIN_FALLBACK_CHARS = 20;
 
   const stateByElement = new WeakMap();
@@ -50,10 +35,7 @@
   let statusNode = null;
   let detailNode = null;
   let titleNode = null;
-  let voiceProfileInput = null;
   let referenceVoiceSelect = null;
-  let petSelect = null;
-  let tabSelect = null;
   let autoButton = null;
   let actionButtons = [];
   let volumeSlider = null;
@@ -62,17 +44,8 @@
   let currentObjectUrl = null;
   let currentPlaybackToken = null;
   let isUiOwner = null;
-  let globalTabs = [];
-  let selectedTabId = null;
   let queueSize = 0;
   let dragMovedRecently = false;
-  let petContainer = null;
-  let petState = 'idle';
-  let petAnimTimer = null;
-  let petConfig = null;
-  let petConfigVoiceKey = '';
-  let petConfigLoadToken = 0;
-  let petSpriteEl = null;
   let availableReferenceVoices = DEFAULT_REFERENCE_VOICES.slice();
 
   function normalizeText(text) {
@@ -108,63 +81,20 @@
     return String(value || '').trim();
   }
 
-  function resolveEffectivePetVoiceId(value) {
-    const normalized = normalizeVoiceId(value).toLowerCase();
-    if (!normalized || normalized === 'none') return DEFAULT_PET_ID;
-    return normalized;
-  }
-
-  function normalizePetId(value) {
+  function resolveDesktopPetId(value) {
     const petId = normalizeVoiceId(value).toLowerCase();
     if (!petId || petId === 'none' || petId === '.' || petId === '..' || /[\\/]/.test(petId)) return DEFAULT_PET_ID;
     return petId;
-  }
-
-  function normalizeManualPetId(value) {
-    return normalizePetId(value);
-  }
-
-  async function getCurrentPetSelection() {
-    if (!globalThis.chrome || !chrome.storage || !chrome.storage.local) {
-      return { key: 'auto:' + DEFAULT_PET_ID, petId: DEFAULT_PET_ID };
-    }
-    try {
-      const saved = await chrome.storage.local.get({
-        voiceId: '',
-        referenceVoice: '',
-        [PET_MODE_STORAGE]: 'auto',
-        [SELECTED_PET_ID_STORAGE]: DEFAULT_PET_ID,
-      });
-      const petMode = saved[PET_MODE_STORAGE] === 'auto' ? 'auto' : 'manual';
-      if (petMode !== 'auto') {
-        const petId = normalizeManualPetId(saved[SELECTED_PET_ID_STORAGE]);
-        return { key: 'manual:' + petId, petId };
-      }
-      const voiceId = normalizeVoiceId(saved.voiceId) || normalizeVoiceId(saved.referenceVoice);
-      const petId = resolveEffectivePetVoiceId(voiceId);
-      return { key: 'auto:' + petId, petId };
-    } catch (_error) {
-      return { key: 'auto:' + DEFAULT_PET_ID, petId: DEFAULT_PET_ID };
-    }
-  }
-
-  function buildPetConfigCandidates(voiceId) {
-    const normalized = resolveEffectivePetVoiceId(voiceId);
-    const candidates = [];
-    if (normalized && !/[\\/]/.test(normalized) && normalized !== '.' && normalized !== '..') {
-      candidates.push(`assets/pet/local/voices/${normalized}/pet.json`);
-    }
-    if (normalized !== DEFAULT_PET_ID) {
-      candidates.push(`assets/pet/local/voices/${DEFAULT_PET_ID}/pet.json`);
-    }
-    candidates.push('assets/pet/local/pet.json', 'assets/pet/pet.json');
-    return candidates;
   }
 
   function normalizeReferenceVoice(value) {
     const normalized = String(value || '').trim();
     if (!normalized || ['none', 'qwen3', 'qwen'].includes(normalized.toLowerCase())) return '';
     return normalized;
+  }
+  function storedReferenceVoice(raw) {
+    if (raw && Object.prototype.hasOwnProperty.call(raw, 'voiceId')) return normalizeReferenceVoice(raw.voiceId);
+    return normalizeReferenceVoice(raw && raw.referenceVoice);
   }
 
   async function sanitizeStoredSettings(raw) {
@@ -173,12 +103,16 @@
       ...raw,
       settingsVersion: SETTINGS_VERSION,
       model: DEFAULT_SETTINGS.voiceProfile,
-      voiceId: normalizeReferenceVoice(raw.voiceId || raw.referenceVoice),
+      voiceId: storedReferenceVoice(raw),
       voiceProfile: DEFAULT_SETTINGS.voiceProfile,
-      referenceVoice: normalizeReferenceVoice(raw.voiceId || raw.referenceVoice),
+      referenceVoice: storedReferenceVoice(raw),
       voicePrompt: '',
-        };
-    if (globalThis.chrome && chrome.storage && chrome.storage.local) await chrome.storage.local.set(next);
+    };
+    for (const key of LEGACY_PET_STORAGE_KEYS) delete next[key];
+    if (globalThis.chrome && chrome.storage && chrome.storage.local) {
+      await chrome.storage.local.set(next);
+      await chrome.storage.local.remove(LEGACY_PET_STORAGE_KEYS);
+    }
     return next;
   }
 
@@ -187,7 +121,7 @@
   }
 
   function getCurrentReferenceVoice() {
-    return normalizeReferenceVoice(settings.voiceId || settings.referenceVoice);
+    return normalizeReferenceVoice(settings.voiceId);
   }
 
   function getSpeakParams() {
@@ -205,7 +139,7 @@
     if (!trimmed) return { head: '', tail: '' };
     if (trimmed.length <= maxChars) return { head: trimmed, tail: '' };
     const head = trimmed.slice(0, maxChars);
-    const punctRegex = /[縲ゑｼ・ｼ・!?]/g;
+    const punctRegex = /[、。！？!?]/g;
     let punctMatch = null;
     for (const match of head.matchAll(punctRegex)) punctMatch = match;
     if (punctMatch && Number(punctMatch.index) >= Math.floor(minChars * 0.6)) {
@@ -426,12 +360,17 @@
   }
 
   function setPanelState(statusText, detailText = '') {
-    if (statusNode) statusNode.textContent = statusText;
+    if (statusNode) {
+      statusNode.textContent = statusText;
+      statusNode.title = detailText || `${getCurrentVoiceProfile()} / Ref=${getCurrentReferenceVoice() || 'none'} / ${queueSize ? `Queued ${queueSize}` : 'Ready'}`;
+    }
     if (detailNode) {
       const refText = getCurrentReferenceVoice() || 'none';
-      detailNode.textContent = detailText || `${getCurrentVoiceProfile()} Ref=${refText} / ${queueSize ? `Queued ${queueSize}` : 'ready'}`;
+      const detail = detailText || `${getCurrentVoiceProfile()} Ref=${refText} / ${queueSize ? `Queued ${queueSize}` : 'ready'}`;
+      detailNode.textContent = detail;
+      detailNode.title = detail;
     }
-    if (titleNode) titleNode.textContent = settings.panelCollapsed ? 'Voice' : 'Local Voice';
+    if (titleNode) titleNode.textContent = 'Local Voice';
   }
 
   function createButton(label, onClick, testId = '') {
@@ -538,11 +477,6 @@
     await chrome.storage.local.set({ voiceVolume: nextVolume });
   }
 
-  async function persistVoiceProfile(value) {
-    settings.voiceProfile = DEFAULT_SETTINGS.voiceProfile;
-    await chrome.storage.local.set({ voiceProfile: DEFAULT_SETTINGS.voiceProfile, model: DEFAULT_SETTINGS.voiceProfile });
-  }
-
   function createSelectOption(value, label) {
     const opt = document.createElement('option');
     opt.value = String(value);
@@ -612,27 +546,18 @@
     setSelectOptions(referenceVoiceSelect, availableReferenceVoices, getCurrentReferenceVoice());
   }
 
-  function syncPetSelect() {
-    if (!petSelect) return;
-    const options = [{ id: 'auto', label: `Auto by Ref (${getCurrentReferenceVoice() || 'none'})` }, { id: `manual:${DEFAULT_PET_ID}`, label: DEFAULT_PET_ID }];
-    const seen = new Set(options.map((item) => item.id));
-    for (const voice of availableReferenceVoices) {
-      const petId = normalizePetId(voice.id);
-      const optionId = `manual:${petId}`;
-      if (!voice.id || seen.has(optionId)) continue;
-      seen.add(optionId);
-      options.push({ id: optionId, label: `${voice.label || petId} pet` });
-    }
-    const mode = settings[PET_MODE_STORAGE] === 'manual' ? 'manual' : 'auto';
-    const selected = mode === 'manual' ? `manual:${normalizeManualPetId(settings[SELECTED_PET_ID_STORAGE])}` : 'auto';
-    if (!seen.has(selected)) options.push({ id: selected, label: selected.replace(/^manual:/, '') });
-    setSelectOptions(petSelect, options, selected);
-  }
-
   async function refreshReferenceVoiceChoices() {
     await loadReferenceVoiceChoices();
     syncReferenceVoiceSelect();
-    syncPetSelect();
+  }
+
+  async function syncDesktopPetSelection(referenceVoice = getCurrentReferenceVoice()) {
+    const petId = resolveDesktopPetId(referenceVoice);
+    try {
+      await runtimeMessage('desktop-pet-selection', { petId });
+    } catch (error) {
+      if (panel) setPanelState('Error', `Desktop pet: ${error.message || String(error)}`);
+    }
   }
 
   async function persistReferenceVoice(value) {
@@ -641,39 +566,8 @@
     settings.referenceVoice = referenceVoice;
     await chrome.storage.local.set({ voiceId: referenceVoice, referenceVoice, voicePrompt: '' });
     syncReferenceVoiceSelect();
-    syncPetSelect();
-    await refreshPetConfig(true);
+    await syncDesktopPetSelection(referenceVoice);
     setPanelState('Ready', `Ref=${referenceVoice || 'none'}`);
-  }
-
-  async function persistPetSelection(value) {
-    const raw = String(value || 'auto');
-    if (raw.startsWith('manual:')) {
-      const petId = normalizeManualPetId(raw.slice('manual:'.length));
-      settings[PET_MODE_STORAGE] = 'manual';
-      settings[SELECTED_PET_ID_STORAGE] = petId;
-      await chrome.storage.local.set({ [PET_MODE_STORAGE]: 'manual', [SELECTED_PET_ID_STORAGE]: petId });
-    } else {
-      settings[PET_MODE_STORAGE] = 'auto';
-      await chrome.storage.local.set({ [PET_MODE_STORAGE]: 'auto' });
-    }
-    syncPetSelect();
-    await refreshPetConfig(true);
-    setPanelState('Ready');
-  }
-
-  function syncTabs() {
-    if (!tabSelect) return;
-    tabSelect.innerHTML = '';
-    for (const t of globalTabs) {
-      const opt = document.createElement('option');
-      opt.value = String(t.id);
-      opt.textContent = String(t.title || 'ChatGPT').slice(0, 30);
-      opt.style.backgroundColor = '#ffffff';
-      opt.style.color = '#111827';
-      tabSelect.appendChild(opt);
-    }
-    tabSelect.value = String(selectedTabId || '');
   }
 
   async function sendUiCommand(cmd, params = {}) {
@@ -702,56 +596,27 @@
     panelBody = document.createElement('div');
     panelBody.style.cssText = 'display:flex;flex-direction:column;gap:8px';
     detailNode = document.createElement('div');
+    detailNode.dataset.testid = 'local-voice-current-text';
     detailNode.style.cssText = 'font-size:11px;color:#c8d2e8;min-height:1.2em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
 
-    const voiceRow = document.createElement('div');
-    voiceRow.style.cssText = 'display:flex;align-items:center;gap:6px';
-    const voiceLabel = document.createElement('div');
-    voiceLabel.textContent = 'Voice';
-    voiceLabel.style.cssText = 'font-size:11px;color:#c8d2e8;min-width:34px';
-    voiceProfileInput = document.createElement('input');
-    voiceProfileInput.value = getCurrentVoiceProfile();
-    voiceProfileInput.readOnly = true;
-    voiceProfileInput.title = 'Fixed to Irodori direct runtime';
-    voiceProfileInput.style.cssText = 'flex:1;min-width:0;font:600 11px system-ui,sans-serif;padding:4px 6px;border-radius:8px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.08);color:#f7f9ff';
-    voiceProfileInput.addEventListener('change', async () => { await persistVoiceProfile(voiceProfileInput.value); setPanelState('Ready', `Voice switched to ${getCurrentVoiceProfile()}`); });
-    voiceRow.append(voiceLabel, voiceProfileInput);
-
     const refRow = document.createElement('div');
+    refRow.dataset.localVoiceField = 'ref';
     refRow.style.cssText = 'display:flex;align-items:center;gap:6px';
     const refLabel = document.createElement('div');
     refLabel.textContent = 'Ref';
-    refLabel.style.cssText = 'font-size:11px;color:#c8d2e8;min-width:34px';
+    refLabel.style.cssText = 'font-size:11px;color:#c8d2e8;min-width:52px';
     referenceVoiceSelect = document.createElement('select');
+    referenceVoiceSelect.dataset.testid = 'local-voice-ref';
     referenceVoiceSelect.style.cssText = 'flex:1;min-width:0;font:600 11px system-ui,sans-serif;padding:4px 6px;border-radius:8px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.08);color:#f7f9ff';
     referenceVoiceSelect.addEventListener('change', async () => { await persistReferenceVoice(referenceVoiceSelect.value); });
     refRow.append(refLabel, referenceVoiceSelect);
 
-    const petRow = document.createElement('div');
-    petRow.style.cssText = 'display:flex;align-items:center;gap:6px';
-    const petLabel = document.createElement('div');
-    petLabel.textContent = 'Pet';
-    petLabel.style.cssText = 'font-size:11px;color:#c8d2e8;min-width:34px';
-    petSelect = document.createElement('select');
-    petSelect.style.cssText = 'flex:1;min-width:0;font:600 11px system-ui,sans-serif;padding:4px 6px;border-radius:8px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.08);color:#f7f9ff';
-    petSelect.addEventListener('change', async () => { await persistPetSelection(petSelect.value); });
-    petRow.append(petLabel, petSelect);
-
-    const tabRow = document.createElement('div');
-    tabRow.style.cssText = 'display:flex;align-items:center;gap:6px';
-    const tabLabel = document.createElement('div');
-    tabLabel.textContent = 'Tab';
-    tabLabel.style.cssText = 'font-size:11px;color:#c8d2e8;min-width:34px';
-    tabSelect = document.createElement('select');
-    tabSelect.style.cssText = 'flex:1;min-width:0;font:600 11px system-ui,sans-serif;padding:4px 6px;border-radius:8px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.08);color:#f7f9ff';
-    tabSelect.addEventListener('change', () => { void sendUiCommand('select-tab', { tabId: Number(tabSelect.value) }); });
-    tabRow.append(tabLabel, tabSelect);
-
     const volumeRow = document.createElement('div');
+    volumeRow.dataset.localVoiceField = 'volume';
     volumeRow.style.cssText = 'display:flex;align-items:center;gap:8px';
     const volumeLabel = document.createElement('div');
-    volumeLabel.textContent = 'Vol';
-    volumeLabel.style.cssText = 'font-size:11px;color:#c8d2e8;min-width:34px';
+    volumeLabel.textContent = 'Volume';
+    volumeLabel.style.cssText = 'font-size:11px;color:#c8d2e8;min-width:52px';
     volumeSlider = document.createElement('input');
     volumeSlider.type = 'range';
     volumeSlider.min = '0';
@@ -777,12 +642,10 @@
     });
     const nextButton = createButton('Next', () => {
       setPanelState('Queued', 'Generating audio...');
-      setPixelPetState('thinking');
       void sendUiCommand('next', getSpeakParams());
     });
     const regenButton = createButton('Regen', () => {
       setPanelState('Queued', 'Regenerating current chunk...');
-      setPixelPetState('thinking');
       void sendUiCommand('regen', getSpeakParams());
     });
     const replayButton = createButton('Replay', () => { void sendUiCommand('replay'); });
@@ -796,12 +659,10 @@
     controls.append(autoButton, nextButton, regenButton, replayButton);
 
     header.append(titleNode, statusNode);
-    panelBody.append(detailNode, voiceRow, refRow, petRow, tabRow, volumeRow, controls);
+    panelBody.append(detailNode, refRow, volumeRow, controls);
     panel.append(header, panelBody);
     document.documentElement.appendChild(panel);
-    syncTabs();
     syncReferenceVoiceSelect();
-    syncPetSelect();
     void refreshReferenceVoiceChoices();
     syncVolumeSlider();
     autoButton.style.background = enabled ? 'rgba(73,168,113,.25)' : 'rgba(255,255,255,.08)';
@@ -810,460 +671,6 @@
     makePanelDraggable(header);
     header.addEventListener('click', () => { if (!dragMovedRecently) void setCollapsed(!Boolean(settings[PANEL_COLLAPSED_KEY]), true); });
     setPanelState('Ready');
-  }
-
-  function petBaseStyle() {
-    return [
-      'position:fixed',
-      `right:${PET_DEFAULT_RIGHT}px`,
-      `bottom:${PET_DEFAULT_BOTTOM}px`,
-      'z-index:2147483647',
-      `width:${DEFAULT_PET_SIZE.width}px`,
-      `height:${DEFAULT_PET_SIZE.height}px`,
-      'display:block',
-      'cursor:move',
-      'pointer-events:auto',
-      'user-select:none',
-      'touch-action:none',
-      'overflow:hidden',
-      'background:transparent',
-      'border:none',
-      'box-shadow:none',
-      'padding:0',
-    ].join(';');
-  }
-
-  function getPetFrameSize(definition) {
-    const frameWidth = Math.max(1, Math.round(Number(definition?.frameWidth) || 0));
-    const frameHeight = Math.max(1, Math.round(Number(definition?.frameHeight) || 0));
-    return {
-      frameWidth: frameWidth || 192,
-      frameHeight: frameHeight || 208,
-    };
-  }
-
-  function toPositiveInt(value, fallback) {
-    const n = Number(value);
-    if (!Number.isFinite(n) || n <= 0) return fallback;
-    return Math.max(1, Math.round(n));
-  }
-
-  function clampFrameId(frameId, totalFrames) {
-    const n = Number(frameId);
-    if (!Number.isFinite(n)) return 0;
-    const i = Math.max(0, Math.floor(n));
-    if (!Number.isFinite(totalFrames) || totalFrames <= 0) return i;
-    return Math.min(totalFrames - 1, i);
-  }
-
-  function normalizeAnimDef(raw, fallbackFrames, fallbackSpeed, totalFrames) {
-    const defaultFrames = Array.isArray(fallbackFrames) && fallbackFrames.length ? fallbackFrames : [0];
-    const sourceFrames = Array.isArray(raw)
-      ? raw
-      : raw && Array.isArray(raw.frames)
-        ? raw.frames
-        : defaultFrames;
-    const frames = sourceFrames
-      .map((id) => clampFrameId(id, totalFrames))
-      .filter((id) => Number.isFinite(id));
-    const speedCandidate = raw && typeof raw === 'object' ? raw.speed : undefined;
-    return {
-      frames: frames.length ? frames : defaultFrames.map((id) => clampFrameId(id, totalFrames)),
-      speed: toPositiveInt(speedCandidate, fallbackSpeed),
-    };
-  }
-
-  function resolvePetResourceUrl(resourcePath, jsonUrl) {
-    const rawPath = String(resourcePath || '').trim();
-    if (!rawPath) return '';
-    if (!globalThis.chrome || !chrome.runtime || !chrome.runtime.getURL) return '';
-    if (/^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(rawPath)) return rawPath;
-    if (rawPath.startsWith('assets/')) return chrome.runtime.getURL(rawPath);
-    if (rawPath.startsWith('/')) return chrome.runtime.getURL(rawPath.slice(1));
-    try {
-      return new URL(rawPath, jsonUrl).toString();
-    } catch (_error) {
-      return chrome.runtime.getURL(rawPath.replace(/^\.?\//, ''));
-    }
-  }
-
-  function clampPetPosition(left, top) {
-    if (!petContainer) return { left, top };
-    const width = petContainer.offsetWidth || 0;
-    const height = petContainer.offsetHeight || 0;
-    const maxLeft = Math.max(PET_EDGE_MARGIN, window.innerWidth - width - PET_EDGE_MARGIN);
-    const maxTop = Math.max(PET_EDGE_MARGIN, window.innerHeight - height - PET_EDGE_MARGIN);
-    return {
-      left: Math.round(Math.min(Math.max(left, PET_EDGE_MARGIN), maxLeft)),
-      top: Math.round(Math.min(Math.max(top, PET_EDGE_MARGIN), maxTop)),
-    };
-  }
-
-  function setPetDefaultPosition() {
-    if (!petContainer) return;
-    petContainer.style.left = '';
-    petContainer.style.top = '';
-    petContainer.style.right = `${PET_DEFAULT_RIGHT}px`;
-    petContainer.style.bottom = `${PET_DEFAULT_BOTTOM}px`;
-  }
-
-  function applyPetPosition(position) {
-    if (!petContainer) return;
-    if (position && isFiniteNumber(position.left) && isFiniteNumber(position.top)) {
-      const clamped = clampPetPosition(Number(position.left), Number(position.top));
-      petContainer.style.left = `${clamped.left}px`;
-      petContainer.style.top = `${clamped.top}px`;
-      petContainer.style.right = 'auto';
-      petContainer.style.bottom = 'auto';
-      return;
-    }
-    setPetDefaultPosition();
-  }
-
-  async function loadPetPosition() {
-    if (!globalThis.chrome || !chrome.storage || !chrome.storage.local) return null;
-    try {
-      const data = await chrome.storage.local.get([PET_POSITION_KEY]);
-      const pos = data[PET_POSITION_KEY];
-      if (pos && isFiniteNumber(pos.left) && isFiniteNumber(pos.top)) return pos;
-    } catch (_error) {}
-    return null;
-  }
-
-  async function savePetPosition(left, top) {
-    if (!globalThis.chrome || !chrome.storage || !chrome.storage.local) return;
-    try {
-      const clamped = clampPetPosition(left, top);
-      await chrome.storage.local.set({ [PET_POSITION_KEY]: clamped });
-    } catch (_error) {}
-  }
-
-  async function applyStoredPetPosition() {
-    if (!petContainer) return;
-    const pos = await loadPetPosition();
-    if (pos) {
-      applyPetPosition(pos);
-      return;
-    }
-    setPetDefaultPosition();
-  }
-
-  async function resetPetPosition() {
-    if (!petContainer) return;
-    if (globalThis.chrome && chrome.storage && chrome.storage.local) {
-      try {
-        await chrome.storage.local.remove([PET_POSITION_KEY]);
-      } catch (_error) {}
-    }
-    setPetDefaultPosition();
-  }
-
-  function ensurePetSpriteEl() {
-    if (!petContainer) return null;
-    if (petSpriteEl && petSpriteEl.isConnected) return petSpriteEl;
-    petSpriteEl = document.createElement('div');
-    petSpriteEl.style.cssText = [
-      'position:absolute',
-      'inset:0',
-      'width:100%',
-      'height:100%',
-      'background-repeat:no-repeat',
-      'background-position:0 0',
-      'background-origin:border-box',
-      'background-clip:border-box',
-      'image-rendering:pixelated',
-      'pointer-events:none',
-    ].join(';');
-    petContainer.appendChild(petSpriteEl);
-    return petSpriteEl;
-  }
-
-  function getPetFrameViewportSize() {
-    if (!petContainer) {
-      return { frameWidth: DEFAULT_PET_SIZE.width, frameHeight: DEFAULT_PET_SIZE.height };
-    }
-    return {
-      frameWidth: Math.max(1, Math.round(petContainer.clientWidth || petContainer.offsetWidth || DEFAULT_PET_SIZE.width)),
-      frameHeight: Math.max(1, Math.round(petContainer.clientHeight || petContainer.offsetHeight || DEFAULT_PET_SIZE.height)),
-    };
-  }
-
-  function applyPetSpriteFrame(frameId) {
-    if (!petConfig || !petSpriteEl) return;
-    const cols = toPositiveInt(petConfig.columns, 1);
-    const rows = toPositiveInt(petConfig.rows, 1);
-    const totalFrames = cols * rows;
-    const safeFrameId = clampFrameId(frameId, totalFrames);
-    const col = safeFrameId % cols;
-    const row = Math.floor(safeFrameId / cols);
-    const { frameWidth, frameHeight } = getPetFrameViewportSize();
-    const sheetWidth = frameWidth * cols;
-    const sheetHeight = frameHeight * rows;
-
-    petSpriteEl.style.backgroundSize = `${sheetWidth}px ${sheetHeight}px`;
-    petSpriteEl.style.backgroundPosition = `${-col * frameWidth}px ${-row * frameHeight}px`;
-  }
-
-  function applyLoadedPetConfig(config) {
-    if (!config) return;
-    if (petSpriteEl) {
-      petSpriteEl.style.backgroundImage = `url("${config.spritesheetUrl}")`;
-      petSpriteEl.style.backgroundRepeat = 'no-repeat';
-    }
-    if (petContainer && config.frameWidth && config.frameHeight) {
-      const ratio = config.frameHeight / config.frameWidth;
-      petContainer.style.width = `${DEFAULT_PET_SIZE.width}px`;
-      petContainer.style.height = `${Math.round(DEFAULT_PET_SIZE.width * ratio)}px`;
-    }
-  }
-
-  async function loadPetConfig(voiceId = '') {
-    if (!globalThis.chrome || !chrome.runtime || !chrome.runtime.getURL) return null;
-    for (const resourcePath of buildPetConfigCandidates(voiceId)) {
-      try {
-        const jsonUrl = chrome.runtime.getURL(resourcePath);
-        const response = await fetch(jsonUrl, { cache: 'no-store' });
-        if (!response.ok) continue;
-        const data = await response.json();
-        if (!data || !data.spritesheetPath) continue;
-
-        const spritesheetUrl = resolvePetResourceUrl(data.spritesheetPath, jsonUrl);
-        if (!spritesheetUrl) continue;
-
-        const img = new Image();
-        img.decoding = 'async';
-        img.src = spritesheetUrl;
-        await new Promise((resolve) => {
-          img.onload = resolve;
-          img.onerror = resolve;
-        });
-        if (!img.naturalWidth || !img.naturalHeight) continue;
-
-        const columns = toPositiveInt(data.columns, DEFAULT_CODEX_PET_SHEET.columns);
-        const rows = toPositiveInt(data.rows, DEFAULT_CODEX_PET_SHEET.rows);
-        const sheetWidth = toPositiveInt(img.naturalWidth, DEFAULT_CODEX_PET_SHEET.width);
-        const sheetHeight = toPositiveInt(img.naturalHeight, DEFAULT_CODEX_PET_SHEET.height);
-        const frameWidth = toPositiveInt(
-          data.frameWidth,
-          toPositiveInt(Math.floor(sheetWidth / columns), DEFAULT_CODEX_PET_SHEET.frameWidth),
-        );
-        const frameHeight = toPositiveInt(
-          data.frameHeight,
-          toPositiveInt(Math.floor(sheetHeight / rows), DEFAULT_CODEX_PET_SHEET.frameHeight),
-        );
-        const totalFrames = columns * rows;
-        const rawAnimations = data.animations || {};
-
-        petConfig = {
-          id: data.id || 'custom-pet',
-          spritesheetUrl,
-          columns,
-          rows,
-          frameWidth,
-          frameHeight,
-          sheetWidth,
-          sheetHeight,
-          animations: {
-            idle: normalizeAnimDef(rawAnimations.idle || rawAnimations.waiting, [0, 1], 400, totalFrames),
-            talking: normalizeAnimDef(rawAnimations.talking || rawAnimations.speaking || rawAnimations.talk, [16, 17, 18, 17], 150, totalFrames),
-            thinking: normalizeAnimDef(rawAnimations.thinking || rawAnimations.working, [24, 25], 300, totalFrames),
-            happy: normalizeAnimDef(rawAnimations.happy || rawAnimations.success || rawAnimations.celebrate, [32, 33], 220, totalFrames),
-            error: normalizeAnimDef(rawAnimations.error || rawAnimations.sad || rawAnimations.angry || rawAnimations.confused, [40, 41], 260, totalFrames),
-          },
-        };
-        return petConfig;
-      } catch (_error) {
-        continue;
-      }
-    }
-    petConfig = null;
-    return null;
-  }
-
-  async function refreshPetConfig(force = false) {
-    const selection = await getCurrentPetSelection();
-    if (!force && petConfig && petConfigVoiceKey === selection.key) {
-      applyLoadedPetConfig(petConfig);
-      return petConfig;
-    }
-
-    const loadSeq = ++petConfigLoadToken;
-    const nextConfig = await loadPetConfig(selection.petId);
-    if (loadSeq !== petConfigLoadToken) return null;
-
-    petConfigVoiceKey = selection.key;
-    petConfig = nextConfig;
-    applyLoadedPetConfig(petConfig);
-    if (petConfig) setPixelPetState(petState);
-    return petConfig;
-  }
-
-  function startPetSpriteAnim(animName) {
-    if (!petConfig || !petSpriteEl) return;
-    const anim = petConfig.animations[animName] || petConfig.animations.idle;
-    if (!anim || !anim.frames || anim.frames.length === 0) return;
-
-    let frameIdx = 0;
-    const updateFrame = () => {
-      if (petState !== animName && !(animName === 'idle' && petState === 'idle')) return;
-      const frameId = anim.frames[frameIdx];
-      applyPetSpriteFrame(frameId);
-      frameIdx = (frameIdx + 1) % anim.frames.length;
-      if (petAnimTimer) clearTimeout(petAnimTimer);
-      petAnimTimer = setTimeout(updateFrame, anim.speed || 400);
-    };
-
-    updateFrame();
-  }
-
-  function setPixelPetState(state) {
-    petState = state;
-
-    if (petAnimTimer) {
-      clearTimeout(petAnimTimer);
-      clearInterval(petAnimTimer);
-      petAnimTimer = null;
-    }
-
-    if (petConfig) {
-      switch (state) {
-        case 'idle':
-          startPetSpriteAnim('idle');
-          break;
-        case 'thinking':
-          startPetSpriteAnim('thinking');
-          break;
-        case 'talking':
-          startPetSpriteAnim('talking');
-          break;
-        case 'happy':
-          startPetSpriteAnim('happy');
-          setTimeout(() => {
-            if (petState === 'happy') setPixelPetState('idle');
-          }, 1000);
-          break;
-        case 'error':
-          startPetSpriteAnim('error');
-          setTimeout(() => {
-            if (petState === 'error') setPixelPetState('idle');
-          }, 3000);
-          break;
-        default:
-          startPetSpriteAnim('idle');
-          break;
-      }
-    } else if (state === 'happy') {
-      setTimeout(() => {
-        if (petState === 'happy') setPixelPetState('idle');
-      }, 1000);
-    } else if (state === 'error') {
-      setTimeout(() => {
-        if (petState === 'error') setPixelPetState('idle');
-      }, 3000);
-    }
-
-    if (petContainer) {
-      const isActuallyEnabled = enabled && settings.enabled;
-      petContainer.style.opacity = isActuallyEnabled ? '1' : '0.4';
-      petContainer.style.filter = isActuallyEnabled ? 'none' : 'grayscale(0.5) brightness(0.7)';
-    }
-  }
-
-  function createPixelPet() {
-    if (petContainer) return;
-    petContainer = document.createElement('div');
-    petContainer.id = 'local-voice-pixel-pet';
-    petContainer.title = 'Double-click to reset position';
-    petContainer.style.cssText = [
-      petBaseStyle(),
-      'display:flex',
-      'align-items:center',
-      'justify-content:center',
-      'transition:opacity 0.3s ease',
-    ].join(';');
-
-    petSpriteEl = document.createElement('div');
-    petSpriteEl.style.cssText = [
-      'position:absolute',
-      'inset:0',
-      'width:100%',
-      'height:100%',
-      'background-repeat:no-repeat',
-      'background-position:0 0',
-      'background-origin:border-box',
-      'background-clip:border-box',
-      'image-rendering:pixelated',
-      'pointer-events:none',
-      'display:block',
-    ].join(';');
-    petContainer.appendChild(petSpriteEl);
-    document.documentElement.appendChild(petContainer);
-    makePetDraggable(petContainer);
-    petContainer.addEventListener('dblclick', async (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      await resetPetPosition();
-    });
-    void loadPetPosition();
-
-    window.addEventListener('resize', () => {
-      if (!petContainer || !petContainer.style.left || !petContainer.style.top) return;
-      const clamped = clampPetPosition(
-        Number.parseFloat(petContainer.style.left || '0'),
-        Number.parseFloat(petContainer.style.top || '0'),
-      );
-      petContainer.style.left = `${clamped.left}px`;
-      petContainer.style.top = `${clamped.top}px`;
-    });
-
-    void refreshPetConfig(true).catch(() => {});
-  }
-
-  function makePetDraggable(el) {
-    let dragState = null;
-    const body = document.body;
-
-    const onMove = (event) => {
-      if (!dragState || !petContainer) return;
-      const dx = event.clientX - dragState.startX;
-      const dy = event.clientY - dragState.startY;
-      const clamped = clampPetPosition(dragState.startLeft + dx, dragState.startTop + dy);
-      petContainer.style.left = `${clamped.left}px`;
-      petContainer.style.top = `${clamped.top}px`;
-      petContainer.style.right = 'auto';
-      petContainer.style.bottom = 'auto';
-      event.preventDefault();
-    };
-
-    const onUp = async () => {
-      if (!dragState || !petContainer) return;
-      const left = Number.parseFloat(petContainer.style.left || '0');
-      const top = Number.parseFloat(petContainer.style.top || '0');
-      dragState = null;
-      if (body) body.style.userSelect = '';
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-      await savePetPosition(left, top);
-    };
-
-    el.addEventListener('mousedown', (event) => {
-      if (event.button !== 0) return;
-      const rect = petContainer.getBoundingClientRect();
-      dragState = {
-        startX: event.clientX,
-        startY: event.clientY,
-        startLeft: rect.left,
-        startTop: rect.top,
-      };
-      petContainer.style.left = `${Math.round(rect.left)}px`;
-      petContainer.style.top = `${Math.round(rect.top)}px`;
-      petContainer.style.right = 'auto';
-      petContainer.style.bottom = 'auto';
-      if (body) body.style.userSelect = 'none';
-      window.addEventListener('mousemove', onMove);
-      window.addEventListener('mouseup', onUp);
-      event.preventDefault();
-    });
   }
 
   function releaseObjectUrl() {
@@ -1292,7 +699,6 @@
   async function playItem(url, text, item, playbackToken) {
     stopCurrentPlayback('replace');
     currentPlaybackToken = String(playbackToken || '');
-    setPixelPetState('talking');
     setPanelState('Playing', `${String(text || '').slice(0, 60)}${String(text || '').length > 60 ? '...' : ''}`);
     try {
       const audioSrc = await fetchAudioObjectUrl(url);
@@ -1308,14 +714,12 @@
       releaseObjectUrl();
       currentAudio = null;
       currentPlaybackToken = null;
-      setPixelPetState('happy');
       setPanelState('Ready', 'Playback done');
       chrome.runtime.sendMessage({ type: 'playback-done', playbackToken, ok: true, stopped: false }).catch(() => {});
     } catch (error) {
       releaseObjectUrl();
       currentAudio = null;
       currentPlaybackToken = null;
-      setPixelPetState('error');
       setPanelState('Error', error.message || String(error));
       chrome.runtime.sendMessage({ type: 'playback-done', playbackToken, ok: false, stopped: false, error: error.message || String(error) }).catch(() => {});
     }
@@ -1329,7 +733,6 @@
     currentAudio = null;
     currentPlaybackToken = null;
     releaseObjectUrl();
-    if (reason !== 'replace') setPixelPetState('idle');
     if (reason === 'stop') setPanelState('Ready', 'Playback stopped');
     return token;
   }
@@ -1337,20 +740,14 @@
   function applyOwnerState(nextIsOwner, payload = null) {
     isUiOwner = nextIsOwner;
     if (payload) {
-      globalTabs = payload.tabs || [];
-      selectedTabId = payload.selectedTabId;
       queueSize = payload.queueSize || 0;
     }
     if (isUiOwner === false) {
       if (panel) panel.style.display = 'none';
-      if (petContainer) petContainer.style.display = 'none';
       return;
     }
     if (!panel) createPanel();
-    if (!petContainer) createPixelPet();
     if (panel) panel.style.display = 'flex';
-    if (petContainer) petContainer.style.display = 'block';
-    syncTabs();
     if (payload) {
       const busy = Boolean(payload.isPlaying);
       for (const button of actionButtons) {
@@ -1363,18 +760,13 @@
         const preview = `${txt.slice(0, 50)}${txt.length > 50 ? '...' : ''}`;
         if (payload.playbackPhase === 'generating') {
           setPanelState('Generating', preview || 'Generating audio...');
-          setPixelPetState('thinking');
         } else {
           setPanelState('Playing', preview);
-          setPixelPetState('talking');
         }
       } else {
         const queueText = queueSize > 0 ? `Queued ${queueSize}` : 'Queue empty';
         setPanelState('Ready', payload.statusText ? `${payload.statusText} / ${queueText}` : queueText);
-        setPixelPetState('idle');
       }
-    } else if (petContainer) {
-      setPixelPetState('idle');
     }
   }
 
@@ -1413,7 +805,9 @@
 
   async function start() {
     registerMessageListener();
+    document.getElementById('local-voice-pixel-pet')?.remove();
     await loadSettings();
+    await syncDesktopPetSelection();
     markExistingMessagesAsSeen();
     try {
       const response = await runtimeMessage('register-tab', { title: document.title });
@@ -1436,17 +830,12 @@
       enabled = Boolean(settings.enabled);
       if (!wasEnabled && enabled) rebaselineAutoMessages();
       settings.voiceVolume = clampVolume(settings.voiceVolume);
-      if (voiceProfileInput) voiceProfileInput.value = getCurrentVoiceProfile();
       syncReferenceVoiceSelect();
-      syncPetSelect();
       syncVolumeSlider();
       if (autoButton) autoButton.style.background = enabled ? 'rgba(73,168,113,.25)' : 'rgba(255,255,255,.08)';
-      setPixelPetState(petState);
       if (Object.prototype.hasOwnProperty.call(changes, 'voiceId')
-        || Object.prototype.hasOwnProperty.call(changes, 'referenceVoice')
-        || Object.prototype.hasOwnProperty.call(changes, PET_MODE_STORAGE)
-        || Object.prototype.hasOwnProperty.call(changes, SELECTED_PET_ID_STORAGE)) {
-        void refreshPetConfig(false);
+        || Object.prototype.hasOwnProperty.call(changes, 'referenceVoice')) {
+        void syncDesktopPetSelection();
       }
       if (Object.prototype.hasOwnProperty.call(changes, PANEL_POSITION_KEY)) applyPanelPosition(changes[PANEL_POSITION_KEY].newValue);
       if (Object.prototype.hasOwnProperty.call(changes, PANEL_COLLAPSED_KEY)) void setCollapsed(Boolean(changes[PANEL_COLLAPSED_KEY].newValue), false);

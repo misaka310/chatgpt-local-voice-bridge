@@ -1,14 +1,33 @@
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const { test, expect, chromium } = require('@playwright/test');
 const { DEMO_REPLY, fixtureHtml } = require('../../scripts/demo-fixture');
 
 const ROOT = path.resolve(__dirname, '../..');
-const API = 'http://127.0.0.1:8717';
-const EXTENSION = path.join(ROOT, 'extension').replaceAll('\\', '/');
+const MOCK_PORT = Number(process.env.MOCK_VOICE_PORT || (18000 + (process.pid % 1000)));
+const API = `http://127.0.0.1:${MOCK_PORT}`;
+const SOURCE_EXTENSION = path.join(ROOT, 'extension');
+const EXTENSION_DIR = path.join(os.tmpdir(), `local-voice-extension-mock-${process.pid}-${Date.now()}`);
+const EXTENSION = EXTENSION_DIR.replaceAll('\\', '/');
 const PROFILE = path.join(ROOT, `.e2e-profile-mock-${process.pid}-${Date.now()}`);
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function prepareTestExtension() {
+  fs.rmSync(EXTENSION_DIR, { recursive: true, force: true });
+  fs.cpSync(SOURCE_EXTENSION, EXTENSION_DIR, { recursive: true });
+  const manifestPath = path.join(EXTENSION_DIR, 'manifest.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  manifest.host_permissions = [
+    `http://127.0.0.1:${MOCK_PORT}/*`,
+    `http://localhost:${MOCK_PORT}/*`,
+  ];
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`, 'utf8');
+}
+
+test.beforeAll(() => prepareTestExtension());
+test.afterAll(() => fs.rmSync(EXTENSION_DIR, { recursive: true, force: true }));
 
 async function mockHealth() {
   try {
@@ -25,7 +44,7 @@ async function startMock() {
     const response = await fetch(`${API}/health`);
     if (response.ok) {
       const body = await response.json();
-      if (body.runtime !== 'mock') throw new Error('port 8717 is already used by a non-mock API');
+      if (body.runtime !== 'mock') throw new Error(`mock port ${MOCK_PORT} is already used by a non-mock API`);
       await fetch(`${API}/__test/reset`, { method: 'POST' });
       return null;
     }
@@ -35,6 +54,7 @@ async function startMock() {
 
   const proc = spawn(process.execPath, ['scripts/mock-voice-api.js'], {
     cwd: ROOT,
+    env: { ...process.env, MOCK_VOICE_PORT: String(MOCK_PORT) },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const until = Date.now() + 15000;
@@ -44,7 +64,7 @@ async function startMock() {
     await wait(150);
   }
   proc.kill();
-  throw new Error('mock API did not start; stop the process using port 8717');
+  throw new Error(`mock API did not start on port ${MOCK_PORT}`);
 }
 
 async function apiEvents() {
@@ -91,8 +111,11 @@ test('mock CI protects Auto baseline and proves Next, Regen, Replay, audio fetch
         voiceVolume: 0,
         enabled: false,
         panelCollapsed: false,
-        voiceId: 'qwen3',
-        referenceVoice: 'qwen3',
+        voiceId: '',
+        referenceVoice: 'sample',
+        petMode: 'manual',
+        selectedPetId: 'standalone',
+        petPosition: { left: 10, top: 20 },
       });
     }, API);
 
@@ -106,22 +129,58 @@ test('mock CI protects Auto baseline and proves Next, Regen, Replay, audio fetch
 
     const panel = page.locator('#local-voice-bridge-panel');
     await expect(panel).toBeVisible({ timeout: 15000 });
-    if (!(await panel.getByText('Voice', { exact: true }).isVisible().catch(() => false))) {
-      await panel.click({ position: { x: 40, y: 12 } });
-    }
+    await expect(page.locator('#local-voice-pixel-pet')).toHaveCount(0);
+    await expect(panel.locator('select')).toHaveCount(1);
+    await expect(panel.locator('[data-local-voice-field="ref"]')).toBeVisible();
+    await expect(panel.locator('[data-local-voice-field="volume"]')).toBeVisible();
+    await expect(panel.getByText('Voice', { exact: true })).toHaveCount(0);
+    await expect(panel.getByText('Tab', { exact: true })).toHaveCount(0);
+    await expect(panel.getByText('Pet', { exact: true })).toHaveCount(0);
+    for (const name of ['Auto', 'Next', 'Regen', 'Replay']) await expect(panel.getByRole('button', { name })).toBeVisible();
+    const currentText = panel.locator('[data-testid="local-voice-current-text"]');
+    await expect(currentText).toBeVisible();
 
-    const stored = await worker.evaluate(() => chrome.storage.local.get(['voiceId', 'referenceVoice']));
+    const stored = await worker.evaluate(() => chrome.storage.local.get(['voiceId', 'referenceVoice', 'petMode', 'selectedPetId', 'petPosition']));
     expect(stored.voiceId).toBe('');
     expect(stored.referenceVoice).toBe('');
-    await expect(panel.locator('select').nth(0)).toHaveValue('');
+    expect(stored.petMode).toBeUndefined();
+    expect(stored.selectedPetId).toBeUndefined();
+    expect(stored.petPosition).toBeUndefined();
+    const refSelect = panel.locator('[data-testid="local-voice-ref"]');
+    await expect(refSelect).toHaveValue('');
+    await expect.poll(async () => {
+      const petEvents = (await apiEvents()).filter((event) => event.method === 'POST' && event.path === '/v1/desktop-pet');
+      return petEvents.at(-1)?.body?.petId || '';
+    }).toBe('placeholder');
 
+    await refSelect.selectOption('sample');
+    await expect.poll(async () => {
+      const petEvents = (await apiEvents()).filter((event) => event.method === 'POST' && event.path === '/v1/desktop-pet');
+      return petEvents.at(-1)?.body?.petId || '';
+    }).toBe('sample');
+    await refSelect.selectOption('');
+    await expect.poll(async () => {
+      const petEvents = (await apiEvents()).filter((event) => event.method === 'POST' && event.path === '/v1/desktop-pet');
+      return petEvents.at(-1)?.body?.petId || '';
+    }).toBe('placeholder');
+
+    const header = panel.locator(':scope > div').first();
+    await header.click();
+    await expect(panel.locator('[data-local-voice-field="ref"]')).toBeHidden();
+    await expect.poll(async () => worker.evaluate(async () => (await chrome.storage.local.get('panelCollapsed')).panelCollapsed)).toBe(true);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await expect(panel).toBeVisible({ timeout: 15000 });
+    await expect(panel.locator('[data-local-voice-field="ref"]')).toBeHidden();
+    await panel.locator(':scope > div').first().click();
+    await expect(panel.locator('[data-local-voice-field="ref"]')).toBeVisible();
+    await expect.poll(async () => worker.evaluate(async () => (await chrome.storage.local.get('panelCollapsed')).panelCollapsed)).toBe(false);
     await panel.getByRole('button', { name: 'Auto' }).click();
     await page.waitForTimeout(1800);
     expect((await apiEvents()).filter((event) => event.path === '/v1/speak')).toHaveLength(0);
 
     await page.locator('#add-reply').click();
     await expect(page.locator('[data-message-id="new-reply"]')).toHaveText(DEMO_REPLY);
-    await expect(panel).toContainText('Played chunk 1/', { timeout: 30000 });
+    await expect(currentText).toContainText('これはオートをオンにした後に届いた新しい返答です。', { timeout: 15000 });
     await waitForCounts(1, 1);
 
     let events = await apiEvents();
@@ -130,19 +189,19 @@ test('mock CI protects Auto baseline and proves Next, Regen, Replay, audio fetch
     expect(firstPost.body.referenceVoice).toBe('');
     expect(firstPost.body.voiceId).toBe('');
     expect(firstPost.body.text.length).toBeLessThanOrEqual(80);
-    expect(DEMO_REPLY.startsWith(firstPost.body.text)).toBe(true);
+    const demoLines = DEMO_REPLY.split('\n');
+    expect(firstPost.body.text).toContain(demoLines[0]);
+    expect(firstPost.body.text).not.toContain(demoLines[2]);
     expect(firstPost.body.text).not.toBe(DEMO_REPLY);
     expect(events.find((event) => event.method === 'GET' && event.path === '/audio/mock.wav').responseStatus).toBe(200);
 
     await panel.getByRole('button', { name: 'Next' }).click();
-    await expect(panel).toContainText('Played chunk 2/', { timeout: 30000 });
     await waitForCounts(2, 2);
     events = await apiEvents();
     const postsAfterNext = events.filter((event) => event.method === 'POST' && event.path === '/v1/speak');
     expect(postsAfterNext[1].body.text).not.toBe(postsAfterNext[0].body.text);
 
     await panel.getByRole('button', { name: 'Regen' }).click();
-    await expect(panel).toContainText('Played chunk 2/', { timeout: 30000 });
     await waitForCounts(3, 3);
     events = await apiEvents();
     const postsAfterRegen = events.filter((event) => event.method === 'POST' && event.path === '/v1/speak');
@@ -198,23 +257,21 @@ test('two ChatGPT tabs keep the selected reference voice across a continuous Aut
     }
     await Promise.all(pages.map((page, index) => page.goto(`https://chatgpt.com/c/mock-${index}`, { waitUntil: 'domcontentloaded' })));
 
-    await expect.poll(async () => {
-      const states = await Promise.all(pages.map((page) => page.locator('#local-voice-bridge-panel').isVisible().catch(() => false)));
-      return states.filter(Boolean).length;
-    }, { timeout: 15000 }).toBe(1);
-
-    const ownerPage = (await pages[0].locator('#local-voice-bridge-panel').isVisible()) ? pages[0] : pages[1];
-    const ownerPanel = ownerPage.locator('#local-voice-bridge-panel');
-    if (!(await ownerPanel.getByText('Voice', { exact: true }).isVisible().catch(() => false))) {
-      await ownerPanel.click({ position: { x: 40, y: 12 } });
-    }
-    await expect(ownerPanel.locator('select').nth(0)).toHaveValue('sample');
-    await expect.poll(async () => ownerPanel.locator('select').last().locator('option').count()).toBe(2);
-
-    await ownerPanel.getByRole('button', { name: 'Auto' }).click();
+    await pages[0].bringToFront();
+    await expect(pages[0].locator('#local-voice-bridge-panel')).toBeVisible({ timeout: 15000 });
+    await expect(pages[1].locator('#local-voice-bridge-panel')).toBeHidden();
+    const firstPanel = pages[0].locator('#local-voice-bridge-panel');
+    await expect(firstPanel.locator('select')).toHaveCount(1);
+    await expect(firstPanel.locator('[data-testid="local-voice-ref"]')).toHaveValue('sample');
+    await firstPanel.getByRole('button', { name: 'Auto' }).click();
     await expect.poll(async () => worker.evaluate(async () => (await chrome.storage.local.get('enabled')).enabled)).toBe(true);
-    await Promise.all(pages.map((page) => page.locator('#add-reply').click()));
+    await pages[0].locator('#add-reply').click();
+    await waitForCounts(1, 1);
 
+    await pages[1].bringToFront();
+    await expect(pages[1].locator('#local-voice-bridge-panel')).toBeVisible({ timeout: 15000 });
+    await expect(pages[0].locator('#local-voice-bridge-panel')).toBeHidden();
+    await pages[1].locator('#add-reply').click();
     await waitForCounts(2, 2);
     const events = await apiEvents();
     const posts = events.filter((event) => event.method === 'POST' && event.path === '/v1/speak');

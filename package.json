@@ -3,8 +3,9 @@
   "private": true,
   "version": "0.1.0",
   "scripts": {
-    "check:public": "python scripts/check-public-tree.py",
-    "test:python": "python -m unittest tests.test_server_loopback tests.test_preflight_versions tests.test_irodori_cache tests.test_tray_controller",
+    "build:launcher": "node scripts/run-launcher-build.js",
+    "check:public": "node scripts/run-public-check.js",
+    "test:python": "node scripts/run-python-tests.js",
     "test:background": "node --test tests/background-reference-queue.test.js",
     "test:e2e:mock": "node scripts/run-mock-e2e.js",
     "test:e2e:real": "playwright test tests/e2e/extension-*-irodori.spec.js tests/e2e/extension-playback-ok.spec.js --headed --workers=1",

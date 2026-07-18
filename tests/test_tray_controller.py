@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "local-api" / "tray_controller.py"
 SPEC = importlib.util.spec_from_file_location("tray_controller", MODULE_PATH)
@@ -53,21 +55,44 @@ class TrayControllerContractTests(unittest.TestCase):
         self.assertIn("--quick", command)
         self.assertEqual(command[0], str(tray.SERVER_PYTHON))
 
-    def test_startup_entry_launches_the_hidden_vbs_launcher(self) -> None:
-        launcher = Path(r"C:\Voice Bridge\start-voice-bridge.vbs")
-        text = tray.startup_entry_text(launcher)
-        self.assertIn(str(launcher), text)
-        self.assertIn(", 0, False", text)
+    def test_startup_command_targets_the_small_exe_launcher(self) -> None:
+        launcher = Path(r"C:\Voice Bridge\ChatGPTLocalVoiceBridge.exe")
+        self.assertEqual(tray.startup_command(launcher), f'"{launcher}"')
 
-    def test_startup_toggle_is_current_user_only(self) -> None:
+    def test_startup_toggle_uses_the_current_user_run_registry(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            with mock.patch.dict(os.environ, {"APPDATA": temp_dir}, clear=False):
+            launcher = Path(temp_dir) / "ChatGPTLocalVoiceBridge.exe"
+            launcher.write_bytes(b"launcher")
+            legacy_entry = Path(temp_dir) / "ChatGPT Local Voice Bridge.vbs"
+            legacy_entry.write_text("legacy", encoding="utf-8")
+            with (
+                mock.patch.object(tray, "LAUNCHER_EXE", launcher),
+                mock.patch.object(tray, "legacy_startup_entry_path", return_value=legacy_entry),
+                mock.patch.object(tray, "_write_startup_command") as write_startup,
+                mock.patch.object(tray, "_delete_startup_command") as delete_startup,
+            ):
                 tray.set_startup_enabled(True)
-                entry = tray.startup_entry_path()
-                self.assertTrue(entry.is_file())
-                self.assertIn("start-voice-bridge.vbs", entry.read_text(encoding="utf-8-sig"))
+                write_startup.assert_called_once_with(f'"{launcher}"')
+                self.assertFalse(legacy_entry.exists())
+
                 tray.set_startup_enabled(False)
-                self.assertFalse(entry.exists())
+                delete_startup.assert_called_once_with()
+
+    def test_legacy_startup_entry_is_migrated_to_the_exe(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            launcher = Path(temp_dir) / "ChatGPTLocalVoiceBridge.exe"
+            launcher.write_bytes(b"launcher")
+            legacy_entry = Path(temp_dir) / "ChatGPT Local Voice Bridge.vbs"
+            legacy_entry.write_text("legacy", encoding="utf-8")
+            with (
+                mock.patch.object(tray, "LAUNCHER_EXE", launcher),
+                mock.patch.object(tray, "legacy_startup_entry_path", return_value=legacy_entry),
+                mock.patch.object(tray, "_write_startup_command") as write_startup,
+            ):
+                self.assertTrue(tray.migrate_legacy_startup())
+
+            write_startup.assert_called_once_with(f'"{launcher}"')
+            self.assertFalse(legacy_entry.exists())
 
     def test_startup_folder_falls_back_when_appdata_is_missing(self) -> None:
         home = Path("voice-test-home")
@@ -81,11 +106,24 @@ class TrayControllerContractTests(unittest.TestCase):
                 home / "AppData" / "Roaming" / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup",
             )
 
-    def test_launcher_uses_pythonw_and_checks_tray_dependencies(self) -> None:
+    def test_exe_launcher_uses_pythonw_and_checks_qt_dependencies(self) -> None:
+        launcher = (ROOT / "scripts" / "launcher" / "VoiceBridgeLauncher.cs").read_text(encoding="utf-8")
+        build_script = (ROOT / "scripts" / "build-launcher.ps1").read_text(encoding="utf-8")
+        setup_script = (ROOT / "setup-voice-env.cmd").read_text(encoding="utf-8")
+
+        self.assertIn("pythonw.exe", launcher)
+        self.assertIn("from PySide6 import QtWidgets, QtSvg", launcher)
+        self.assertIn("--self-test", launcher)
+        self.assertIn("WindowsApplication", build_script)
+        self.assertIn("ChatGPTLocalVoiceBridge.exe", build_script)
+        self.assertIn("build-launcher.ps1", setup_script)
+        self.assertIn("ChatGPTLocalVoiceBridge.exe", setup_script)
+
+    def test_legacy_vbs_only_forwards_to_the_exe(self) -> None:
         launcher = (ROOT / "start-voice-bridge.vbs").read_text(encoding="utf-8")
-        self.assertIn(r"\pythonw.exe", launcher)
-        self.assertIn("import pystray; from PIL import Image", launcher)
-        self.assertIn("shell.Run runCommand, 0, False", launcher)
+        self.assertIn("ChatGPTLocalVoiceBridge.exe", launcher)
+        self.assertNotIn("pythonw.exe", launcher)
+        self.assertNotIn("PySide6", launcher)
 
     def test_launcher_is_ascii_safe_for_windows_script_host(self) -> None:
         launcher = (ROOT / "start-voice-bridge.vbs").read_text(encoding="utf-8")
@@ -115,6 +153,37 @@ class TrayControllerContractTests(unittest.TestCase):
         source = MODULE_PATH.read_text(encoding="utf-8").lower()
         self.assertNotIn("autohotkey", source)
         self.assertNotIn(".ahk", source)
+
+    def test_qt_application_keeps_running_when_pet_is_hidden(self) -> None:
+        app = tray.create_qt_application([])
+        self.assertFalse(app.quitOnLastWindowClosed())
+
+    def test_status_updates_are_delivered_through_callback_without_pystray(self) -> None:
+        controller = tray.VoiceBridgeController()
+        statuses: list[str] = []
+        controller.set_status_callback(statuses.append)
+        controller.set_status("Ready")
+        self.assertEqual(statuses[-1], "Ready")
+
+    def test_controller_shutdown_is_idempotent(self) -> None:
+        controller = tray.VoiceBridgeController()
+        with mock.patch.object(controller, "stop_owned_server") as stop_owned_server:
+            controller.shutdown()
+            controller.shutdown()
+        self.assertTrue(controller.stop_requested)
+        stop_owned_server.assert_called_once_with()
+
+    def test_controller_uses_qsystemtrayicon_and_has_no_second_gui_loop(self) -> None:
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        self.assertIn("QSystemTrayIcon", source)
+        self.assertIn("app.exec()", source)
+        self.assertNotIn("pystray", source)
+        self.assertNotIn("icon.run(", source)
+
+    def test_requirements_pin_pyside_and_remove_pystray(self) -> None:
+        requirements = (ROOT / "local-api" / "requirements.txt").read_text(encoding="utf-8")
+        self.assertIn("PySide6==", requirements)
+        self.assertNotIn("pystray", requirements)
 
 
 if __name__ == "__main__":
