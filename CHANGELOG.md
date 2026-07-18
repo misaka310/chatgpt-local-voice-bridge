@@ -16,3 +16,5 @@
 - Linked the desktop pet directly to Ref, including safe migration of legacy browser pet settings and placeholder fallback.
 - Removed the in-page Chrome pet implementation and limited the single Windows desktop pet to display and left-drag movement.
 - Reduced the tray to service management and added regression coverage for panel collapse, active-tab ownership, pet interactions, launcher self-test, and loopback-only operation.
+- Fixed Auto so complete short replies, including replies under 20 characters, are read after the stability delay.
+- Stopped real E2E startup failures from leaving orphaned local API processes on port 8717.

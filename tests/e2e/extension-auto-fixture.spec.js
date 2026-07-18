@@ -40,6 +40,7 @@ async function startApi() {
     if (await healthy()) return p;
     await wait(1000);
   }
+  if (p.exitCode === null) p.kill();
   throw new Error('local api did not become healthy');
 }
 

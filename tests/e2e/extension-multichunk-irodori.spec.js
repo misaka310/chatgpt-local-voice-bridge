@@ -42,6 +42,7 @@ async function startApi() {
     if (await healthy()) return proc;
     await wait(1000);
   }
+  if (proc.exitCode === null) proc.kill();
   throw new Error('local api did not become healthy');
 }
 

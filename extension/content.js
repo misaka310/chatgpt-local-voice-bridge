@@ -22,7 +22,6 @@
   const DEFAULT_PET_ID = 'placeholder';
   const LEGACY_PET_STORAGE_KEYS = ['petMode', 'selectedPetId', 'petPosition'];
   const DEFAULT_REFERENCE_VOICES = [{ id: '', label: 'none' }];
-  const MIN_FALLBACK_CHARS = 20;
 
   const stateByElement = new WeakMap();
   const initializedElements = new WeakSet();
@@ -195,15 +194,15 @@
     return chunks;
   }
 
-  function shouldSendNow(preview, now, item) {
-    const maxChars = Number(settings.previewMaxChars || DEFAULT_SETTINGS.previewMaxChars);
+  function stableDelayForPreview(preview) {
     const minChars = Number(settings.previewMinChars || DEFAULT_SETTINGS.previewMinChars);
     const stableMs = Number(settings.previewStableMs || DEFAULT_SETTINGS.previewStableMs);
-    const len = preview.length;
-    if (!len) return false;
-    if (len >= minChars && now - item.lastChangedAt >= stableMs) return true;
-    if (len >= MIN_FALLBACK_CHARS && now - item.lastChangedAt >= stableMs + 400) return true;
-    return false;
+    return preview.length >= minChars ? stableMs : stableMs + 400;
+  }
+
+  function shouldSendNow(preview, now, item) {
+    if (!preview.length) return false;
+    return now - item.lastChangedAt >= stableDelayForPreview(preview);
   }
 
   function getAssistantNodes() {
@@ -342,7 +341,7 @@
         node.dataset[AUTO_SENT_FLAG] = '1';
         void reportChunks({ node, text: latest, messageKey: item.key, chunks: pendingChunks, autoPreview: pendingPreview, capturedAt: Date.now() }, Boolean(enabled && settings.enabled));
       }
-    }, Number(settings.previewStableMs || DEFAULT_SETTINGS.previewStableMs) + 50);
+    }, stableDelayForPreview(preview) + 50);
   }
 
   function inspectLatestAssistant() {
