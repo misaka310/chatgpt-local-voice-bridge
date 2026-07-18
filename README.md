@@ -15,6 +15,7 @@ https://github.com/user-attachments/assets/55580bbe-1325-4548-a03b-d70f7004a7fb
 - `Next`で続き、`Replay`で聞き直し、`Regen`で現在の部分を再生成
 - API・生成音声・任意の参照音声を同じPC内で管理
 - 実モデル不要のデモとCIで、拡張機能の通信・再生境界を確認可能
+- Windowsの通知領域に常駐し、通常利用ではターミナルを開かない
 
 ## GPU不要の2分デモ
 
@@ -34,14 +35,19 @@ npm run demo:check
 
 ## 実際のローカル音声を使うセットアップ
 
+初回だけ次を実行します。
+
 ```bat
 setup-voice-env.cmd
-run-voice-stack.cmd
 ```
+
+セットアップ後は`start-voice-bridge.vbs`をダブルクリックします。ターミナルは表示されず、Windows右下の通知領域に`ChatGPT Local Voice Bridge`アイコンが常駐します。右クリックから状態確認、再起動、ログ・音声フォルダの表示、Windowsログイン時の自動起動、終了ができます。
 
 `http://127.0.0.1:8717/health`を開き、`ok=true`と`engine=irodori_direct`を確認します。その後、Chrome / Braveの拡張機能画面でDeveloper modeを有効にし、**Load unpacked**から`extension/`を選択してください。
 
 最初は`Ref=none`のまま、Local VoiceパネルでAutoをオンにしてから新しいメッセージを送ります。新しい返答の先頭プレビューが再生されれば完了です。参照音声の追加方法は[参照音声](docs/reference-audio.md)を参照してください。
+
+ターミナルでサーバーログを直接確認したい場合だけ、診断用の`run-voice-stack.cmd`を使用します。
 
 ## 対応環境
 
