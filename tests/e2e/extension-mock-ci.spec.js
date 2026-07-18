@@ -90,7 +90,8 @@ test('mock CI protects Auto baseline and proves Next, Regen, Replay, audio fetch
   const api = await startMock();
   fs.rmSync(PROFILE, { recursive: true, force: true });
   const context = await chromium.launchPersistentContext(PROFILE, {
-    headless: false,
+    headless: process.env.PLAYWRIGHT_HEADED !== '1',
+    channel: 'chromium',
     viewport: { width: 1280, height: 720 },
     args: [
       `--disable-extensions-except=${EXTENSION}`,
@@ -221,7 +222,8 @@ test('two ChatGPT tabs keep the selected reference voice across a continuous Aut
   const api = await startMock();
   fs.rmSync(PROFILE, { recursive: true, force: true });
   const context = await chromium.launchPersistentContext(PROFILE, {
-    headless: false,
+    headless: process.env.PLAYWRIGHT_HEADED !== '1',
+    channel: 'chromium',
     viewport: { width: 1280, height: 720 },
     args: [
       `--disable-extensions-except=${EXTENSION}`,

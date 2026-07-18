@@ -84,7 +84,8 @@ test('auto mode reads only assistant replies created after Auto is enabled', asy
   const loadArg = '--' + 'load-extension=' + EXTENSION_ARG;
   const onlyArg = '--' + 'disable-extensions-except=' + EXTENSION_ARG;
   const ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
-    headless: false,
+    headless: process.env.PLAYWRIGHT_HEADED !== '1',
+    channel: 'chromium',
     args: [onlyArg, loadArg, '--autoplay-policy=no-user-gesture-required', '--no-first-run', '--mute-audio'],
   });
   try {
@@ -120,7 +121,8 @@ test('auto mode re-baselines assistant replies when toggled off then on again', 
   const loadArg = '--' + 'load-extension=' + EXTENSION_ARG;
   const onlyArg = '--' + 'disable-extensions-except=' + EXTENSION_ARG;
   const ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
-    headless: false,
+    headless: process.env.PLAYWRIGHT_HEADED !== '1',
+    channel: 'chromium',
     args: [onlyArg, loadArg, '--autoplay-policy=no-user-gesture-required', '--no-first-run', '--mute-audio'],
   });
   try {

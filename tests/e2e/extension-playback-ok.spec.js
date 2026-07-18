@@ -98,7 +98,8 @@ test('extension playback generates, fetches, and finishes one chunk', async () =
   const loadArg = '--' + 'load-extension=' + EXTENSION_ARG;
   const onlyArg = '--' + 'disable-extensions-except=' + EXTENSION_ARG;
   const ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
-    headless: false,
+    headless: process.env.PLAYWRIGHT_HEADED !== '1',
+    channel: 'chromium',
     args: [onlyArg, loadArg, '--autoplay-policy=no-user-gesture-required', '--no-first-run', '--mute-audio'],
   });
   const apiEvents = [];
@@ -137,7 +138,8 @@ test('stale reference voice storage is normalized to empty before speak', async 
   const loadArg = '--' + 'load-extension=' + EXTENSION_ARG;
   const onlyArg = '--' + 'disable-extensions-except=' + EXTENSION_ARG;
   const ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
-    headless: false,
+    headless: process.env.PLAYWRIGHT_HEADED !== '1',
+    channel: 'chromium',
     args: [onlyArg, loadArg, '--autoplay-policy=no-user-gesture-required', '--no-first-run', '--mute-audio'],
   });
   try {
@@ -168,7 +170,8 @@ test('Next advances to the second preview chunk when the reply spans two chunks'
   const loadArg = '--' + 'load-extension=' + EXTENSION_ARG;
   const onlyArg = '--' + 'disable-extensions-except=' + EXTENSION_ARG;
   const ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
-    headless: false,
+    headless: process.env.PLAYWRIGHT_HEADED !== '1',
+    channel: 'chromium',
     args: [onlyArg, loadArg, '--autoplay-policy=no-user-gesture-required', '--no-first-run', '--mute-audio'],
   });
   try {
@@ -201,7 +204,8 @@ test('collapsed panel shows the current status only once', async () => {
   const loadArg = '--' + 'load-extension=' + EXTENSION_ARG;
   const onlyArg = '--' + 'disable-extensions-except=' + EXTENSION_ARG;
   const ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
-    headless: false,
+    headless: process.env.PLAYWRIGHT_HEADED !== '1',
+    channel: 'chromium',
     args: [onlyArg, loadArg, '--autoplay-policy=no-user-gesture-required', '--no-first-run', '--mute-audio'],
   });
   try {
