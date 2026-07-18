@@ -12,6 +12,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
+# Public model downloads must not be broken by a stale token saved by another
+# Hugging Face login. Explicit environment settings still take precedence.
+os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
+
 from irodori_engine import IrodoriError, cache_hint, synthesize_irodori_direct
 
 ROOT = Path(__file__).resolve().parent

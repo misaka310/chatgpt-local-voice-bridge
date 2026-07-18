@@ -26,7 +26,7 @@ echo [5/11] Download shared FFmpeg runtime for torchcodec
 echo [6/11] Install venv bootstrap for shared FFmpeg DLL loading
 "%PY%" "%CD%\local-api\scripts\install_venv_bootstrap.py" || goto :fail
 
-echo [7/11] Install Irodori direct runtime dependencies
+echo [7/11] Install Irodori direct runtime and tray dependencies
 "%PY%" -m pip install --upgrade --upgrade-strategy only-if-needed -r "%CD%\local-api\requirements.txt" || goto :fail
 rem Upstream Irodori metadata still caps transformers below the security-fixed release.
 rem Dependencies are installed above; install the verified pinned Irodori source without re-resolving them.
@@ -46,7 +46,7 @@ echo Runtime: irodori_direct
 echo Model: irodori-v3
 echo Cache: %USERPROFILE%\.cache\huggingface
 echo Shared FFmpeg: %CD%\local-api\runtime\ffmpeg-shared\bin
-echo Next: run-voice-stack.cmd
+echo Next: double-click start-voice-bridge.vbs
 exit /b 0
 
 :fail
