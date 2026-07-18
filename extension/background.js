@@ -1,4 +1,4 @@
-const SETTINGS_VERSION = 7;
+const SETTINGS_VERSION = 8;
 const DEFAULT_SETTINGS = {
   settingsVersion: SETTINGS_VERSION,
   enabled: false,
@@ -15,6 +15,7 @@ const DEFAULT_SETTINGS = {
   previewStableMs: 1000,
   panelCollapsed: true,
 };
+const LEGACY_PET_STORAGE_KEYS = ['petMode', 'selectedPetId', 'petPosition'];
 
 const tabs = new Map();
 let selectedTabId = null;
@@ -38,23 +39,30 @@ function normalizeStoredReference(value) {
   if (!normalized || ['qwen3', 'qwen', 'none'].includes(normalized.toLowerCase())) return '';
   return normalized;
 }
+function storedReferenceVoice(raw) {
+  if (raw && Object.prototype.hasOwnProperty.call(raw, 'voiceId')) return normalizeStoredReference(raw.voiceId);
+  return normalizeStoredReference(raw && raw.referenceVoice);
+}
 
 function sanitizeSettings(raw = {}) {
-  return {
+  const sanitized = {
     ...DEFAULT_SETTINGS,
     ...raw,
     settingsVersion: SETTINGS_VERSION,
     model: DEFAULT_SETTINGS.voiceProfile,
-    voiceId: normalizeStoredReference(raw.voiceId || raw.referenceVoice),
+    voiceId: storedReferenceVoice(raw),
     voiceProfile: normalizeModel(raw.model || raw.voiceProfile),
-    referenceVoice: normalizeStoredReference(raw.voiceId || raw.referenceVoice),
+    referenceVoice: storedReferenceVoice(raw),
     voicePrompt: '',
-    };
+  };
+  for (const key of LEGACY_PET_STORAGE_KEYS) delete sanitized[key];
+  return sanitized;
 }
 
 async function migrateSettings() {
   const current = await chrome.storage.local.get(null);
   await chrome.storage.local.set(sanitizeSettings(current));
+  await chrome.storage.local.remove(LEGACY_PET_STORAGE_KEYS);
 }
 
 async function getSettings() {
@@ -222,6 +230,21 @@ async function fetchReferenceVoices() {
   return { ok: true, voices: [] };
 }
 
+async function syncDesktopPetSelection(petId) {
+  const settings = await getSettings();
+  const url = new URL(settings.healthUrl || DEFAULT_SETTINGS.healthUrl);
+  url.pathname = '/v1/desktop-pet';
+  url.search = '';
+  const response = await fetch(url.toString(), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ petId: String(petId || 'placeholder') }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+  return payload;
+}
+
 function enqueue(base, front = false) {
   const item = {
     id: `q-${Date.now()}-${seq++}`,
@@ -250,8 +273,8 @@ function chunkLabel(item) {
 }
 
 function selectedTarget(senderTabId) {
-  if (selectedTabId && tabs.has(selectedTabId)) return selectedTabId;
   if (senderTabId && tabs.has(senderTabId)) return senderTabId;
+  if (selectedTabId && tabs.has(selectedTabId)) return selectedTabId;
   return Array.from(tabs.keys())[0] || null;
 }
 
@@ -363,6 +386,12 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   if (selectedTabId === tabId) selectedTabId = null;
   broadcastState();
 });
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+  if (!tabs.has(tabId)) return;
+  uiOwnerTabId = tabId;
+  selectedTabId = tabId;
+  broadcastState();
+});
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message.type !== 'string') return false;
@@ -374,6 +403,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       existing.title = String(message.title || sender.tab.title || 'ChatGPT');
       existing.url = sender.tab.url || existing.url || '';
       tabs.set(senderTabId, existing);
+      if (sender.tab.active) {
+        uiOwnerTabId = senderTabId;
+        selectedTabId = senderTabId;
+      }
     }
     sendResponse({ ok: true, payload: statePayload(senderTabId) });
     broadcastState();
@@ -427,16 +460,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'desktop-pet-selection') {
+    syncDesktopPetSelection(message.petId)
+      .then((payload) => sendResponse({ ok: true, payload }))
+      .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
+    return true;
+  }
+
   if (message.type === 'ui-command') {
     const cmd = String(message.cmd || '');
     const params = message.params && typeof message.params === 'object' ? message.params : {};
-    if (cmd === 'select-tab') {
-      const tabId = Number(params.tabId);
-      if (tabs.has(tabId)) selectedTabId = tabId;
-      broadcastState();
-      sendResponse({ ok: true, payload: { statusText: lastStatusText, statusLevel: lastStatusLevel } });
-      return false;
-    }
     if (cmd === 'stop' || cmd === 'skip') {
       queue = [];
       if (uiOwnerTabId) chrome.tabs.sendMessage(uiOwnerTabId, { type: 'stop-audio', payload: { playbackToken: currentToken } }).catch(() => {});

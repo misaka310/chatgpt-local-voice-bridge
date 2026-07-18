@@ -23,6 +23,8 @@ build/
 out/
 *.zip
 *.spec
+ChatGPTLocalVoiceBridge.exe
+ChatGPTLocalVoiceBridge.pdb
 
 # local runtime
 local-api/runtime/

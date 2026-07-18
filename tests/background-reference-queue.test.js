@@ -23,6 +23,7 @@ function waitFor(predicate, timeoutMs = 2000) {
 
 function createHarness() {
   const posts = [];
+  const petPosts = [];
   const storage = {
     enabled: true,
     apiUrl: 'http://127.0.0.1:8717/v1/speak',
@@ -45,6 +46,9 @@ function createHarness() {
         async set(values) {
           Object.assign(storage, values);
         },
+        async remove(keys) {
+          for (const key of Array.isArray(keys) ? keys : [keys]) delete storage[key];
+        },
       },
     },
     runtime: {
@@ -58,6 +62,7 @@ function createHarness() {
     },
     tabs: {
       onRemoved: { addListener() {} },
+      onActivated: { addListener() {} },
       async sendMessage() {
         return { ok: true };
       },
@@ -68,6 +73,17 @@ function createHarness() {
     if (String(url).endsWith('/v1/speak') && options.method === 'POST') {
       posts.push(JSON.parse(options.body || '{}'));
       throw new Error('captured request');
+    }
+    if (String(url).endsWith('/v1/desktop-pet') && options.method === 'POST') {
+      const body = JSON.parse(options.body || '{}');
+      petPosts.push(body);
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { ok: true, selectedPetId: body.petId };
+        },
+      };
     }
     throw new Error(`unexpected fetch: ${url}`);
   }
@@ -93,12 +109,25 @@ function createHarness() {
         id: tabId,
         title,
         url: `https://chatgpt.com/c/${tabId}`,
+        active: true,
       },
     }, (value) => { response = value; });
     return response;
   }
 
-  return { posts, send };
+  function sendAsync(message, tabId, title) {
+    return new Promise((resolve) => {
+      runtimeListener(message, {
+        tab: {
+          id: tabId,
+          title,
+          url: `https://chatgpt.com/c/${tabId}`,
+        },
+      }, resolve);
+    });
+  }
+
+  return { petPosts, posts, send, sendAsync };
 }
 
 test('continuous queue keeps the selected reference voice when one tab omits legacy voice fields', async () => {
@@ -192,4 +221,18 @@ test('Next and Regen use the saved reference voice when legacy fields are omitte
 
   assert.deepEqual(harness.posts.map((body) => body.referenceVoice), ['sample', 'sample']);
   assert.deepEqual(harness.posts.map((body) => body.voiceId), ['sample', 'sample']);
+});
+
+test('desktop pet selection is forwarded to the local desktop pet API', async () => {
+  const harness = createHarness();
+
+  const response = await harness.sendAsync({
+    type: 'desktop-pet-selection',
+    petId: 'misaka',
+  }, 101, 'Tab A');
+
+  assert.deepEqual(harness.petPosts, [{ petId: 'misaka' }]);
+  assert.equal(response.ok, true);
+  assert.equal(response.payload.ok, true);
+  assert.equal(response.payload.selectedPetId, 'misaka');
 });

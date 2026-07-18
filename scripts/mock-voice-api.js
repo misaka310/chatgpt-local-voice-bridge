@@ -10,7 +10,7 @@ const port = Number(process.env.MOCK_VOICE_PORT || 8717);
 const events = [];
 // A short valid PCM WAV. A zero-byte/invalid blob would let a mock pass while
 // the extension's real Audio element never reaches its completion state.
-const wav = Buffer.alloc(44 + 800);
+const wav = Buffer.alloc(44 + 8000);
 wav.write('RIFF', 0);
 wav.writeUInt32LE(wav.length - 8, 4);
 wav.write('WAVEfmt ', 8);
@@ -22,7 +22,7 @@ wav.writeUInt32LE(8000, 28);
 wav.writeUInt16LE(1, 32);
 wav.writeUInt16LE(8, 34);
 wav.write('data', 36);
-wav.writeUInt32LE(800, 40);
+wav.writeUInt32LE(8000, 40);
 wav.fill(128, 44);
 
 function json(res, status, value) {
@@ -44,6 +44,19 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && url.pathname === '/__test/reset') {
     events.length = 0;
     return json(res, 200, { ok: true });
+  }
+  if (req.method === 'POST' && url.pathname === '/v1/desktop-pet') {
+    let raw = '';
+    req.setEncoding('utf8');
+    req.on('data', (chunk) => { raw += chunk; });
+    req.on('end', () => {
+      let body = {};
+      try { body = JSON.parse(raw || '{}'); } catch (_) { return json(res, 400, { ok: false, error: 'invalid JSON' }); }
+      const selectedPetId = String(body.petId || 'placeholder').trim() || 'placeholder';
+      events.push({ method: 'POST', path: url.pathname, body, responseStatus: 200, at: Date.now() });
+      return json(res, 200, { ok: true, selectedPetId, visible: true });
+    });
+    return;
   }
   if (req.method === 'POST' && url.pathname === '/v1/speak') {
     let raw = '';

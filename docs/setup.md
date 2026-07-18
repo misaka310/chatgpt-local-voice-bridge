@@ -15,8 +15,9 @@
 5. CUDA/Torch確認
 6. Irodoriモデルとcodecを Hugging Face cache へ事前取得
 7. `local-api/runtime/audio` 作成
+8. 通常起動用の小さな`ChatGPTLocalVoiceBridge.exe`を生成
 
-setup完了表示は、モデルとcodecの取得確認後にだけ出ます。
+setup完了表示は、モデルとcodecの取得確認とランチャーEXEの生成が終わった後にだけ出ます。
 
 ## キャッシュ
 

@@ -6,6 +6,8 @@ import json
 import mimetypes
 import os
 import sys
+import threading
+import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -16,9 +18,13 @@ from urllib.parse import unquote, urlparse
 # Hugging Face login. Explicit environment settings still take precedence.
 os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 
+from desktop_pet_config import discover_available_pets
 from irodori_engine import IrodoriError, cache_hint, synthesize_irodori_direct
 
 ROOT = Path(__file__).resolve().parent
+DESKTOP_PET_SETTINGS_PATH = ROOT / "runtime" / "desktop-pet-settings.json"
+DESKTOP_PET_ROOT = ROOT.parent / "extension" / "assets" / "pet"
+DESKTOP_PET_SETTINGS_LOCK = threading.Lock()
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac"}
 TEXT_FILES = ("voice.txt", "text.txt", "transcript.txt")
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -146,6 +152,52 @@ def request_json(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     return parsed
 
 
+def normalize_desktop_pet_id(value: Any) -> str:
+    pet_id = str(value or "").strip().lower()
+    if not pet_id or pet_id in {"none", ".", ".."} or "/" in pet_id or "\\" in pet_id:
+        return "placeholder"
+    return pet_id
+
+
+def desktop_pet_list(pet_root: Path | None = None) -> list[dict[str, str]]:
+    root = Path(pet_root) if pet_root is not None else DESKTOP_PET_ROOT
+    return [
+        {"id": choice.selection_id, "label": choice.display_name}
+        for choice in discover_available_pets(root)
+    ]
+
+
+def desktop_pet_settings_path() -> Path:
+    override = str(os.environ.get("LOCAL_VOICE_DESKTOP_PET_SETTINGS") or "").strip()
+    return Path(override).expanduser().resolve() if override else DESKTOP_PET_SETTINGS_PATH
+
+
+def load_desktop_pet_settings(path: Path | None = None) -> dict[str, Any]:
+    target = Path(path) if path is not None else desktop_pet_settings_path()
+    try:
+        value = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def update_desktop_pet_settings(value: Any, path: Path | None = None) -> dict[str, Any]:
+    target = Path(path) if path is not None else desktop_pet_settings_path()
+    with DESKTOP_PET_SETTINGS_LOCK:
+        settings = load_desktop_pet_settings(target)
+        settings.setdefault("version", 1)
+        settings["selectedPetId"] = normalize_desktop_pet_id(value)
+        settings["visible"] = True
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temporary.write_text(json.dumps(settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return settings
+
+
 def sanitize_text(value: Any) -> str:
     text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     if not text:
@@ -216,9 +268,25 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:
-        config = load_config()
         parsed = urlparse(self.path)
+        if parsed.path == "/v1/desktop-pet":
+            try:
+                settings = load_desktop_pet_settings()
+                json_response(
+                    self,
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "selectedPetId": normalize_desktop_pet_id(settings.get("selectedPetId")),
+                        "visible": True,
+                        "pets": desktop_pet_list(),
+                    },
+                )
+            except Exception as exc:
+                json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
+            return
         try:
+            config = load_config()
             if parsed.path == "/health":
                 payload = {
                     "ok": True,
@@ -249,11 +317,28 @@ class Handler(BaseHTTPRequestHandler):
             json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
 
     def do_POST(self) -> None:
-        config = load_config()
-        if urlparse(self.path).path != "/v1/speak":
+        path = urlparse(self.path).path
+        if path == "/v1/desktop-pet":
+            try:
+                payload = request_json(self)
+                settings = update_desktop_pet_settings(payload.get("petId"))
+                json_response(
+                    self,
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "selectedPetId": settings["selectedPetId"],
+                        "visible": True,
+                    },
+                )
+            except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+            return
+        if path != "/v1/speak":
             json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
             return
         try:
+            config = load_config()
             payload = request_json(self)
             text = sanitize_text(payload.get("text"))
             request_id = str(payload.get("requestId") or "") or None

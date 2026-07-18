@@ -5,7 +5,7 @@ const DEMO_REPLY = [
   '冒頭のプレビューだけが自動で読み上げられ、長い返答の続きはNextから再生できます。',
   'Replayは直前の音声を聞き直し、Regenは現在の部分を生成し直します。',
   '音声生成と再生ファイルの取得は、このパソコン内のローカルAPIだけで行われます。',
-].join('');
+].join('\n');
 
 function fixtureHtml() {
   return `<!doctype html>

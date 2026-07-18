@@ -16,6 +16,7 @@ https://github.com/user-attachments/assets/55580bbe-1325-4548-a03b-d70f7004a7fb
 - API・生成音声・任意の参照音声を同じPC内で管理
 - 実モデル不要のデモとCIで、拡張機能の通信・再生境界を確認可能
 - Windowsの通知領域に常駐し、通常利用ではターミナルを開かない
+- 日常操作はChrome / BraveのLocal Voiceパネルへ集約し、デスクトップペットは表示と左ドラッグ移動だけを担当
 
 ## GPU不要の2分デモ
 
@@ -33,7 +34,7 @@ Node.js 22とChromiumだけで起動します。Python、CUDA、GPU、Hugging Fa
 npm run demo:check
 ```
 
-## 実際のローカル音声を使うセットアップ
+## Setup / 初回セットアップ
 
 初回だけ次を実行します。
 
@@ -41,7 +42,9 @@ npm run demo:check
 setup-voice-env.cmd
 ```
 
-セットアップ後は`start-voice-bridge.vbs`をダブルクリックします。ターミナルは表示されず、Windows右下の通知領域に`ChatGPT Local Voice Bridge`アイコンが常駐します。右クリックから状態確認、再起動、ログ・音声フォルダの表示、Windowsログイン時の自動起動、終了ができます。
+## Usage / 起動と操作
+
+セットアップ後は`ChatGPTLocalVoiceBridge.exe`をダブルクリックします。EXEは既存のPython環境をターミナルなしで起動するだけです。日常の音声操作はChrome / BraveのLocal Voiceパネルで行います。通知領域は状態確認、再起動、フォルダ表示、自動起動、再セットアップ、終了だけを担当します。デスクトップペットは`Ref`と自動連動して1体だけ表示され、左ドラッグで移動できます。クリック、ダブルクリック、右クリックでは何も起きません。
 
 `http://127.0.0.1:8717/health`を開き、`ok=true`と`engine=irodori_direct`を確認します。その後、Chrome / Braveの拡張機能画面でDeveloper modeを有効にし、**Load unpacked**から`extension/`を選択してください。
 
@@ -49,7 +52,7 @@ setup-voice-env.cmd
 
 ターミナルでサーバーログを直接確認したい場合だけ、診断用の`run-voice-stack.cmd`を使用します。
 
-## 対応環境
+## Requirements / 対応環境
 
 | モード | 必須 | 検証済み | 未対応・未検証 |
 | --- | --- | --- | --- |
@@ -58,7 +61,20 @@ setup-voice-env.cmd
 
 GPU、VRAM、ブラウザごとの扱いは[動作環境](docs/hardware.md)にまとめています。未検証の環境を対応済みとはしていません。
 
-## 制約
+## Verification / 動作確認
+
+開発環境では次を実行します。
+
+```bat
+npm run test:python
+npm run test:background
+npm run test:e2e:mock
+npm run check:public
+```
+
+通常起動の確認は、通知領域の状態と`http://127.0.0.1:8717/health`の`ok=true`を使用します。デスクトップペットのWindows実画面確認手順は[起動とヘルス確認](docs/startup.md)にあります。
+
+## Limitations / 制約
 
 - ChatGPTのDOM変更により、返答検出が一時的に動作しなくなる可能性があります。
 - CIはChatGPTに似た固定フィクスチャを使い、将来の実ChatGPT DOMを保証しません。

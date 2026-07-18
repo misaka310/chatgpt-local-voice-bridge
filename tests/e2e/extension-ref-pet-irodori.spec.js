@@ -65,7 +65,7 @@ function html() {
   return `<!doctype html><html><head><meta charset="utf-8"><title>ChatGPT Ref Pet Fixture</title></head><body><main><h1>ChatGPT fixture</h1></main><script>window.addAssistant=()=>{const turn=document.createElement('div');turn.setAttribute('data-testid','conversation-turn-2');const msg=document.createElement('div');msg.setAttribute('data-message-author-role','assistant');msg.setAttribute('data-message-id','ref-pet-msg');msg.textContent='準備中';turn.appendChild(msg);document.querySelector('main').appendChild(turn);setTimeout(()=>{msg.textContent='これはPlaywrightによる拡張機能E2Eテストです。ローカル音声APIで音声を生成し、ブラウザ上で再生完了まで確認します。';},700);};window.addLongAssistant=()=>{const turn=document.createElement('div');turn.setAttribute('data-testid','conversation-turn-3');const msg=document.createElement('div');msg.setAttribute('data-message-author-role','assistant');msg.setAttribute('data-message-id','ref-pet-long-msg');msg.textContent='準備中';turn.appendChild(msg);document.querySelector('main').appendChild(turn);setTimeout(()=>{msg.textContent='最初のプレビューです。' + 'あ'.repeat(200) + '次のプレビューです。';},700);};</script></body></html>`;
 }
 
-test('Ref list, pet rendering, storage sync, and speak payload all use the selected reference voice', async () => {
+test('Ref list, desktop pet selection, storage sync, and speak payload all use the selected reference voice', async () => {
   test.setTimeout(240000);
   const api = await startApi();
   fs.rmSync(PROFILE_DIR, { recursive: true, force: true });
@@ -92,36 +92,37 @@ test('Ref list, pet rendering, storage sync, and speak payload all use the selec
 
     const panel = page.locator('#local-voice-bridge-panel');
     await expect(panel).toBeVisible({ timeout: 30000 });
-    await panel.click({ position: { x: 40, y: 12 } });
+    if (!(await panel.locator('[data-local-voice-field="ref"]').isVisible().catch(() => false))) {
+      await panel.locator(':scope > div').first().click();
+    }
     await expect(panel.getByRole('button', { name: 'Regen' })).toBeVisible({ timeout: 10000 });
 
-    const refSelect = panel.locator('select').nth(0);
-    const petSelect = panel.locator('select').nth(1);
+    const refSelect = panel.locator('[data-testid="local-voice-ref"]');
+    await expect(panel.locator('select')).toHaveCount(1);
+    await expect(panel.getByText('Voice', { exact: true })).toHaveCount(0);
+    await expect(panel.getByText('Tab', { exact: true })).toHaveCount(0);
+    await expect(panel.getByText('Pet', { exact: true })).toHaveCount(0);
     await expect(refSelect).toBeVisible();
     await expect
       .poll(async () => await refSelect.evaluate((el) => Array.from(el.options).map((opt) => opt.value).filter(Boolean).length))
       .toBeGreaterThan(0);
     await refSelect.selectOption({ index: 1 });
+    const selectedReference = await refSelect.inputValue();
 
     await expect
       .poll(async () => await worker.evaluate(async () => chrome.storage.local.get(['voiceId', 'referenceVoice'])))
-      .toEqual(expect.objectContaining({ voiceId: expect.any(String), referenceVoice: expect.any(String) }));
+      .toEqual({ voiceId: selectedReference, referenceVoice: selectedReference });
+    await expect.poll(async () => {
+      const payload = await fetch(`${API_BASE}/v1/desktop-pet`).then((response) => response.json());
+      return payload.selectedPetId;
+    }).toBe(selectedReference);
 
-    await expect
-      .poll(async () => await petSelect.evaluate((el) => Array.from(el.options).some((opt) => (opt.textContent || '').startsWith('Auto by Ref ('))))
-      .toBe(true);
-
-    const pet = page.locator('#local-voice-pixel-pet');
-    await expect(pet).toBeVisible({ timeout: 30000 });
-    await expect
-      .poll(async () => await pet.evaluate((el) => getComputedStyle(el.firstElementChild).backgroundImage))
-      .not.toBe('none');
+    await expect(page.locator('#local-voice-pixel-pet')).toHaveCount(0);
 
     await page.evaluate(() => window.addAssistant());
     await expect(page.locator('[data-message-id="ref-pet-msg"]')).toBeVisible({ timeout: 10000 });
     await page.waitForTimeout(2500);
     await panel.getByRole('button', { name: 'Regen' }).click();
-    await expect(panel).toContainText('Played chunk 1/1', { timeout: 180000 });
     await expect
       .poll(() => speakResponses.length)
       .toBeGreaterThan(0);
@@ -137,8 +138,9 @@ test('Ref list, pet rendering, storage sync, and speak payload all use the selec
     await page.evaluate(() => window.addLongAssistant());
     await expect(page.locator('[data-message-id="ref-pet-long-msg"]')).toBeVisible({ timeout: 10000 });
     await page.waitForTimeout(2500);
+    const speakCountBeforeNext = speakResponses.length;
     await panel.getByRole('button', { name: 'Next' }).click();
-    await expect(panel).toContainText('Played chunk 1/', { timeout: 180000 });
+    await expect.poll(() => speakResponses.length, { timeout: 180000 }).toBe(speakCountBeforeNext + 1);
     expect(speakResponses.at(-1)).toMatchObject({
       status: 200,
       body: {
@@ -190,28 +192,28 @@ test('two ChatGPT tabs keep a real reference voice through the continuous Auto q
     }
     await Promise.all(pages.map((page, index) => page.goto(`https://chatgpt.com/c/ref-queue-${index}`, { waitUntil: 'domcontentloaded' })));
 
-    await expect.poll(async () => {
-      const visible = await Promise.all(pages.map((page) => page.locator('#local-voice-bridge-panel').isVisible().catch(() => false)));
-      return visible.filter(Boolean).length;
-    }, { timeout: 30000 }).toBe(1);
-
-    const ownerPage = (await pages[0].locator('#local-voice-bridge-panel').isVisible()) ? pages[0] : pages[1];
-    const ownerPanel = ownerPage.locator('#local-voice-bridge-panel');
-    if (!(await ownerPanel.getByText('Voice', { exact: true }).isVisible().catch(() => false))) {
-      await ownerPanel.click({ position: { x: 40, y: 12 } });
+    await pages[0].bringToFront();
+    await expect(pages[0].locator('#local-voice-bridge-panel')).toBeVisible({ timeout: 30000 });
+    await expect(pages[1].locator('#local-voice-bridge-panel')).toBeHidden();
+    const firstPanel = pages[0].locator('#local-voice-bridge-panel');
+    if (!(await firstPanel.locator('[data-local-voice-field="ref"]').isVisible().catch(() => false))) {
+      await firstPanel.locator(':scope > div').first().click();
     }
-    const referenceSelect = ownerPanel.locator('select').nth(0);
+    const referenceSelect = firstPanel.locator('[data-testid="local-voice-ref"]');
+    await expect(firstPanel.locator('select')).toHaveCount(1);
     await expect.poll(async () => referenceSelect.locator(`option[value="${referenceVoice}"]`).count(), { timeout: 30000 }).toBe(1);
     await referenceSelect.selectOption(referenceVoice);
     await expect.poll(async () => worker.evaluate(async () => chrome.storage.local.get(['voiceId', 'referenceVoice'])))
       .toEqual({ voiceId: referenceVoice, referenceVoice });
-    await expect(referenceSelect).toHaveValue(referenceVoice);
-    await expect.poll(async () => ownerPanel.locator('select').last().locator('option').count()).toBe(2);
-
-    await ownerPanel.getByRole('button', { name: 'Auto' }).click();
+    await firstPanel.getByRole('button', { name: 'Auto' }).click();
     await expect.poll(async () => worker.evaluate(async () => (await chrome.storage.local.get('enabled')).enabled)).toBe(true);
-    await Promise.all(pages.map((page) => page.evaluate(() => window.addAssistant())));
+    await pages[0].evaluate(() => window.addAssistant());
+    await expect.poll(() => speakResponses.length, { timeout: 240000 }).toBe(1);
 
+    await pages[1].bringToFront();
+    await expect(pages[1].locator('#local-voice-bridge-panel')).toBeVisible({ timeout: 30000 });
+    await expect(pages[0].locator('#local-voice-bridge-panel')).toBeHidden();
+    await pages[1].evaluate(() => window.addAssistant());
     await expect.poll(() => speakResponses.length, { timeout: 240000 }).toBe(2);
     await expect.poll(() => audioResponses.length, { timeout: 60000 }).toBe(2);
     expect(speakResponses.every((entry) => entry.status === 200)).toBe(true);
