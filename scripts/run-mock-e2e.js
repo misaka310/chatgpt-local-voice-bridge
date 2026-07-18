@@ -8,7 +8,6 @@ const runner = spawn(command, [
   'playwright',
   'test',
   'tests/e2e/extension-mock-ci.spec.js',
-  '--headed',
   '--workers=1',
 ], {
   stdio: 'inherit',

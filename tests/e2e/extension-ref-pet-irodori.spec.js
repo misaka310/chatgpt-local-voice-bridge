@@ -72,7 +72,8 @@ test('Ref list, desktop pet selection, storage sync, and speak payload all use t
   const loadArg = '--' + 'load-extension=' + EXTENSION_ARG;
   const onlyArg = '--' + 'disable-extensions-except=' + EXTENSION_ARG;
   const ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
-    headless: false,
+    headless: process.env.PLAYWRIGHT_HEADED !== '1',
+    channel: 'chromium',
     args: [onlyArg, loadArg, '--autoplay-policy=no-user-gesture-required', '--no-first-run', '--mute-audio'],
   });
 
@@ -166,7 +167,8 @@ test('two ChatGPT tabs keep a real reference voice through the continuous Auto q
   const loadArg = '--' + 'load-extension=' + EXTENSION_ARG;
   const onlyArg = '--' + 'disable-extensions-except=' + EXTENSION_ARG;
   const ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
-    headless: false,
+    headless: process.env.PLAYWRIGHT_HEADED !== '1',
+    channel: 'chromium',
     args: [onlyArg, loadArg, '--autoplay-policy=no-user-gesture-required', '--no-first-run', '--mute-audio'],
   });
 

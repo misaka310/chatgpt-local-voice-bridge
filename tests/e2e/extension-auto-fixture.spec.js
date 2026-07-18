@@ -69,7 +69,8 @@ test('auto mode reads when assistant reply appears after message send', async ()
   const loadArg = '--' + 'load-extension=' + EXTENSION_ARG;
   const onlyArg = '--' + 'disable-extensions-except=' + EXTENSION_ARG;
   const ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
-    headless: false,
+    headless: process.env.PLAYWRIGHT_HEADED !== '1',
+    channel: 'chromium',
     args: [onlyArg, loadArg, '--autoplay-policy=no-user-gesture-required', '--no-first-run', '--mute-audio'],
   });
   try {
