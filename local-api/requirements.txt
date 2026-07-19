@@ -7,6 +7,7 @@ safetensors>=0.7.0
 pyyaml>=6.0
 tqdm>=4.67.3
 datasets>=3.0.0
+numpy>=1.24
 numba>=0.57.0
 llvmlite>=0.40.0
 peft>=0.18.0
