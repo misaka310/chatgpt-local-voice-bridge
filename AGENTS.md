@@ -1,4 +1,4 @@
-# Repository instructions for ChatGPT Local Voice Bridge
+# Repository instructions for Local Voice Bridge
 
 ## Preserve the existing public UX
 
@@ -80,4 +80,4 @@ Keep the public default volume in product docs unchanged unless the user asks fo
 
 ## Windows launcher rule
 
-Use a small Windows EXE as the primary user-facing launcher. Do not introduce VBS as the normal startup path. VBS may remain only as a temporary backward-compatibility forwarder for existing users. Setup, documentation, and Windows login startup must point to `ChatGPTLocalVoiceBridge.exe`.
+Use a small Windows EXE as the primary user-facing launcher. Do not introduce VBS as the normal startup path. VBS may remain only as a temporary backward-compatibility forwarder for existing users. Setup, documentation, and Windows login startup must point to `LocalVoiceBridge.exe`.

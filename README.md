@@ -1,8 +1,11 @@
-# ChatGPT Local Voice Bridge
+# Local Voice Bridge
 
-[![CI](https://github.com/misaka310/chatgpt-local-voice-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/misaka310/chatgpt-local-voice-bridge/actions/workflows/ci.yml)
+[![CI](https://github.com/misaka310/local-voice-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/misaka310/local-voice-bridge/actions/workflows/ci.yml)
 
-ChatGPTの新しい返答を検出し、その冒頭をPC内で音声に変換して自動で読み上げるChrome / Brave拡張です。
+chatgpt.comにローカル音声読み上げと、任意のプッシュ・トゥ・トーク音声入力を追加するWindows向けの非公式補助ツールです。読み上げだけでも利用でき、マイク会話機能は初期状態でオフです。
+
+> **非公式ツールについて**
+> Local Voice Bridgeは独立して開発された非公式ツールです。OpenAIによる公式製品、提携製品、承認製品、またはスポンサー製品ではありません。ChatGPTおよびOpenAIはOpenAIの商標です。
 
 https://github.com/user-attachments/assets/55580bbe-1325-4548-a03b-d70f7004a7fb
 
@@ -18,7 +21,12 @@ https://github.com/user-attachments/assets/55580bbe-1325-4548-a03b-d70f7004a7fb
 - API・生成音声・任意の参照音声を同じPC内で管理
 - 実モデル不要のデモとCIで、拡張機能の通信・再生境界を確認可能
 - Windowsの通知領域に常駐し、通常利用ではターミナルを開かない
-- 日常操作はChrome / BraveのLocal Voiceパネルへ集約し、デスクトップペットは表示と左ドラッグ移動だけを担当
+- 日常操作はChrome外のWindows Local Voice小窓へ集約し、開いている全ChatGPTタブの返答を1つの共通キューで読み上げ
+- 明示的に有効化した場合だけ、右Ctrl＋右Shift左の`＼ / _`キーを長押しして録音し、ローカルfaster-whisperから入力欄へ送信
+- 入力先は録音開始時に最後にフォーカスしていたChatGPT入力欄へ固定し、文字起こし中に別タブへ移っても変更しない
+- STTモデルは選択・有効化時に先に準備し、初回ダウンロード中は録音を開始しない
+- 文字起こし表示後は初期値0.7秒だけEscでキャンセルでき、録音中・文字起こし中は別タブの新しい返答を割り込み再生しない
+- デスクトップペットは左ドラッグで移動し、ダブルクリックでLocal Voice小窓を表示・非表示
 
 ## GPU不要の2分デモ
 
@@ -46,11 +54,13 @@ setup-voice-env.cmd
 
 ## Usage / 起動と操作
 
-セットアップ後はWindows検索で`ChatGPT Local Voice Bridge`を開きます。セットアップが現在のユーザーのスタートメニューへショートカットを登録します。リポジトリ内の`ChatGPTLocalVoiceBridge.exe`を直接ダブルクリックしても同じです。EXEは既存のPython環境をターミナルなしで起動するだけです。日常の音声操作はChrome / BraveのLocal Voiceパネルで行います。通知領域は状態確認、再起動、フォルダ表示、自動起動、再セットアップ、終了だけを担当します。デスクトップペットは`Ref`と自動連動して1体だけ表示され、左ドラッグで移動できます。クリック、ダブルクリック、右クリックでは何も起きません。
+セットアップ後はWindows検索で`Local Voice Bridge`を開きます。セットアップが現在のユーザーのスタートメニューへショートカットを登録します。リポジトリ内の`LocalVoiceBridge.exe`を直接ダブルクリックしても同じです。EXEは既存のPython環境をターミナルなしで起動します。日常の音声操作はChrome外のWindows Local Voice小窓で行います。小窓はデスクトップペットのダブルクリック、または通知領域の`Show Local Voice panel`から開閉できます。通知領域は小窓の表示、状態確認、再起動、フォルダ表示、自動起動、再セットアップ、終了を担当します。ペットは`Ref`と自動連動して1体だけ表示され、左ドラッグで移動できます。シングルクリックと右クリックでは何も起きません。
 
 `http://127.0.0.1:8717/health`を開き、`ok=true`と`engine=irodori_direct`を確認します。その後、Chrome / Braveの拡張機能画面でDeveloper modeを有効にし、**Load unpacked**から`extension/`を選択してください。
 
-最初は`Ref=none`のまま、Local VoiceパネルでAutoをオンにしてから新しいメッセージを送ります。新しい返答の先頭プレビューが再生されれば完了です。参照音声の追加方法は[参照音声](docs/reference-audio.md)を参照してください。
+最初は`Ref=none`のまま、Windows Local Voice小窓でAutoをオンにしてから新しいメッセージを送ります。開いているどのChatGPTタブでも、新しい返答の先頭プレビューが再生されれば完了です。参照音声の追加方法は[参照音声](docs/reference-audio.md)を参照してください。
+
+双方向の音声会話を使う場合は、小窓の`マイク会話`をオンにします。送信先にしたい入力欄へフォーカスを入れ、右Ctrl＋右Shift左の`＼ / _`キーを押している間だけ録音します。どちらか一方を離すと日本語をローカル文字起こしし、録音開始時にフォーカスしていた入力欄へ表示します。初期値では0.7秒以内にEscを押すと今回挿入した文字だけを削除し、押さなければ送信ボタンから自動送信します。詳しい準備、状態表示、保存データ、制約は[操作と検証](docs/operation.md#マイク会話モード)を参照してください。
 
 ターミナルでサーバーログを直接確認したい場合だけ、診断用の`run-voice-stack.cmd`を使用します。
 
@@ -59,7 +69,7 @@ setup-voice-env.cmd
 | モード | 必須 | 検証済み | 未対応・未検証 |
 | --- | --- | --- | --- |
 | 軽量デモ / mock CI | Node.js 22、Chromium | Windows 11のPlaywright Chromium | Firefox、macOSの実行は未検証 |
-| 実音声 | Windows、Python、NVIDIA GPU、CUDA、Irodori v3 | Windows 11、Playwright Chromium、NVIDIA CUDA環境 | Chrome / Braveの手動確認、CPUのみ、macOS、Linux、Firefox、Edgeは未検証または未対応 |
+| 実音声 | Windows、Python、NVIDIA GPU、CUDA、Irodori v3 | Windows 11、Windows外部小窓、Playwright Chromium、NVIDIA CUDA環境 | CPUのみ、macOS、Linux、Firefox、Edgeは未検証または未対応 |
 
 GPU、VRAM、ブラウザごとの扱いは[動作環境](docs/hardware.md)にまとめています。未検証の環境を対応済みとはしていません。
 
@@ -74,7 +84,7 @@ npm run test:e2e:mock
 npm run check:public
 ```
 
-`test:background`は、Service Workerのキュー動作に加えて、参照音声正規化、loopback音声URL制限、バイナリ変換、チャンク表示を分離した`background-core.js`へ95%のline coverageを要求します。通常起動の確認は、通知領域の状態と`http://127.0.0.1:8717/health`の`ok=true`を使用します。デスクトップペットのWindows実画面確認手順は[起動とヘルス確認](docs/startup.md)にあります。
+`test:background`は、Service Workerの全タブ共通キュー、外部設定・コマンド同期、参照音声正規化、loopback音声URL制限、バイナリ変換を検証し、`background-core.js`へ95%のline coverageを要求します。通常起動の確認は、通知領域、Windows Local Voice小窓、`http://127.0.0.1:8717/health`の`ok=true`を使用します。ペットのダブルクリックを含むWindows実画面確認手順は[起動とヘルス確認](docs/startup.md)にあります。
 
 ## Limitations / 制約
 

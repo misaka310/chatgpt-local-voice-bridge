@@ -3,16 +3,16 @@ using System.Diagnostics;
 using System.IO;
 using System.Windows.Forms;
 
-[assembly: System.Reflection.AssemblyTitle("ChatGPT Local Voice Bridge Launcher")]
-[assembly: System.Reflection.AssemblyProduct("ChatGPT Local Voice Bridge")]
+[assembly: System.Reflection.AssemblyTitle("Local Voice Bridge Launcher")]
+[assembly: System.Reflection.AssemblyProduct("Local Voice Bridge")]
 [assembly: System.Reflection.AssemblyDescription("Small Windows launcher for the local tray application")]
 [assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
 
-namespace ChatGPTLocalVoiceBridgeLauncher
+namespace LocalVoiceBridgeLauncher
 {
     internal static class Program
     {
-        private const string AppTitle = "ChatGPT Local Voice Bridge";
+        private const string AppTitle = "Local Voice Bridge";
 
         [STAThread]
         private static int Main(string[] args)

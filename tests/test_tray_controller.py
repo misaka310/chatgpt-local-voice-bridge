@@ -56,37 +56,42 @@ class TrayControllerContractTests(unittest.TestCase):
         self.assertEqual(command[0], str(tray.SERVER_PYTHON))
 
     def test_startup_command_targets_the_small_exe_launcher(self) -> None:
-        launcher = Path(r"C:\Voice Bridge\ChatGPTLocalVoiceBridge.exe")
+        launcher = Path(r"C:\Voice Bridge\LocalVoiceBridge.exe")
         self.assertEqual(tray.startup_command(launcher), f'"{launcher}"')
 
     def test_startup_toggle_uses_the_current_user_run_registry(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            launcher = Path(temp_dir) / "ChatGPTLocalVoiceBridge.exe"
+            launcher = Path(temp_dir) / "LocalVoiceBridge.exe"
             launcher.write_bytes(b"launcher")
             legacy_entry = Path(temp_dir) / "ChatGPT Local Voice Bridge.vbs"
             legacy_entry.write_text("legacy", encoding="utf-8")
             with (
                 mock.patch.object(tray, "LAUNCHER_EXE", launcher),
-                mock.patch.object(tray, "legacy_startup_entry_path", return_value=legacy_entry),
+                mock.patch.object(tray, "legacy_startup_entry_paths", return_value=(legacy_entry,)),
                 mock.patch.object(tray, "_write_startup_command") as write_startup,
                 mock.patch.object(tray, "_delete_startup_command") as delete_startup,
             ):
                 tray.set_startup_enabled(True)
                 write_startup.assert_called_once_with(f'"{launcher}"')
+                delete_startup.assert_called_once_with(tray.LEGACY_WINDOWS_RUN_VALUE)
                 self.assertFalse(legacy_entry.exists())
 
+                delete_startup.reset_mock()
                 tray.set_startup_enabled(False)
-                delete_startup.assert_called_once_with()
+                self.assertEqual(
+                    delete_startup.call_args_list,
+                    [mock.call(), mock.call(tray.LEGACY_WINDOWS_RUN_VALUE)],
+                )
 
     def test_legacy_startup_entry_is_migrated_to_the_exe(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            launcher = Path(temp_dir) / "ChatGPTLocalVoiceBridge.exe"
+            launcher = Path(temp_dir) / "LocalVoiceBridge.exe"
             launcher.write_bytes(b"launcher")
             legacy_entry = Path(temp_dir) / "ChatGPT Local Voice Bridge.vbs"
             legacy_entry.write_text("legacy", encoding="utf-8")
             with (
                 mock.patch.object(tray, "LAUNCHER_EXE", launcher),
-                mock.patch.object(tray, "legacy_startup_entry_path", return_value=legacy_entry),
+                mock.patch.object(tray, "legacy_startup_entry_paths", return_value=(legacy_entry,)),
                 mock.patch.object(tray, "_write_startup_command") as write_startup,
             ):
                 self.assertTrue(tray.migrate_legacy_startup())
@@ -116,22 +121,23 @@ class TrayControllerContractTests(unittest.TestCase):
         self.assertIn("from PySide6 import QtWidgets, QtSvg", launcher)
         self.assertIn("--self-test", launcher)
         self.assertIn("WindowsApplication", build_script)
-        self.assertIn("ChatGPTLocalVoiceBridge.exe", build_script)
+        self.assertIn("LocalVoiceBridge.exe", build_script)
         self.assertTrue(shortcut_script_path.is_file())
         shortcut_script = shortcut_script_path.read_text(encoding="utf-8")
         self.assertIn("SpecialFolder]::Programs", shortcut_script)
-        self.assertIn("ChatGPT Local Voice Bridge.lnk", shortcut_script)
+        self.assertIn("Local Voice Bridge.lnk", shortcut_script)
         self.assertIn("CreateShortcut", shortcut_script)
         self.assertIn("TargetPath", shortcut_script)
         self.assertIn("WorkingDirectory", shortcut_script)
         self.assertIn("IconLocation", shortcut_script)
         self.assertIn("build-launcher.ps1", setup_script)
         self.assertIn("install-start-menu-shortcut.ps1", setup_script)
-        self.assertIn("ChatGPTLocalVoiceBridge.exe", setup_script)
+        self.assertIn("LocalVoiceBridge.exe", setup_script)
+        self.assertIn('del /f /q "%CD%\\ChatGPTLocalVoiceBridge.exe"', setup_script)
 
     def test_legacy_vbs_only_forwards_to_the_exe(self) -> None:
         launcher = (ROOT / "start-voice-bridge.vbs").read_text(encoding="utf-8")
-        self.assertIn("ChatGPTLocalVoiceBridge.exe", launcher)
+        self.assertIn("LocalVoiceBridge.exe", launcher)
         self.assertNotIn("pythonw.exe", launcher)
         self.assertNotIn("PySide6", launcher)
 

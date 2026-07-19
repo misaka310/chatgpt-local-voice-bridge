@@ -237,5 +237,127 @@ class LoopbackConfigTests(unittest.TestCase):
                     os.environ["LOCAL_VOICE_DESKTOP_PET_SETTINGS"] = previous_path
 
 
+    def test_control_panel_endpoints_share_settings_commands_and_extension_state(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original_store = getattr(server, "CONTROL_STATE", None)
+            server.CONTROL_STATE = server.ControlStateStore(Path(temp_dir) / "control-state.json")
+            httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+            thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{httpd.server_port}"
+            try:
+                settings_request = urllib.request.Request(
+                    f"{base}/v1/control-panel/settings",
+                    data=json.dumps(
+                        {
+                            "enabled": True,
+                            "voiceVolume": 0.25,
+                            "referenceVoice": "asuka",
+                            "initialized": True,
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(settings_request, timeout=5) as response:
+                    settings_payload = json.loads(response.read().decode("utf-8"))
+                self.assertTrue(settings_payload["ok"])
+                self.assertTrue(settings_payload["settings"]["enabled"])
+                self.assertEqual(settings_payload["settings"]["referenceVoice"], "asuka")
+
+                command_request = urllib.request.Request(
+                    f"{base}/v1/control-panel/command",
+                    data=json.dumps({"command": "next"}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(command_request, timeout=5) as response:
+                    command_payload = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(command_payload["command"]["id"], 1)
+
+                extension_request = urllib.request.Request(
+                    f"{base}/v1/control-panel/state",
+                    data=json.dumps(
+                        {
+                            "statusText": "Ready",
+                            "currentText": "全タブから届いた返答です。",
+                            "queueSize": 1,
+                            "tabsCount": 2,
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(extension_request, timeout=5) as response:
+                    extension_payload = json.loads(response.read().decode("utf-8"))
+                self.assertTrue(extension_payload["ok"])
+
+                with urllib.request.urlopen(f"{base}/v1/control-panel/poll?after=0", timeout=5) as response:
+                    poll_payload = json.loads(response.read().decode("utf-8"))
+                self.assertEqual([item["command"] for item in poll_payload["commands"]], ["next"])
+                self.assertEqual(poll_payload["settings"]["voiceVolume"], 0.25)
+
+                with urllib.request.urlopen(f"{base}/v1/control-panel", timeout=5) as response:
+                    snapshot = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(snapshot["extension"]["currentText"], "全タブから届いた返答です。")
+                self.assertEqual(snapshot["extension"]["tabsCount"], 2)
+                self.assertIn("referenceVoices", snapshot)
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+                thread.join(timeout=5)
+                if original_store is not None:
+                    server.CONTROL_STATE = original_store
+
+    def test_conversation_state_and_transcript_event_endpoints_are_one_shot(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original_store = getattr(server, "CONTROL_STATE", None)
+            server.CONTROL_STATE = server.ControlStateStore(Path(temp_dir) / "control-state.json")
+            httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+            thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{httpd.server_port}"
+            try:
+                state_request = urllib.request.Request(
+                    f"{base}/v1/conversation/state",
+                    data=json.dumps(
+                        {"phase": "recording", "statusText": "録音中", "sttDevice": "cuda", "sttModel": "small"}
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(state_request, timeout=5) as response:
+                    state_payload = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(state_payload["conversation"]["phase"], "recording")
+
+                event_request = urllib.request.Request(
+                    f"{base}/v1/conversation/event",
+                    data=json.dumps(
+                        {
+                            "type": "transcript",
+                            "payload": {"sessionId": 3, "text": "テスト送信", "cancelGraceMs": 700},
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(event_request, timeout=5) as response:
+                    event_payload = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(event_payload["event"]["type"], "transcript")
+
+                with urllib.request.urlopen(f"{base}/v1/control-panel/poll?after=0", timeout=5) as response:
+                    first_poll = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(first_poll["conversationEvents"][0]["payload"]["text"], "テスト送信")
+                with urllib.request.urlopen(f"{base}/v1/control-panel/poll?after=0", timeout=5) as response:
+                    second_poll = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(second_poll["conversationEvents"], [])
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+                thread.join(timeout=5)
+                if original_store is not None:
+                    server.CONTROL_STATE = original_store
+
+
 if __name__ == "__main__":
     unittest.main()

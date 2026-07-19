@@ -1,21 +1,21 @@
 {
-  "name": "chatgpt-local-voice-bridge",
+  "name": "local-voice-bridge",
   "private": true,
   "version": "0.1.0",
   "scripts": {
     "build:launcher": "node scripts/run-launcher-build.js",
     "check:public": "node scripts/run-public-check.js",
     "test:python": "node scripts/run-python-tests.js",
-    "test:background-core": "node --test --experimental-test-coverage --test-coverage-lines=95 tests/background-core.test.js",
-    "test:background": "npm run test:background-core && node --test tests/background-reference-queue.test.js",
+    "test:background-core": "node scripts/run-background-core-tests.js",
+    "test:background": "npm run test:background-core && node --test tests/background-reference-queue.test.js tests/background-external-panel.test.js",
     "test:e2e:mock": "node scripts/run-mock-e2e.js",
-    "test:e2e:real": "playwright test tests/e2e/extension-*-irodori.spec.js tests/e2e/extension-playback-ok.spec.js --workers=1",
+    "test:e2e:real": "playwright test tests/e2e/extension-external-panel-irodori.spec.js --workers=1",
     "test:ci": "npm run check:public && npm run test:python && npm run test:background && npm run test:e2e:mock",
     "demo": "node scripts/run-extension-demo.js",
     "demo:check": "npm run test:e2e:mock",
-    "test:e2e:extension": "playwright test tests/e2e/extension-playback-ok.spec.js --workers=1",
-    "test:e2e:auto": "playwright test tests/e2e/extension-auto-irodori.spec.js --workers=1",
-    "test:e2e:multichunk": "playwright test tests/e2e/extension-multichunk-irodori.spec.js --workers=1"
+    "test:e2e:extension": "playwright test tests/e2e/extension-external-panel-irodori.spec.js --workers=1",
+    "test:e2e:auto": "playwright test tests/e2e/extension-external-panel-irodori.spec.js --grep=external.Auto --workers=1",
+    "test:e2e:multichunk": "playwright test tests/e2e/extension-external-panel-irodori.spec.js --grep=external.Next --workers=1"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0"

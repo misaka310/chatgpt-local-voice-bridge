@@ -43,7 +43,9 @@ if not exist "%CD%\local-api\runtime\audio" mkdir "%CD%\local-api\runtime\audio"
 
 echo [11/13] Build the small Windows launcher EXE
 powershell -NoProfile -ExecutionPolicy Bypass -File "%CD%\scripts\build-launcher.ps1" || goto :fail
-if not exist "%CD%\ChatGPTLocalVoiceBridge.exe" goto :fail
+if not exist "%CD%\LocalVoiceBridge.exe" goto :fail
+if exist "%CD%\ChatGPTLocalVoiceBridge.exe" del /f /q "%CD%\ChatGPTLocalVoiceBridge.exe"
+if exist "%CD%\ChatGPTLocalVoiceBridge.pdb" del /f /q "%CD%\ChatGPTLocalVoiceBridge.pdb"
 
 echo [12/13] Register the Windows Start Menu shortcut
 powershell -NoProfile -ExecutionPolicy Bypass -File "%CD%\scripts\install-start-menu-shortcut.ps1" -RepoRoot "%CD%" || goto :fail
@@ -53,8 +55,8 @@ echo Runtime: irodori_direct
 echo Model: irodori-v3
 echo Cache: %USERPROFILE%\.cache\huggingface
 echo Shared FFmpeg: %CD%\local-api\runtime\ffmpeg-shared\bin
-echo Start menu: ChatGPT Local Voice Bridge
-echo Next: open ChatGPT Local Voice Bridge from the Start menu
+echo Start menu: Local Voice Bridge
+echo Next: open Local Voice Bridge from the Start menu
 exit /b 0
 
 :fail

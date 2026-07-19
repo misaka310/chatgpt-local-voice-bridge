@@ -15,10 +15,10 @@
 5. CUDA/Torch確認
 6. Irodoriモデルとcodecを Hugging Face cache へ事前取得
 7. `local-api/runtime/audio` 作成
-8. 通常起動用の小さな`ChatGPTLocalVoiceBridge.exe`を生成
-9. Windowsのスタートメニューへ`ChatGPT Local Voice Bridge`を登録
+8. 通常起動用の小さな`LocalVoiceBridge.exe`を生成
+9. Windowsのスタートメニューへ`Local Voice Bridge`を登録
 
-setup完了表示は、モデルとcodecの取得確認、ランチャーEXEの生成、スタートメニュー登録が終わった後にだけ出ます。登録後はWindows検索から`ChatGPT Local Voice Bridge`を起動できます。
+setup完了表示は、モデルとcodecの取得確認、ランチャーEXEの生成、スタートメニュー登録が終わった後にだけ出ます。登録後はWindows検索から`Local Voice Bridge`を起動できます。
 
 ## キャッシュ
 

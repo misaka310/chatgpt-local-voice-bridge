@@ -1,23 +1,21 @@
 # アーキテクチャ
 
-このリポジトリは、ChatGPTの新しいassistant返答を検知し、PC上のIrodori v3 direct APIで冒頭プレビューを読み上げるChrome / Brave拡張とWindows常駐アプリです。
-
-通信は127.0.0.1のローカルAPIだけを使用します。
+このリポジトリは、ChatGPTの新しいassistant返答を検知し、PC上のIrodori v3 direct APIで冒頭プレビューを読み上げるChrome / Brave拡張とWindows常駐アプリです。通信は127.0.0.1のローカルAPIだけを使用します。
 
 ## 役割
 
-- `ChatGPTLocalVoiceBridge.exe`: 既存の`local-api/.venv`と`pythonw.exe`を使い、通知領域アプリを起動するだけの小さなランチャー
-- `local-api/tray_controller.py`: APIの状態確認、再起動、フォルダ表示、自動起動、再セットアップ、終了を担当
-- `local-api/desktop_pet.py`: Windowsデスクトップ上のペット1体の表示と左ドラッグ移動を担当
-- `extension/content.js`: ChatGPT返答の検知、プレビュー作成、Local Voiceパネル、音声再生を担当
-- `extension/background.js`: ChatGPTタブの所有権、再生キュー、ローカルAPI呼び出し、状態配信を担当
-- `local-api/server.py`: Irodori v3 directによる音声生成、参照音声一覧、音声配信、デスクトップペット選択の同期を担当
+- `LocalVoiceBridge.exe`: 既存の`local-api/.venv`と`pythonw.exe`を使い、通知領域アプリを起動する小さなランチャー
+- `local-api/tray_controller.py`: Windows小窓、デスクトップペット、APIプロセス、通知領域、自動起動を管理
+- `local-api/control_panel.py`: `Ref`、`Volume`、`Auto`、`Next`、`Regen`、`Replay`、状態、現在文章、キュー数を表示する常時最前面の小窓
+- `local-api/control_state.py`: 小窓設定、拡張機能の状態、1回だけ消費する操作コマンドを保存・仲介
+- `local-api/desktop_pet.py`: Windowsデスクトップ上のペット1体の表示、左ドラッグ移動、ダブルクリック通知を担当
+- `extension/content.js`: 各ChatGPTタブの返答検知、プレビュー作成、音声再生を担当。Chrome内に操作パネルやペットは表示しない
+- `extension/background.js`: 全ChatGPTタブ共通の再生キュー、ローカルAPI呼び出し、外部パネル同期、音声再生ホストの選択を担当
+- `local-api/server.py`: Irodori v3 direct音声生成、音声配信、参照音声一覧、外部パネルAPI、ペット選択同期を担当
 
-拡張機能の別設定画面は持ちません。日常的な音声操作はChatGPT上のLocal Voiceパネルだけで行います。
+## Windows Local Voice小窓
 
-## Local Voiceパネル
-
-パネルに表示する操作は次だけです。
+小窓に表示する日常操作は次だけです。
 
 - `Ref`
 - `Volume`
@@ -26,76 +24,93 @@
 - `Regen`
 - `Replay`
 
-`Voice`はIrodori v3 direct固定です。`Tab`は現在アクティブな登録済みChatGPTタブをbackgroundが自動選択します。`Pet`専用設定はなく、デスクトップペットは`Ref`と自動連動します。
+`Voice`はIrodori v3 direct固定です。小窓はデスクトップペットのダブルクリック、または通知領域の`Show Local Voice panel`から表示・非表示を切り替えます。×は終了ではなく非表示です。位置は`local-api/runtime/control-panel-window.json`へ保存します。
 
-パネルはバーへ折りたためます。展開状態と位置は`chrome.storage.local`へ保存します。
+小窓と拡張機能は次のloopback APIで同期します。
 
-## 返答検知とAuto
+```text
+GET  /v1/control-panel
+GET  /v1/control-panel/poll?after=<command-id>
+POST /v1/control-panel/settings
+POST /v1/control-panel/command
+POST /v1/control-panel/state
+```
 
-1. ChatGPTタブが`background.js`へ登録されます。
-2. `content.js`が既存assistant返答を基準として記録します。
-3. `Auto`をオンにすると、その時点でもう一度基準を作り直します。
-4. その後で新しく表示されたassistant返答だけを検知します。
-5. 最大2行・80文字の冒頭プレビューを1回だけキューへ送ります。
+設定は永続化されます。Next、Regen、Replay、Stopのコマンドは拡張機能が取得した時点で消費され、Chrome再起動後に古い操作が再実行されません。
 
-Autoは返答全文を自動再生しません。`Next`は次のチャンク、`Regen`は現在のチャンクの再生成、`Replay`は生成済み音声の再再生です。
+## 返答検知と全タブAuto
 
-## タブ所有権
+1. 開いている各ChatGPTタブが`background.js`へ登録されます。
+2. 各`content.js`が既存assistant返答を基準として記録します。
+3. 外部小窓で`Auto`をオンにすると、すべての登録済みChatGPTタブが基準を作り直します。
+4. その後で各タブへ新しく表示されたassistant返答を検知します。
+5. 各タブの最大2行・80文字の冒頭プレビューを1つの共通キューへ追加します。
+6. 共通キューの順番で1件ずつ読み上げます。
 
-`background.js`は登録済みChatGPTタブを保持します。`chrome.tabs.onActivated`と登録時の`sender.tab.active`を使い、現在表示しているタブだけにLocal Voiceパネルを表示します。
-
-パネルからの`Next`、`Regen`などは、メッセージ送信元のタブを最優先に対象とします。画面上のTab選択欄はありません。
+Autoの対象は、最後に触った1タブだけではありません。開いている全ChatGPTタブです。`思考中`、`考え中`、`Thinking`、`画像を分析しています`だけの途中状態と、Autoをオンにする前から表示されていた返答は読みません。
 
 ## 音声生成と再生
 
 ```text
-content.js
-  -> background.js
+各ChatGPT content.js
+  -> background.js の共通キュー
   -> POST http://127.0.0.1:8717/v1/speak
   -> GET  http://127.0.0.1:8717/audio/<file>
-  -> content.js の Audio 要素
+  -> 登録済みChatGPTタブの Audio 要素
 ```
 
-APIが返した音声はbackground経由で取得し、現在のLocal Voiceパネルを持つタブで再生します。再生完了はbackgroundへ返され、キューの次項目へ進みます。
+`uiOwnerTabId`は音声を再生するブラウザタブとフォーカス由来の手動操作先を決める内部値です。Autoの検出対象を制限する値ではありません。分割表示の定期通知だけでは所有タブを移動せず、実際のフォーカス・ポインター操作でのみ更新します。
 
 ## Refとデスクトップペット
 
-`Ref`変更時、content scriptは同じIDを次へ送ります。
+外部小窓で`Ref`を変更すると、同じIDを次へ送ります。
 
 ```text
 POST http://127.0.0.1:8717/v1/desktop-pet
 ```
 
-空、`none`、旧`qwen`系値、不正なパス形式は`placeholder`として扱います。指定IDのペット素材がない場合、デスクトップ側が利用可能な既定素材へフォールバックします。
+空、`none`、旧`qwen`系値、不正なパス形式は`placeholder`として扱います。指定IDの素材がない場合、デスクトップ側が利用可能な既定素材へフォールバックします。
 
-以前のブラウザ設定`petMode`、`selectedPetId`、`petPosition`は移行時に削除します。ペットの位置と実行中の選択IDは`local-api/runtime/desktop-pet-settings.json`へ保存します。
+ペットの操作は次だけです。
 
-デスクトップペットはクリック、ダブルクリック、右クリックに機能を持ちません。左ドラッグで位置が変わった場合だけ保存します。
+- 左ドラッグ: 位置を移動・保存
+- 左ダブルクリック: Windows Local Voice小窓を表示・非表示
+- シングルクリック、右クリック: 何もしない
+- ドラッグ直後のダブルクリック: 誤操作防止のため無効
+
+ペットの位置と選択IDは`local-api/runtime/desktop-pet-settings.json`へ保存します。
 
 ## 通知領域と起動
 
-通常入口は`ChatGPTLocalVoiceBridge.exe`です。EXEはUIや設定を持たず、`pythonw.exe local-api/tray_controller.py`を非表示で起動します。
+通常入口は`LocalVoiceBridge.exe`です。EXEは`pythonw.exe local-api/tray_controller.py`を非表示で起動します。
 
-通知領域はサービス管理だけを担当します。ペットの表示、種類、位置、最前面を操作するメニューはありません。Windowsログイン時の自動起動もEXEを直接指定します。
+通知領域は、外部小窓の表示・非表示、状態確認、再起動、フォルダ表示、自動起動、再セットアップ、終了を担当します。ペット専用の表示・種類・位置メニューは持ちません。Windowsログイン時の自動起動もEXEを直接指定します。
 
 `start-voice-bridge.vbs`は既存利用者向けにEXEへ転送するだけの互換ファイルです。
 
-## 保存するブラウザ設定
+## 保存する設定
+
+Chrome側:
 
 - AutoのON / OFF
 - 127.0.0.1のAPI URLとhealth URL
 - Ref ID
 - 音量
-- パネルの展開状態と位置
 - プレビュー判定の内部値
 
-Voice、Tab、Petの選択設定は保存しません。
+Windows側:
+
+- 外部小窓の設定と位置
+- ペットの選択IDと位置
+- 拡張機能から受け取った直近状態
+
+Voice、Tab、Petの独立選択設定は保存しません。
 
 ## テスト
 
-- Pythonテスト: loopback境界、API、通知領域、Qtデスクトップペット、ランチャー周辺
-- background単体テスト: Ref維持、明示的な空Ref、Next / Regen、デスクトップペットAPI転送
-- mock E2E: Auto基準、最大2行・80文字、4操作、簡潔なパネル、折りたたみ復元、旧Pet設定移行、Ref連動、アクティブタブ所有権
-- real E2E: Irodori v3 direct、実参照音声、生成音声取得、Ref連動、複数タブ
+- Pythonテスト: loopback境界、外部状態ストア、外部Qt小窓、通知領域、ペットのドラッグ・ダブルクリック、ランチャー
+- background単体テスト: 全タブ共通キュー、外部設定反映、コマンド重複防止、Ref・ペット同期
+- mock E2E: Chrome内パネルなし、外部Auto、Next / Regen / Replay、短文、途中状態除外、複数タブ共通キュー
+- real E2E: 専用loopbackポートでIrodori v3 direct、Next、実参照音声・ペット同期、複数タブ共通キュー
 
 エージェント実行のブラウザ検証では`voiceVolume=0`と`--mute-audio`を使用します。

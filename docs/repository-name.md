@@ -1,8 +1,9 @@
 ﻿# リポジトリ名
 
-推奨: `chatgpt-local-voice-bridge`
+推奨: `local-voice-bridge`
 
 ## 理由
 
-- ChatGPT返答とローカル音声ワークフローの橋渡し用途が明確
+- 独自製品名の`Local Voice Bridge`と一致する
+- chatgpt.comは対応サイトとして説明し、公式製品・提携製品という誤認を避ける
 - 将来、処理フローを刷新しても名前が機能と一致する

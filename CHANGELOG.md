@@ -18,6 +18,14 @@
 - Reduced the tray to service management and added regression coverage for panel collapse, active-tab ownership, pet interactions, launcher self-test, and loopback-only operation.
 - Fixed Auto so complete short replies, including replies under 20 characters, are read after the stability delay.
 - Stopped real E2E startup failures from leaving orphaned local API processes on port 8717.
-- Registered `ChatGPT Local Voice Bridge` in the current user's Windows Start menu during setup so it can be launched from search.
+- Registered `Local Voice Bridge` in the current user's Windows Start menu during setup so it can be launched from search.
 - Kept periodic split-view tab heartbeats from moving the Local Voice panel back and forth between panes.
 - Excluded transient assistant statuses such as `思考中` and `Thinking` from Auto speech.
+- Moved Local Voice controls from the ChatGPT page to one Windows always-on-top panel while preserving the global all-tab Auto queue.
+- Added desktop-pet double-click and tray actions to show or hide the Windows Local Voice panel.
+- Added optional local microphone conversation mode with model preparation before recording, Esc cancellation, and memory-only audio capture.
+- Changed push-to-talk from right Ctrl alone to right Ctrl plus the `＼ / _` key left of right Shift, without stealing right Ctrl by itself.
+- Fixed microphone transcripts to stay on the ChatGPT composer focused when recording began and prevented unrelated tab replies from interrupting active transcription.
+- Fixed `Next` so it follows the completed streaming reply instead of reusing the short Auto preview captured at the beginning.
+- Excluded image-analysis progress text such as `画像を分析しています` from speech.
+- Renamed the public product, extension, launcher, and Start menu entry to `Local Voice Bridge`, with migration from the previous launcher and startup names.
