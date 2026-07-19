@@ -1,5 +1,7 @@
 # ChatGPT Local Voice Bridge
 
+[![CI](https://github.com/misaka310/chatgpt-local-voice-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/misaka310/chatgpt-local-voice-bridge/actions/workflows/ci.yml)
+
 ChatGPTの新しい返答を検出し、その冒頭をPC内で音声に変換して自動で読み上げるChrome / Brave拡張です。
 
 https://github.com/user-attachments/assets/55580bbe-1325-4548-a03b-d70f7004a7fb
@@ -72,7 +74,7 @@ npm run test:e2e:mock
 npm run check:public
 ```
 
-通常起動の確認は、通知領域の状態と`http://127.0.0.1:8717/health`の`ok=true`を使用します。デスクトップペットのWindows実画面確認手順は[起動とヘルス確認](docs/startup.md)にあります。
+`test:background`は、Service Workerのキュー動作に加えて、参照音声正規化、loopback音声URL制限、バイナリ変換、チャンク表示を分離した`background-core.js`へ95%のline coverageを要求します。通常起動の確認は、通知領域の状態と`http://127.0.0.1:8717/health`の`ok=true`を使用します。デスクトップペットのWindows実画面確認手順は[起動とヘルス確認](docs/startup.md)にあります。
 
 ## Limitations / 制約
 
