@@ -109,6 +109,7 @@ class TrayControllerContractTests(unittest.TestCase):
     def test_exe_launcher_uses_pythonw_and_checks_qt_dependencies(self) -> None:
         launcher = (ROOT / "scripts" / "launcher" / "VoiceBridgeLauncher.cs").read_text(encoding="utf-8")
         build_script = (ROOT / "scripts" / "build-launcher.ps1").read_text(encoding="utf-8")
+        shortcut_script_path = ROOT / "scripts" / "install-start-menu-shortcut.ps1"
         setup_script = (ROOT / "setup-voice-env.cmd").read_text(encoding="utf-8")
 
         self.assertIn("pythonw.exe", launcher)
@@ -116,7 +117,16 @@ class TrayControllerContractTests(unittest.TestCase):
         self.assertIn("--self-test", launcher)
         self.assertIn("WindowsApplication", build_script)
         self.assertIn("ChatGPTLocalVoiceBridge.exe", build_script)
+        self.assertTrue(shortcut_script_path.is_file())
+        shortcut_script = shortcut_script_path.read_text(encoding="utf-8")
+        self.assertIn("SpecialFolder]::Programs", shortcut_script)
+        self.assertIn("ChatGPT Local Voice Bridge.lnk", shortcut_script)
+        self.assertIn("CreateShortcut", shortcut_script)
+        self.assertIn("TargetPath", shortcut_script)
+        self.assertIn("WorkingDirectory", shortcut_script)
+        self.assertIn("IconLocation", shortcut_script)
         self.assertIn("build-launcher.ps1", setup_script)
+        self.assertIn("install-start-menu-shortcut.ps1", setup_script)
         self.assertIn("ChatGPTLocalVoiceBridge.exe", setup_script)
 
     def test_legacy_vbs_only_forwards_to_the_exe(self) -> None:

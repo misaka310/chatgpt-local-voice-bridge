@@ -1,6 +1,8 @@
 # 起動
 
-初回セットアップ後、`ChatGPTLocalVoiceBridge.exe`をダブルクリックします。これは既存の`local-api/.venv`を使って通知領域アプリを起動する小さなWindowsランチャーです。
+初回セットアップ後、Windows検索で`ChatGPT Local Voice Bridge`を開きます。セットアップは現在のユーザーのスタートメニューへショートカットを登録します。リポジトリ内の`ChatGPTLocalVoiceBridge.exe`を直接ダブルクリックしても同じです。
+
+このEXEは既存の`local-api/.venv`を使って通知領域アプリを起動する小さなWindowsランチャーです。
 
 通常起動ではターミナルは表示されません。Windows右下の通知領域に`ChatGPT Local Voice Bridge`アイコンが表示され、デスクトップペットが1体起動します。通知領域アイコンが隠れている場合は、タスクバー右端の上向き矢印を開いてください。
 
@@ -56,7 +58,7 @@
 
 ## Windowsで確認する手順
 
-1. `ChatGPTLocalVoiceBridge.exe`をダブルクリックする
+1. Windows検索で`ChatGPT Local Voice Bridge`を開く
 2. 通知領域のアイコンで`Status: Ready`または`Status: Ready (existing)`を確認する
 3. Chrome / BraveのLocal Voiceパネルに`Voice`、`Tab`、`Pet`欄がなく、`Ref`、`Volume`、`Auto`、`Next`、`Regen`、`Replay`だけがあることを確認する
 4. Local Voiceバーをクリックし、展開・折りたたみと再読み込み後の状態復元を確認する
