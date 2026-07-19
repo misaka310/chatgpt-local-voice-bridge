@@ -12,6 +12,7 @@
 - `extension/content.js`: 各ChatGPTタブの返答検知、プレビュー作成、音声再生を担当。Chrome内に操作パネルやペットは表示しない
 - `extension/background.js`: 全ChatGPTタブ共通の再生キュー、ローカルAPI呼び出し、外部パネル同期、音声再生ホストの選択を担当
 - `local-api/server.py`: Irodori v3 direct音声生成、音声配信、参照音声一覧、外部パネルAPI、ペット選択同期を担当
+- `local-api/conversation_controller.py`: 右Ctrl＋`＼ / _`の録音状態、ローカルSTT、ChatGPT送信に加え、対応するYouTube Dictation Pause Controlへの入力元別状態通知を担当
 
 ## Windows Local Voice小窓
 
@@ -60,6 +61,20 @@ Autoの対象は、最後に触った1タブだけではありません。開い
 ```
 
 `uiOwnerTabId`は音声を再生するブラウザタブとフォーカス由来の手動操作先を決める内部値です。Autoの検出対象を制限する値ではありません。分割表示の定期通知だけでは所有タブを移動せず、実際のフォーカス・ポインター操作でのみ更新します。
+
+## YouTube停止状態の直接通知
+
+マイク会話モードの低レベルキーボードフックは、録音開始・終了を最初に確定できる唯一の経路です。別プロセスで同じキーを再監視せず、次の通知を専用executorから送ります。
+
+```text
+right Ctrl + VK_OEM_102 start/stop
+  -> conversation_controller.py
+  -> POST http://127.0.0.1:17654/state
+     {"active": true|false, "source": "local-voice-bridge"}
+  -> YouTube Dictation Pause Controlが他の入力元とOR集約
+```
+
+通知は任意連携です。接続失敗やタイムアウトは録音・文字起こし・送信を失敗させません。無効化と正常終了時は、残留activeを避けるため`false`を送信します。
 
 ## Refとデスクトップペット
 

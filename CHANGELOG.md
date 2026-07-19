@@ -25,6 +25,7 @@
 - Added desktop-pet double-click and tray actions to show or hide the Windows Local Voice panel.
 - Added optional local microphone conversation mode with model preparation before recording, Esc cancellation, and memory-only audio capture.
 - Changed push-to-talk from right Ctrl alone to right Ctrl plus the `＼ / _` key left of right Shift, without stealing right Ctrl by itself.
+- Added optional direct recording-state notifications to source-aware YouTube Dictation Pause Control instances, without making YouTube availability a requirement for microphone recording.
 - Fixed microphone transcripts to stay on the ChatGPT composer focused when recording began and prevented unrelated tab replies from interrupting active transcription.
 - Fixed `Next` so it follows the completed streaming reply instead of reusing the short Auto preview captured at the beginning.
 - Excluded image-analysis progress text such as `画像を分析しています` from speech.
