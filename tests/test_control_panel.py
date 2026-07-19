@@ -1,0 +1,182 @@
+from __future__ import annotations
+
+import os
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtWidgets import QApplication
+
+ROOT = Path(__file__).resolve().parents[1]
+LOCAL_API = ROOT / "local-api"
+if str(LOCAL_API) not in sys.path:
+    sys.path.insert(0, str(LOCAL_API))
+
+from control_panel import LocalVoiceControlPanel  # noqa: E402
+
+
+class FakeControlClient:
+    def __init__(self) -> None:
+        self.settings_calls: list[dict[str, object]] = []
+        self.commands: list[str] = []
+
+    def get_snapshot(self) -> dict[str, object]:
+        return {
+            "ok": True,
+            "initialized": True,
+            "settings": {
+                "enabled": True,
+                "voiceVolume": 0.4,
+                "referenceVoice": "asuka",
+                "micConversationEnabled": True,
+                "sttModel": "medium",
+                "cancelGraceMs": 900,
+            },
+            "referenceVoices": [
+                {"id": "", "label": "none"},
+                {"id": "asuka", "label": "asuka"},
+            ],
+            "conversation": {
+                "phase": "recording",
+                "statusText": "録音中",
+                "sttDevice": "cuda",
+                "sttModel": "medium",
+                "error": "",
+            },
+            "extension": {
+                "connected": True,
+                "statusText": "Playing chunk 1/2",
+                "statusLevel": "info",
+                "currentText": "全タブから届いた返答です。",
+                "queueSize": 2,
+                "isPlaying": True,
+                "playbackPhase": "playing",
+                "replayAvailable": True,
+                "tabsCount": 3,
+            },
+        }
+
+    def update_settings(self, payload: dict[str, object]) -> dict[str, object]:
+        self.settings_calls.append(dict(payload))
+        return {"ok": True}
+
+    def send_command(self, command: str) -> dict[str, object]:
+        self.commands.append(command)
+        return {"ok": True}
+
+
+class ControlPanelQtTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QApplication.instance() or QApplication([])
+        cls.app.setQuitOnLastWindowClosed(False)
+
+    def test_snapshot_populates_external_panel_controls_and_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeControlClient()
+            panel = LocalVoiceControlPanel(
+                client,
+                state_path=Path(temp_dir) / "panel-window.json",
+                start_polling=False,
+            )
+
+            panel.refresh_now()
+            panel.show()
+            self.app.processEvents()
+
+            self.assertEqual(panel.reference_combo.currentData(), "asuka")
+            self.assertEqual(panel.volume_slider.value(), 40)
+            self.assertTrue(panel.auto_button.isChecked())
+            self.assertTrue(panel.mic_button.isChecked())
+            self.assertEqual(panel.stt_model_combo.currentData(), "medium")
+            self.assertEqual(panel.cancel_grace_spin.value(), 0.9)
+            self.assertIn("録音中", panel.status_label.text())
+            self.assertIn("CUDA", panel.mic_detail_label.text())
+            self.assertEqual(panel.current_text_label.toolTip(), "全タブから届いた返答です。")
+            self.assertTrue(panel.current_text_label.text().startswith("全タブから届い"))
+            self.assertIn("Queue 2", panel.queue_label.text())
+            self.assertIn("3 tabs", panel.queue_label.text())
+            self.assertTrue(panel.replay_button.isEnabled())
+            panel.shutdown()
+
+    def test_controls_send_settings_and_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeControlClient()
+            panel = LocalVoiceControlPanel(
+                client,
+                state_path=Path(temp_dir) / "panel-window.json",
+                start_polling=False,
+            )
+            panel.refresh_now()
+            self.app.processEvents()
+
+            panel.auto_button.click()
+            self.assertFalse(panel.mic_button.isChecked())
+            panel.stt_model_combo.setCurrentIndex(panel.stt_model_combo.findData("small"))
+            panel.cancel_grace_spin.setValue(0.7)
+            panel.volume_slider.setValue(25)
+            panel.reference_combo.setCurrentIndex(0)
+            panel.next_button.click()
+            panel.regen_button.click()
+            panel.replay_button.click()
+            self.app.processEvents()
+
+            self.assertIn(
+                {"enabled": False, "micConversationEnabled": False},
+                client.settings_calls,
+            )
+            self.assertIn({"sttModel": "small"}, client.settings_calls)
+            self.assertIn({"cancelGraceMs": 700}, client.settings_calls)
+            self.assertIn({"voiceVolume": 0.25}, client.settings_calls)
+            self.assertIn({"referenceVoice": ""}, client.settings_calls)
+            self.assertEqual(client.commands, ["next", "regen", "replay"])
+            panel.shutdown()
+
+    def test_toggle_visibility_and_close_hide_the_panel(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            panel = LocalVoiceControlPanel(
+                FakeControlClient(),
+                state_path=Path(temp_dir) / "panel-window.json",
+                start_polling=False,
+            )
+            self.assertFalse(panel.isVisible())
+
+            panel.toggle_visibility()
+            self.app.processEvents()
+            self.assertTrue(panel.isVisible())
+
+            panel.close()
+            self.app.processEvents()
+            self.assertFalse(panel.isVisible())
+
+            panel.toggle_visibility()
+            self.app.processEvents()
+            self.assertTrue(panel.isVisible())
+            panel.shutdown()
+
+    def test_polling_runs_only_while_the_panel_is_visible(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            panel = LocalVoiceControlPanel(
+                FakeControlClient(),
+                state_path=Path(temp_dir) / "panel-window.json",
+                start_polling=True,
+            )
+
+            self.assertFalse(panel.isVisible())
+            self.assertFalse(panel.refresh_timer.isActive())
+
+            panel.show_panel()
+            self.app.processEvents()
+            self.assertTrue(panel.refresh_timer.isActive())
+
+            panel.hide_panel()
+            self.app.processEvents()
+            self.assertFalse(panel.refresh_timer.isActive())
+            panel.shutdown()
+
+
+if __name__ == "__main__":
+    unittest.main()

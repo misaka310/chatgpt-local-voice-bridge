@@ -1,17 +1,21 @@
 #!/usr/bin/env node
 'use strict';
 
+const path = require('path');
 const { spawn } = require('child_process');
 
-const command = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-const runner = spawn(command, [
-  'playwright',
+const ROOT = path.resolve(__dirname, '..');
+const playwrightCli = require.resolve('@playwright/test/cli');
+const config = path.join('scripts', 'playwright-mock.config.js');
+const runner = spawn(process.execPath, [
+  playwrightCli,
   'test',
-  'tests/e2e/extension-mock-ci.spec.js',
-  '--workers=1',
+  '--config',
+  config,
 ], {
+  cwd: ROOT,
   stdio: 'inherit',
-  shell: process.platform === 'win32',
+  shell: false,
 });
 
 for (const signal of ['SIGINT', 'SIGTERM']) {

@@ -5,7 +5,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$launcherPath = Join-Path $RepoRoot 'ChatGPTLocalVoiceBridge.exe'
+$launcherPath = Join-Path $RepoRoot 'LocalVoiceBridge.exe'
 if (-not (Test-Path -LiteralPath $launcherPath -PathType Leaf)) {
     throw "Launcher not found: $launcherPath"
 }
@@ -15,7 +15,11 @@ if ([string]::IsNullOrWhiteSpace($programsFolder)) {
     throw 'Windows Start Menu Programs folder could not be resolved.'
 }
 
-$shortcutPath = Join-Path $programsFolder 'ChatGPT Local Voice Bridge.lnk'
+$shortcutPath = Join-Path $programsFolder 'Local Voice Bridge.lnk'
+$legacyShortcutPath = Join-Path $programsFolder 'ChatGPT Local Voice Bridge.lnk'
+if (Test-Path -LiteralPath $legacyShortcutPath -PathType Leaf) {
+    Remove-Item -LiteralPath $legacyShortcutPath -Force
+}
 $wshShell = $null
 $shortcut = $null
 try {
@@ -24,7 +28,7 @@ try {
     $shortcut.TargetPath = $launcherPath
     $shortcut.WorkingDirectory = $RepoRoot
     $shortcut.IconLocation = "$launcherPath,0"
-    $shortcut.Description = 'Start ChatGPT Local Voice Bridge'
+    $shortcut.Description = 'Start Local Voice Bridge'
     $shortcut.Save()
 }
 finally {

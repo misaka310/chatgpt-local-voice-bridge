@@ -27,7 +27,7 @@ try:
 except ImportError as exc:
     message = "PySide6 が見つかりません。setup-voice-env.cmd をもう一度実行してください。"
     if os.name == "nt":
-        ctypes.windll.user32.MessageBoxW(None, message, "ChatGPT Local Voice Bridge", 0x10)
+        ctypes.windll.user32.MessageBoxW(None, message, "Local Voice Bridge", 0x10)
     else:
         print(f"{message}\nImportError: {exc}", file=sys.stderr)
     raise SystemExit(2) from exc
@@ -37,6 +37,8 @@ APP_ROOT = LOCAL_API_DIR.parent
 if str(LOCAL_API_DIR) not in sys.path:
     sys.path.insert(0, str(LOCAL_API_DIR))
 
+from control_panel import ControlPanelApiClient, LocalVoiceControlPanel  # noqa: E402
+from conversation_controller import GlobalRightCtrlHook, VoiceConversationController  # noqa: E402
 from desktop_pet import DesktopPetWindow  # noqa: E402
 from desktop_pet_config import DesktopPetSettingsStore  # noqa: E402
 
@@ -45,9 +47,13 @@ SERVER_PYTHON = VENV_SCRIPTS / "python.exe"
 SERVER_SCRIPT = LOCAL_API_DIR / "server.py"
 PREFLIGHT_SCRIPT = LOCAL_API_DIR / "scripts" / "preflight_irodori.py"
 SETUP_SCRIPT = APP_ROOT / "setup-voice-env.cmd"
-LAUNCHER_EXE = APP_ROOT / "ChatGPTLocalVoiceBridge.exe"
+APP_NAME = "Local Voice Bridge"
+LEGACY_APP_NAME = "ChatGPT Local Voice Bridge"
+LAUNCHER_EXE = APP_ROOT / "LocalVoiceBridge.exe"
+LEGACY_LAUNCHER_EXE = APP_ROOT / "ChatGPTLocalVoiceBridge.exe"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-WINDOWS_RUN_VALUE = "ChatGPT Local Voice Bridge"
+WINDOWS_RUN_VALUE = APP_NAME
+LEGACY_WINDOWS_RUN_VALUE = LEGACY_APP_NAME
 RUNTIME_DIR = LOCAL_API_DIR / "runtime"
 LOG_DIR = LOCAL_API_DIR / "logs"
 CONTROLLER_LOG = LOG_DIR / "controller.log"
@@ -56,6 +62,7 @@ AUDIO_DIR = RUNTIME_DIR / "audio"
 REFERENCE_DIR = LOCAL_API_DIR / "reference" / "voices"
 PET_ROOT = APP_ROOT / "extension" / "assets" / "pet"
 DESKTOP_PET_SETTINGS = RUNTIME_DIR / "desktop-pet-settings.json"
+CONTROL_PANEL_WINDOW_SETTINGS = RUNTIME_DIR / "control-panel-window.json"
 HEALTH_URL = "http://127.0.0.1:8717/health"
 PORT = 8717
 HEALTH_INTERVAL_SECONDS = 5.0
@@ -67,7 +74,7 @@ MUTEX_NAME = "Local\\ChatGPTLocalVoiceBridgeTray"
 ERROR_ALREADY_EXISTS = 183
 IS_WINDOWS = os.name == "nt"
 
-LOGGER = logging.getLogger("chatgpt-local-voice-bridge-tray")
+LOGGER = logging.getLogger("local-voice-bridge-tray")
 _MUTEX_HANDLE: int | None = None
 
 
@@ -131,8 +138,16 @@ def startup_folder() -> Path:
     return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
 
 
+def legacy_startup_entry_paths() -> tuple[Path, ...]:
+    folder = startup_folder()
+    return (
+        folder / "ChatGPT Local Voice Bridge.vbs",
+        folder / "Local Voice Bridge.vbs",
+    )
+
+
 def legacy_startup_entry_path() -> Path:
-    return startup_folder() / "ChatGPT Local Voice Bridge.vbs"
+    return legacy_startup_entry_paths()[0]
 
 
 def startup_command(launcher: Path | None = None) -> str:
@@ -146,12 +161,12 @@ def _require_winreg() -> Any:
     return winreg
 
 
-def _read_startup_command() -> str | None:
-    registry = _require_winreg()
+def _read_startup_command(value_name: str = WINDOWS_RUN_VALUE) -> str | None:
     try:
+        registry = _require_winreg()
         with registry.OpenKey(registry.HKEY_CURRENT_USER, WINDOWS_RUN_KEY, 0, registry.KEY_READ) as key:
-            value, _value_type = registry.QueryValueEx(key, WINDOWS_RUN_VALUE)
-    except OSError:
+            value, _value_type = registry.QueryValueEx(key, value_name)
+    except (OSError, RuntimeError):
         return None
     return str(value)
 
@@ -162,55 +177,71 @@ def _write_startup_command(command: str) -> None:
         registry.SetValueEx(key, WINDOWS_RUN_VALUE, 0, registry.REG_SZ, command)
 
 
-def _delete_startup_command() -> None:
-    registry = _require_winreg()
+def _delete_startup_command(value_name: str = WINDOWS_RUN_VALUE) -> None:
     try:
+        registry = _require_winreg()
         with registry.OpenKey(registry.HKEY_CURRENT_USER, WINDOWS_RUN_KEY, 0, registry.KEY_SET_VALUE) as key:
-            registry.DeleteValue(key, WINDOWS_RUN_VALUE)
-    except OSError:
+            registry.DeleteValue(key, value_name)
+    except (OSError, RuntimeError):
         pass
 
 
 def _remove_legacy_startup_entry() -> None:
     try:
-        entry = legacy_startup_entry_path()
+        entries = legacy_startup_entry_paths()
     except RuntimeError:
         return
-    if entry.exists():
-        entry.unlink()
+    for entry in entries:
+        if entry.exists():
+            entry.unlink()
 
 
 def is_startup_enabled() -> bool:
     try:
         if _read_startup_command() == startup_command():
             return True
-        return legacy_startup_entry_path().is_file()
+        legacy_command = _read_startup_command(LEGACY_WINDOWS_RUN_VALUE)
+        if legacy_command in {startup_command(), startup_command(LEGACY_LAUNCHER_EXE)}:
+            return True
+        return any(entry.is_file() for entry in legacy_startup_entry_paths())
     except RuntimeError:
         return False
 
 
 def migrate_legacy_startup() -> bool:
+    if not LAUNCHER_EXE.is_file():
+        return False
     try:
-        entry = legacy_startup_entry_path()
+        entries = legacy_startup_entry_paths()
+        current_command = _read_startup_command()
+        legacy_command = _read_startup_command(LEGACY_WINDOWS_RUN_VALUE)
     except RuntimeError:
         return False
-    if not entry.is_file() or not LAUNCHER_EXE.is_file():
+    needs_migration = (
+        any(entry.is_file() for entry in entries)
+        or current_command == startup_command(LEGACY_LAUNCHER_EXE)
+        or legacy_command is not None
+    )
+    if not needs_migration:
         return False
     _write_startup_command(startup_command())
-    entry.unlink()
-    LOGGER.info("Migrated Windows startup from VBS to EXE: %s", LAUNCHER_EXE)
+    _delete_startup_command(LEGACY_WINDOWS_RUN_VALUE)
+    _remove_legacy_startup_entry()
+    LOGGER.info("Migrated Windows startup to %s: %s", APP_NAME, LAUNCHER_EXE)
     return True
 
 
 def set_startup_enabled(enabled: bool) -> None:
     if enabled:
         if not LAUNCHER_EXE.is_file():
-            raise RuntimeError("ChatGPTLocalVoiceBridge.exe が見つかりません。setup-voice-env.cmd を再実行してください。")
+            raise RuntimeError("LocalVoiceBridge.exe が見つかりません。setup-voice-env.cmd を再実行してください。")
         _write_startup_command(startup_command())
+        _delete_startup_command(LEGACY_WINDOWS_RUN_VALUE)
         _remove_legacy_startup_entry()
         LOGGER.info("Enabled current-user Windows startup: %s", LAUNCHER_EXE)
         return
     _delete_startup_command()
+    _delete_startup_command(LEGACY_WINDOWS_RUN_VALUE)
     _remove_legacy_startup_entry()
     LOGGER.info("Disabled current-user Windows startup")
 
@@ -251,8 +282,8 @@ def create_qt_application(argv: Sequence[str] | None = None) -> QApplication:
         app = existing
     else:
         app = QApplication(list(argv or []))
-    app.setApplicationName("ChatGPT Local Voice Bridge")
-    app.setOrganizationName("ChatGPT Local Voice Bridge")
+    app.setApplicationName(APP_NAME)
+    app.setOrganizationName(APP_NAME)
     app.setQuitOnLastWindowClosed(False)
     return app
 
@@ -556,6 +587,11 @@ class VoiceBridgeQtRuntime(QObject):
         *,
         pet_root: Path = PET_ROOT,
         settings_path: Path = DESKTOP_PET_SETTINGS,
+        control_panel_client: Any | None = None,
+        panel_state_path: Path = CONTROL_PANEL_WINDOW_SETTINGS,
+        conversation_controller: Any | None = None,
+        keyboard_hook: Any | None = None,
+        start_panel_polling: bool = True,
         start_monitor: bool = True,
         show_tray: bool = True,
     ) -> None:
@@ -568,13 +604,29 @@ class VoiceBridgeQtRuntime(QObject):
         self.status_relay.status_changed.connect(self._apply_status)
 
         self.pet = DesktopPetWindow(pet_root, DesktopPetSettingsStore(settings_path))
+        self.control_panel_client = control_panel_client or ControlPanelApiClient()
+        self.control_panel = LocalVoiceControlPanel(
+            self.control_panel_client,
+            state_path=panel_state_path,
+            start_polling=start_panel_polling,
+        )
+        self.voice_conversation = conversation_controller or VoiceConversationController(self.control_panel_client)
+        self.right_ctrl_hook = keyboard_hook or GlobalRightCtrlHook(self.voice_conversation.handle_key_event)
+        self.conversation_settings_timer = QTimer(self)
+        self.conversation_settings_timer.setInterval(500)
+        self.conversation_settings_timer.timeout.connect(self.sync_conversation_settings)
+        self.conversation_settings_timer.start()
+        self.sync_conversation_settings()
+        self.right_ctrl_hook.start()
+        self.pet.panel_toggle_requested.connect(self.toggle_control_panel)
+        self.control_panel.visibility_changed.connect(self._sync_panel_action)
         self.pet_settings_timer = QTimer(self)
         self.pet_settings_timer.setInterval(500)
         self.pet_settings_timer.timeout.connect(self.sync_pet_settings_from_disk)
         self.pet_settings_timer.start()
 
         self.tray_icon = QSystemTrayIcon(create_tray_icon(), self)
-        self.tray_icon.setToolTip("ChatGPT Local Voice Bridge")
+        self.tray_icon.setToolTip(APP_NAME)
         self.menu = QMenu()
         self._build_menu()
         self.tray_icon.setContextMenu(self.menu)
@@ -589,6 +641,10 @@ class VoiceBridgeQtRuntime(QObject):
         self.status_action = QAction("Status: Starting", self.menu)
         self.status_action.setEnabled(False)
         self.menu.addAction(self.status_action)
+        self.menu.addSeparator()
+
+        self.panel_action = self.menu.addAction("Show Local Voice panel")
+        self.panel_action.triggered.connect(self.toggle_control_panel)
         self.menu.addSeparator()
 
         restart_action = self.menu.addAction("Restart Voice Bridge")
@@ -615,10 +671,19 @@ class VoiceBridgeQtRuntime(QObject):
         self.startup_action.blockSignals(True)
         self.startup_action.setChecked(is_startup_enabled())
         self.startup_action.blockSignals(False)
+        self._sync_panel_action(self.control_panel.isVisible())
+
+    def _sync_panel_action(self, visible: bool) -> None:
+        if hasattr(self, "panel_action"):
+            self.panel_action.setText("Hide Local Voice panel" if visible else "Show Local Voice panel")
+
+    def toggle_control_panel(self, *_: Any) -> None:
+        self.control_panel.toggle_visibility()
+        self._sync_panel_action(self.control_panel.isVisible())
 
     def _apply_status(self, status: str) -> None:
         self.status_action.setText(f"Status: {status}")
-        self.tray_icon.setToolTip(f"ChatGPT Local Voice Bridge\n{status}")
+        self.tray_icon.setToolTip(f"{APP_NAME}\n{status}")
         self.pet.set_voice_bridge_status(status)
 
     def sync_pet_settings_from_disk(self) -> None:
@@ -627,13 +692,33 @@ class VoiceBridgeQtRuntime(QObject):
         except (OSError, ValueError):
             LOGGER.warning("Desktop pet settings could not be synchronized", exc_info=True)
 
+    def sync_conversation_settings(self) -> None:
+        try:
+            snapshot = self.control_panel_client.get_snapshot()
+            settings = snapshot.get("settings") if isinstance(snapshot, dict) else {}
+            conversation = snapshot.get("conversation") if isinstance(snapshot, dict) else {}
+            if not isinstance(settings, dict):
+                settings = {}
+            if not isinstance(conversation, dict):
+                conversation = {}
+            self.voice_conversation.configure(
+                enabled=bool(settings.get("micConversationEnabled")),
+                stt_model=str(settings.get("sttModel") or "small"),
+                cancel_grace_ms=int(settings.get("cancelGraceMs") or 700),
+            )
+            reconcile = getattr(self.voice_conversation, "reconcile_reported_state", None)
+            if callable(reconcile):
+                reconcile(conversation)
+        except (OSError, RuntimeError, ValueError, TypeError, urllib.error.URLError):
+            return
+
     def _set_startup_enabled(self, enabled: bool) -> None:
         try:
             set_startup_enabled(bool(enabled))
         except (OSError, RuntimeError) as exc:
             LOGGER.error("Could not update Windows startup entry: %s", exc)
             show_message(
-                "ChatGPT Local Voice Bridge",
+                APP_NAME,
                 f"自動起動を変更できませんでした。\n\n{exc}",
                 error=True,
             )
@@ -645,7 +730,7 @@ class VoiceBridgeQtRuntime(QObject):
     def exit_and_run_setup(self) -> None:
         if not IS_WINDOWS or not SETUP_SCRIPT.is_file():
             show_message(
-                "ChatGPT Local Voice Bridge",
+                APP_NAME,
                 "setup-voice-env.cmd が見つかりません。",
                 error=True,
             )
@@ -656,7 +741,7 @@ class VoiceBridgeQtRuntime(QObject):
     def _launch_setup(self) -> None:
         command = f'timeout /t 2 /nobreak >nul & call "{SETUP_SCRIPT}"'
         subprocess.Popen(
-            ["cmd.exe", "/c", "start", "ChatGPT Local Voice Bridge setup", "cmd.exe", "/k", command],
+            ["cmd.exe", "/c", "start", f"{APP_NAME} setup", "cmd.exe", "/k", command],
             cwd=APP_ROOT,
             creationflags=CREATE_NEW_PROCESS_GROUP,
         )
@@ -665,9 +750,13 @@ class VoiceBridgeQtRuntime(QObject):
         if self._shutdown_started:
             return
         self._shutdown_started = True
+        self.conversation_settings_timer.stop()
+        self.right_ctrl_hook.stop()
+        self.voice_conversation.shutdown()
         self.pet_settings_timer.stop()
         self.pet.persist_settings()
         self.controller.shutdown()
+        self.control_panel.shutdown()
         self.pet.shutdown()
         self.tray_icon.hide()
         self.tray_icon.setContextMenu(None)
@@ -689,7 +778,7 @@ def main() -> int:
         LOGGER.error("Tray mode is supported only on Windows")
         return 2
     if not acquire_single_instance():
-        show_message("ChatGPT Local Voice Bridge", "すでに通知領域で起動しています。")
+        show_message(APP_NAME, "すでに通知領域で起動しています。")
         return 0
 
     app = create_qt_application(sys.argv)
@@ -700,7 +789,7 @@ def main() -> int:
     except Exception:
         LOGGER.exception("Tray application failed")
         show_message(
-            "ChatGPT Local Voice Bridge",
+            APP_NAME,
             "起動に失敗しました。controller.log を確認し、setup-voice-env.cmd を再実行してください。",
             error=True,
         )

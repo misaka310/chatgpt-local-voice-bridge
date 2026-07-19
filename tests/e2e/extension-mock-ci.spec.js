@@ -14,21 +14,6 @@ const EXTENSION = EXTENSION_DIR.replaceAll('\\', '/');
 const PROFILE = path.join(ROOT, `.e2e-profile-mock-${process.pid}-${Date.now()}`);
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function waitForSettingsMigration(worker) {
-  await expect.poll(async () => worker.evaluate(async () => {
-    const stored = await chrome.storage.local.get('settingsVersion');
-    return stored.settingsVersion;
-  })).toBe(8);
-}
-
-async function claimPageOwnership(page) {
-  await page.bringToFront();
-  await expect.poll(async () => {
-    await page.locator('.chat').click({ position: { x: 20, y: 20 } }).catch(() => {});
-    return page.locator('#local-voice-bridge-panel').isVisible().catch(() => false);
-  }, { timeout: 15000 }).toBe(true);
-}
-
 function prepareTestExtension() {
   fs.rmSync(EXTENSION_DIR, { recursive: true, force: true });
   fs.cpSync(SOURCE_EXTENSION, EXTENSION_DIR, { recursive: true });
@@ -90,6 +75,48 @@ async function apiEvents() {
   return body.events;
 }
 
+async function controlSnapshot() {
+  const response = await fetch(`${API}/v1/control-panel`);
+  expect(response.status).toBe(200);
+  return response.json();
+}
+
+async function updateControlSettings(payload) {
+  const response = await fetch(`${API}/v1/control-panel/settings`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  expect(response.status).toBe(200);
+  const body = await response.json();
+  expect(body.ok).toBe(true);
+  return body;
+}
+
+async function sendControlCommand(command) {
+  const response = await fetch(`${API}/v1/control-panel/command`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ command }),
+  });
+  expect(response.status).toBe(200);
+  const body = await response.json();
+  expect(body.ok).toBe(true);
+  return body;
+}
+
+async function sendConversationEvent(type, payload) {
+  const response = await fetch(`${API}/v1/conversation/event`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type, payload }),
+  });
+  expect(response.status).toBe(200);
+  const body = await response.json();
+  expect(body.ok).toBe(true);
+  return body;
+}
+
 async function waitForCounts(postCount, getCount) {
   await expect.poll(async () => {
     const events = await apiEvents();
@@ -100,11 +127,20 @@ async function waitForCounts(postCount, getCount) {
   }, { timeout: 30000 }).toEqual({ posts: postCount, gets: getCount });
 }
 
-test('mock CI protects Auto baseline and proves Next, Regen, Replay, audio fetch, and stale Ref normalization', async () => {
-  test.setTimeout(90000);
-  const api = await startMock();
+async function waitForControlReady(tabsCount = 1) {
+  await expect.poll(async () => {
+    const snapshot = await controlSnapshot();
+    return {
+      initialized: snapshot.initialized,
+      connected: snapshot.extension.connected,
+      tabsCount: snapshot.extension.tabsCount,
+    };
+  }, { timeout: 20000 }).toEqual({ initialized: true, connected: true, tabsCount });
+}
+
+async function launchContext() {
   fs.rmSync(PROFILE, { recursive: true, force: true });
-  const context = await chromium.launchPersistentContext(PROFILE, {
+  return chromium.launchPersistentContext(PROFILE, {
     headless: process.env.PLAYWRIGHT_HEADED !== '1',
     channel: 'chromium',
     viewport: { width: 1280, height: 720 },
@@ -116,25 +152,63 @@ test('mock CI protects Auto baseline and proves Next, Regen, Replay, audio fetch
       '--mute-audio',
     ],
   });
+}
+
+async function configureWorker(worker, values = {}) {
+  await expect.poll(async () => worker.evaluate(async () => (await chrome.storage.local.get('settingsVersion')).settingsVersion)).toBe(9);
+  await worker.evaluate(async ({ apiUrl, healthUrl, overrides }) => {
+    await chrome.storage.local.set({
+      apiUrl,
+      healthUrl,
+      voiceVolume: 0,
+      enabled: false,
+      voiceId: '',
+      referenceVoice: '',
+      micConversationEnabled: false,
+      sttModel: 'small',
+      cancelGraceMs: 700,
+      ...overrides,
+    });
+  }, { apiUrl: `${API}/v1/speak`, healthUrl: `${API}/health`, overrides: values });
+}
+
+function microphoneFixtureHtml() {
+  return `<!doctype html><html><head><meta charset="utf-8"><title>ChatGPT microphone fixture</title></head><body>
+    <main id="chat"></main>
+    <textarea id="prompt-textarea"></textarea>
+    <button data-testid="send-button" disabled>送信</button>
+    <script>
+      window.__sent = [];
+      const composer = document.querySelector('#prompt-textarea');
+      const send = document.querySelector('[data-testid="send-button"]');
+      composer.addEventListener('input', () => { send.disabled = !composer.value.trim(); });
+      send.addEventListener('click', () => {
+        const text = composer.value.trim();
+        if (!text || send.disabled) return;
+        window.__sent.push(text);
+        composer.value = '';
+        composer.dispatchEvent(new Event('input', { bubbles: true }));
+        const turn = document.createElement('article');
+        turn.dataset.testid = 'conversation-turn-assistant-mic';
+        const reply = document.createElement('div');
+        reply.dataset.messageAuthorRole = 'assistant';
+        reply.dataset.messageId = 'mic-reply-' + window.__sent.length;
+        reply.textContent = '音声会話から送信された質問への返答です。';
+        turn.append(reply);
+        document.querySelector('#chat').append(turn);
+      });
+    </script>
+  </body></html>`;
+}
+
+test('external panel controls Auto, Next, Regen, Replay, Ref, and excludes transient status text', async () => {
+  test.setTimeout(90000);
+  const api = await startMock();
+  const context = await launchContext();
 
   try {
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
-    await waitForSettingsMigration(worker);
-    await worker.evaluate(async (apiUrl) => {
-      await chrome.storage.local.clear();
-      await chrome.storage.local.set({
-        apiUrl: `${apiUrl}/v1/speak`,
-        healthUrl: `${apiUrl}/health`,
-        voiceVolume: 0,
-        enabled: false,
-        panelCollapsed: false,
-        voiceId: '',
-        referenceVoice: 'sample',
-        petMode: 'manual',
-        selectedPetId: 'standalone',
-        petPosition: { left: 10, top: 20 },
-      });
-    }, API);
+    await configureWorker(worker);
 
     const page = await context.newPage();
     await page.route('https://chatgpt.com/**', (route) => route.fulfill({
@@ -143,55 +217,26 @@ test('mock CI protects Auto baseline and proves Next, Regen, Replay, audio fetch
       body: fixtureHtml(),
     }));
     await page.goto('https://chatgpt.com/', { waitUntil: 'domcontentloaded' });
-
-    const panel = page.locator('#local-voice-bridge-panel');
-    await expect(panel).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('#chat')).toBeVisible();
+    await expect(page.locator('#local-voice-bridge-panel')).toHaveCount(0);
     await expect(page.locator('#local-voice-pixel-pet')).toHaveCount(0);
-    await expect(panel.locator('select')).toHaveCount(1);
-    await expect(panel.locator('[data-local-voice-field="ref"]')).toBeVisible();
-    await expect(panel.locator('[data-local-voice-field="volume"]')).toBeVisible();
-    await expect(panel.getByText('Voice', { exact: true })).toHaveCount(0);
-    await expect(panel.getByText('Tab', { exact: true })).toHaveCount(0);
-    await expect(panel.getByText('Pet', { exact: true })).toHaveCount(0);
-    for (const name of ['Auto', 'Next', 'Regen', 'Replay']) await expect(panel.getByRole('button', { name })).toBeVisible();
-    const currentText = panel.locator('[data-testid="local-voice-current-text"]');
-    await expect(currentText).toBeVisible();
+    await waitForControlReady(1);
 
-    const stored = await worker.evaluate(() => chrome.storage.local.get(['voiceId', 'referenceVoice', 'petMode', 'selectedPetId', 'petPosition']));
-    expect(stored.voiceId).toBe('');
-    expect(stored.referenceVoice).toBe('');
-    expect(stored.petMode).toBeUndefined();
-    expect(stored.selectedPetId).toBeUndefined();
-    expect(stored.petPosition).toBeUndefined();
-    const refSelect = panel.locator('[data-testid="local-voice-ref"]');
-    await expect(refSelect).toHaveValue('');
-    await expect.poll(async () => {
-      const petEvents = (await apiEvents()).filter((event) => event.method === 'POST' && event.path === '/v1/desktop-pet');
-      return petEvents.at(-1)?.body?.petId || '';
-    }).toBe('placeholder');
-
-    await refSelect.selectOption('sample');
+    await updateControlSettings({ enabled: false, voiceVolume: 0, referenceVoice: 'sample' });
+    await expect.poll(async () => worker.evaluate(async () => chrome.storage.local.get(['enabled', 'voiceVolume', 'voiceId', 'referenceVoice']))).toEqual({
+      enabled: false,
+      voiceVolume: 0,
+      voiceId: 'sample',
+      referenceVoice: 'sample',
+    });
     await expect.poll(async () => {
       const petEvents = (await apiEvents()).filter((event) => event.method === 'POST' && event.path === '/v1/desktop-pet');
       return petEvents.at(-1)?.body?.petId || '';
     }).toBe('sample');
-    await refSelect.selectOption('');
-    await expect.poll(async () => {
-      const petEvents = (await apiEvents()).filter((event) => event.method === 'POST' && event.path === '/v1/desktop-pet');
-      return petEvents.at(-1)?.body?.petId || '';
-    }).toBe('placeholder');
 
-    const header = panel.locator(':scope > div').first();
-    await header.click();
-    await expect(panel.locator('[data-local-voice-field="ref"]')).toBeHidden();
-    await expect.poll(async () => worker.evaluate(async () => (await chrome.storage.local.get('panelCollapsed')).panelCollapsed)).toBe(true);
-    await page.reload({ waitUntil: 'domcontentloaded' });
-    await expect(panel).toBeVisible({ timeout: 15000 });
-    await expect(panel.locator('[data-local-voice-field="ref"]')).toBeHidden();
-    await panel.locator(':scope > div').first().click();
-    await expect(panel.locator('[data-local-voice-field="ref"]')).toBeVisible();
-    await expect.poll(async () => worker.evaluate(async () => (await chrome.storage.local.get('panelCollapsed')).panelCollapsed)).toBe(false);
-    await panel.getByRole('button', { name: 'Auto' }).click();
+    await updateControlSettings({ enabled: true });
+    await expect.poll(async () => worker.evaluate(async () => (await chrome.storage.local.get('enabled')).enabled)).toBe(true);
+
     await page.evaluate(() => {
       const thinking = document.createElement('div');
       thinking.dataset.messageAuthorRole = 'assistant';
@@ -201,41 +246,57 @@ test('mock CI protects Auto baseline and proves Next, Regen, Replay, audio fetch
     });
     await page.waitForTimeout(1800);
     expect((await apiEvents()).filter((event) => event.path === '/v1/speak')).toHaveLength(0);
+    await page.evaluate(() => document.querySelector('[data-message-id="thinking-reply"]')?.remove());
+
     await page.evaluate(() => {
-      document.querySelector('[data-message-id="thinking-reply"]')?.remove();
+      const analyzing = document.createElement('div');
+      analyzing.dataset.messageAuthorRole = 'assistant';
+      analyzing.dataset.messageId = 'analyzing-image-reply';
+      analyzing.textContent = '画像を分析しています';
+      document.body.appendChild(analyzing);
     });
+    await page.waitForTimeout(1800);
+    expect((await apiEvents()).filter((event) => event.path === '/v1/speak')).toHaveLength(0);
+    await page.evaluate(() => document.querySelector('[data-message-id="analyzing-image-reply"]')?.remove());
+
+    await page.evaluate(() => {
+      const interrupted = document.createElement('div');
+      interrupted.dataset.messageAuthorRole = 'assistant';
+      interrupted.dataset.messageId = 'interrupted-image-reply';
+      interrupted.textContent = '個の画像を分析していますストリーミングが中断されました。完全なメッセージを待機しています...';
+      document.body.appendChild(interrupted);
+    });
+    await page.waitForTimeout(1800);
+    expect((await apiEvents()).filter((event) => event.path === '/v1/speak')).toHaveLength(0);
+    await page.evaluate(() => document.querySelector('[data-message-id="interrupted-image-reply"]')?.remove());
 
     await page.locator('#add-reply').click();
     await expect(page.locator('[data-message-id="new-reply"]')).toHaveText(DEMO_REPLY);
-    await expect(currentText).toContainText('これはオートをオンにした後に届いた新しい返答です。', { timeout: 15000 });
     await waitForCounts(1, 1);
 
     let events = await apiEvents();
     const firstPost = events.find((event) => event.method === 'POST' && event.path === '/v1/speak');
-    expect(firstPost.responseStatus).toBe(200);
-    expect(firstPost.body.referenceVoice).toBe('');
-    expect(firstPost.body.voiceId).toBe('');
+    expect(firstPost.body.referenceVoice).toBe('sample');
+    expect(firstPost.body.voiceId).toBe('sample');
     expect(firstPost.body.text.length).toBeLessThanOrEqual(80);
-    const demoLines = DEMO_REPLY.split('\n');
-    expect(firstPost.body.text).toContain(demoLines[0]);
-    expect(firstPost.body.text).not.toContain(demoLines[2]);
     expect(firstPost.body.text).not.toBe(DEMO_REPLY);
-    expect(events.find((event) => event.method === 'GET' && event.path === '/audio/mock.wav').responseStatus).toBe(200);
+    await expect.poll(async () => (await controlSnapshot()).extension.currentText).toContain('これはオートをオンにした後に届いた新しい返答です。');
 
-    await panel.getByRole('button', { name: 'Next' }).click();
+    await sendControlCommand('next');
     await waitForCounts(2, 2);
     events = await apiEvents();
     const postsAfterNext = events.filter((event) => event.method === 'POST' && event.path === '/v1/speak');
     expect(postsAfterNext[1].body.text).not.toBe(postsAfterNext[0].body.text);
 
-    await panel.getByRole('button', { name: 'Regen' }).click();
+    await sendControlCommand('regen');
     await waitForCounts(3, 3);
     events = await apiEvents();
     const postsAfterRegen = events.filter((event) => event.method === 'POST' && event.path === '/v1/speak');
     expect(postsAfterRegen[2].body.text).toBe(postsAfterRegen[1].body.text);
 
-    await panel.getByRole('button', { name: 'Replay' }).click();
+    await sendControlCommand('replay');
     await waitForCounts(3, 4);
+    expect(await page.locator('#local-voice-bridge-panel').count()).toBe(0);
   } finally {
     await context.close().catch(() => {});
     if (api) api.kill();
@@ -243,134 +304,207 @@ test('mock CI protects Auto baseline and proves Next, Regen, Replay, audio fetch
   }
 });
 
-test('two ChatGPT tabs keep the selected reference voice across a continuous Auto queue', async () => {
+test('Next uses the completed streaming reply instead of the short Auto preview snapshot', async () => {
   test.setTimeout(90000);
   const api = await startMock();
-  fs.rmSync(PROFILE, { recursive: true, force: true });
-  const context = await chromium.launchPersistentContext(PROFILE, {
-    headless: process.env.PLAYWRIGHT_HEADED !== '1',
-    channel: 'chromium',
-    viewport: { width: 1280, height: 720 },
-    args: [
-      `--disable-extensions-except=${EXTENSION}`,
-      `--load-extension=${EXTENSION}`,
-      '--autoplay-policy=no-user-gesture-required',
-      '--no-first-run',
-      '--mute-audio',
-    ],
-  });
+  const context = await launchContext();
 
   try {
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
-    await waitForSettingsMigration(worker);
-    await worker.evaluate(async (apiUrl) => {
-      await chrome.storage.local.clear();
-      await chrome.storage.local.set({
-        apiUrl: `${apiUrl}/v1/speak`,
-        healthUrl: `${apiUrl}/health`,
-        voiceVolume: 0,
-        enabled: false,
-        panelCollapsed: false,
-        voiceId: 'sample',
-        referenceVoice: 'sample',
-      });
-    }, API);
-
-    const pages = [await context.newPage(), await context.newPage()];
-    for (const page of pages) {
-      await page.route('https://chatgpt.com/**', (route) => route.fulfill({
-        status: 200,
-        contentType: 'text/html; charset=utf-8',
-        body: fixtureHtml(),
-      }));
-    }
-    for (let index = 0; index < pages.length; index += 1) {
-      await pages[index].goto(`https://chatgpt.com/c/mock-${index}`, { waitUntil: 'domcontentloaded' });
-    }
-    await claimPageOwnership(pages[0]);
-    await expect(pages[1].locator('#local-voice-bridge-panel')).toBeHidden();
-    const firstPanel = pages[0].locator('#local-voice-bridge-panel');
-    await expect(firstPanel.locator('select')).toHaveCount(1);
-    await expect(firstPanel.locator('[data-testid="local-voice-ref"]')).toHaveValue('sample');
-    await firstPanel.getByRole('button', { name: 'Auto' }).click();
-    await expect.poll(async () => worker.evaluate(async () => (await chrome.storage.local.get('enabled')).enabled)).toBe(true);
-    await pages[0].locator('#add-reply').click();
-    await waitForCounts(1, 1);
-
-    await claimPageOwnership(pages[1]);
-    await expect(pages[0].locator('#local-voice-bridge-panel')).toBeHidden();
-    await pages[1].locator('#add-reply').click();
-    await waitForCounts(2, 2);
-    const events = await apiEvents();
-    const posts = events.filter((event) => event.method === 'POST' && event.path === '/v1/speak');
-    expect(posts.map((event) => event.body.referenceVoice)).toEqual(['sample', 'sample']);
-    expect(posts.map((event) => event.body.voiceId)).toEqual(['sample', 'sample']);
-  } finally {
-    await context.close().catch(() => {});
-    if (api) api.kill();
-    fs.rmSync(PROFILE, { recursive: true, force: true });
-  }
-});
-
-test('Auto reads a complete assistant reply shorter than 20 characters', async () => {
-  test.setTimeout(90000);
-  const api = await startMock();
-  fs.rmSync(PROFILE, { recursive: true, force: true });
-  const context = await chromium.launchPersistentContext(PROFILE, {
-    headless: process.env.PLAYWRIGHT_HEADED !== '1',
-    channel: 'chromium',
-    viewport: { width: 1280, height: 720 },
-    args: [
-      `--disable-extensions-except=${EXTENSION}`,
-      `--load-extension=${EXTENSION}`,
-      '--autoplay-policy=no-user-gesture-required',
-      '--no-first-run',
-      '--mute-audio',
-    ],
-  });
-
-  try {
-    const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
-    await waitForSettingsMigration(worker);
-    await worker.evaluate(async (apiUrl) => {
-      await chrome.storage.local.clear();
-      await chrome.storage.local.set({
-        apiUrl: `${apiUrl}/v1/speak`,
-        healthUrl: `${apiUrl}/health`,
-        voiceVolume: 0,
-        enabled: false,
-        panelCollapsed: false,
-        voiceId: '',
-        referenceVoice: '',
-      });
-    }, API);
-
+    await configureWorker(worker);
     const page = await context.newPage();
     await page.route('https://chatgpt.com/**', (route) => route.fulfill({
       status: 200,
       contentType: 'text/html; charset=utf-8',
-      body: `<!doctype html><html><head><meta charset="utf-8"><title>ChatGPT short reply fixture</title></head><body><main><button id="add-short-reply">Add reply</button></main><script>
-        document.querySelector('#add-short-reply').addEventListener('click', () => {
-          const turn = document.createElement('article');
-          turn.setAttribute('data-testid', 'conversation-turn-2');
-          turn.innerHTML = '<div data-message-author-role="assistant" data-message-id="short-reply">はい、返事できます。</div>';
-          document.querySelector('main').appendChild(turn);
-        });
-      </script></body></html>`,
+      body: fixtureHtml(),
     }));
-    await page.goto('https://chatgpt.com/c/short-reply', { waitUntil: 'domcontentloaded' });
-
-    const panel = page.locator('#local-voice-bridge-panel');
-    await expect(panel).toBeVisible({ timeout: 15000 });
-    await panel.getByRole('button', { name: 'Auto' }).click();
+    await page.goto('https://chatgpt.com/c/streaming-next', { waitUntil: 'domcontentloaded' });
+    await waitForControlReady(1);
+    await updateControlSettings({ enabled: true, voiceVolume: 0, referenceVoice: 'sample' });
     await expect.poll(async () => worker.evaluate(async () => (await chrome.storage.local.get('enabled')).enabled)).toBe(true);
+
+    await page.evaluate(() => {
+      const reply = document.createElement('div');
+      reply.dataset.messageAuthorRole = 'assistant';
+      reply.dataset.messageId = 'streaming-next-reply';
+      reply.textContent = '概ね妥当です。';
+      document.querySelector('#chat').append(reply);
+    });
+    await waitForCounts(1, 1);
+
+    await page.evaluate(() => {
+      document.querySelector('[data-message-id="streaming-next-reply"]').textContent =
+        '概ね妥当です。\nただし、公開時の誤認防止とブランド統一のために変更すべき項目があります。\nChrome拡張名、EXE名、スタートメニュー名、READMEタイトルを独自名称へ統一します。';
+    });
+    await page.waitForTimeout(700);
+
+    await sendControlCommand('next');
+    await waitForCounts(2, 2);
+    const posts = (await apiEvents()).filter((event) => event.method === 'POST' && event.path === '/v1/speak');
+    expect(posts[1].body.text).not.toBe('概ね妥当です。');
+    expect(posts[1].body.text).toContain('ただし');
+  } finally {
+    await context.close().catch(() => {});
+    if (api) api.kill();
+    fs.rmSync(PROFILE, { recursive: true, force: true });
+  }
+});
+
+test('all ChatGPT tabs continue to enqueue into one Auto queue without an in-page panel', async () => {
+  test.setTimeout(90000);
+  const api = await startMock();
+  const context = await launchContext();
+
+  try {
+    const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
+    await configureWorker(worker, { voiceId: 'sample', referenceVoice: 'sample' });
+
+    const pages = [await context.newPage(), await context.newPage()];
+    for (let index = 0; index < pages.length; index += 1) {
+      await pages[index].route('https://chatgpt.com/**', (route) => route.fulfill({
+        status: 200,
+        contentType: 'text/html; charset=utf-8',
+        body: fixtureHtml(),
+      }));
+      await pages[index].goto(`https://chatgpt.com/c/mock-${index}`, { waitUntil: 'domcontentloaded' });
+      await expect(pages[index].locator('#chat')).toBeVisible();
+      await expect(pages[index].locator('#local-voice-bridge-panel')).toHaveCount(0);
+    }
+    await waitForControlReady(2);
+    await updateControlSettings({ enabled: true, voiceVolume: 0, referenceVoice: 'sample' });
+    await expect.poll(async () => worker.evaluate(async () => (await chrome.storage.local.get('enabled')).enabled)).toBe(true);
+
+    await pages[0].locator('#add-reply').click();
+    await pages[1].locator('#add-reply').click();
+    await waitForCounts(2, 2);
+
+    const posts = (await apiEvents()).filter((event) => event.method === 'POST' && event.path === '/v1/speak');
+    expect(posts.map((event) => event.body.referenceVoice)).toEqual(['sample', 'sample']);
+    expect((await controlSnapshot()).extension.tabsCount).toBe(2);
+  } finally {
+    await context.close().catch(() => {});
+    if (api) api.kill();
+    fs.rmSync(PROFILE, { recursive: true, force: true });
+  }
+});
+
+test('microphone transcript supports Esc cancellation, 0.7 second auto-send, and reply TTS', async () => {
+  test.setTimeout(90000);
+  const api = await startMock();
+  const context = await launchContext();
+
+  try {
+    const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
+    await configureWorker(worker);
+    const page = await context.newPage();
+    await page.route('https://chatgpt.com/**', (route) => route.fulfill({
+      status: 200,
+      contentType: 'text/html; charset=utf-8',
+      body: microphoneFixtureHtml(),
+    }));
+    await page.goto('https://chatgpt.com/c/microphone', { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('#prompt-textarea')).toBeVisible();
+    await waitForControlReady(1);
+
+    await updateControlSettings({
+      enabled: true,
+      micConversationEnabled: true,
+      sttModel: 'small',
+      cancelGraceMs: 1200,
+      voiceVolume: 0,
+      referenceVoice: '',
+    });
+    await expect.poll(async () => worker.evaluate(async () => chrome.storage.local.get([
+      'enabled', 'micConversationEnabled', 'sttModel', 'cancelGraceMs',
+    ]))).toEqual({
+      enabled: true,
+      micConversationEnabled: true,
+      sttModel: 'small',
+      cancelGraceMs: 1200,
+    });
+
+    await sendConversationEvent('transcript', {
+      sessionId: 1,
+      text: 'Escでキャンセルする音声入力',
+      cancelGraceMs: 1200,
+    });
+    await expect(page.locator('#prompt-textarea')).toHaveValue('Escでキャンセルする音声入力');
+    await expect(page.locator('#local-voice-cancel-hint')).toContainText('Escでキャンセル');
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#prompt-textarea')).toHaveValue('');
+    await expect(page.locator('#local-voice-cancel-hint')).toHaveCount(0);
+    expect(await page.evaluate(() => window.__sent)).toEqual([]);
+
+    await sendConversationEvent('transcript', {
+      sessionId: 2,
+      text: '0.7秒後に一度だけ送信する音声入力',
+      cancelGraceMs: 700,
+    });
+    await expect(page.locator('#prompt-textarea')).toHaveValue('0.7秒後に一度だけ送信する音声入力');
+    await expect(page.locator('#local-voice-cancel-hint')).toContainText('0.7秒');
+    await expect.poll(() => page.evaluate(() => window.__sent.length), { timeout: 5000 }).toBe(1);
+    expect(await page.evaluate(() => window.__sent[0])).toBe('0.7秒後に一度だけ送信する音声入力');
     await page.waitForTimeout(1000);
-    await page.locator('#add-short-reply').click();
-    await expect(page.locator('[data-message-id="short-reply"]')).toHaveText('はい、返事できます。');
+    expect(await page.evaluate(() => window.__sent.length)).toBe(1);
+    await expect(page.locator('[data-message-id="mic-reply-1"]')).toHaveText('音声会話から送信された質問への返答です。');
+    await waitForCounts(1, 1);
+
+    await page.evaluate(() => {
+      const composer = document.querySelector('#prompt-textarea');
+      composer.value = '既存入力を保持する';
+      composer.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await sendConversationEvent('transcript', {
+      sessionId: 3,
+      text: '上書きしてはいけない音声入力',
+      cancelGraceMs: 700,
+    });
+    await page.waitForTimeout(1200);
+    await expect(page.locator('#prompt-textarea')).toHaveValue('既存入力を保持する');
+    expect(await page.evaluate(() => window.__sent.length)).toBe(1);
+    await expect.poll(async () => (await controlSnapshot()).conversation.phase).toBe('error');
+  } finally {
+    await context.close().catch(() => {});
+    if (api) api.kill();
+    fs.rmSync(PROFILE, { recursive: true, force: true });
+  }
+});
+
+test('Auto reads a complete assistant reply shorter than 20 characters from the external setting', async () => {
+  test.setTimeout(90000);
+  const api = await startMock();
+  const context = await launchContext();
+
+  try {
+    const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
+    await configureWorker(worker);
+    const page = await context.newPage();
+    await page.route('https://chatgpt.com/**', (route) => route.fulfill({
+      status: 200,
+      contentType: 'text/html; charset=utf-8',
+      body: fixtureHtml(),
+    }));
+    await page.goto('https://chatgpt.com/c/short', { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('#chat')).toBeVisible();
+    await waitForControlReady(1);
+    await updateControlSettings({ enabled: true, voiceVolume: 0, referenceVoice: '' });
+    await expect.poll(async () => worker.evaluate(async () => (await chrome.storage.local.get('enabled')).enabled)).toBe(true);
+
+    await page.evaluate(() => {
+      const turn = document.createElement('article');
+      turn.dataset.testid = 'conversation-turn-assistant-short';
+      const message = document.createElement('div');
+      message.dataset.messageAuthorRole = 'assistant';
+      message.dataset.messageId = 'short-reply';
+      message.textContent = 'はい、返事できます。';
+      turn.append(message);
+      document.body.append(turn);
+    });
 
     await waitForCounts(1, 1);
     const posts = (await apiEvents()).filter((event) => event.method === 'POST' && event.path === '/v1/speak');
     expect(posts[0].body.text).toBe('はい、返事できます。');
+    await expect(page.locator('#local-voice-bridge-panel')).toHaveCount(0);
   } finally {
     await context.close().catch(() => {});
     if (api) api.kill();

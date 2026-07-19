@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import logging
 import os
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -25,7 +26,7 @@ from desktop_pet_config import (
     restore_position,
 )
 
-LOGGER = logging.getLogger("chatgpt-local-voice-bridge-tray")
+LOGGER = logging.getLogger("local-voice-bridge-tray")
 IS_WINDOWS = os.name == "nt"
 
 GWL_EXSTYLE = -20
@@ -130,6 +131,7 @@ class DesktopPetWindow(QWidget):
     visibility_changed = Signal(bool)
     always_on_top_changed = Signal(bool)
     pet_selection_changed = Signal(str)
+    panel_toggle_requested = Signal()
     exit_requested = Signal()
 
     def __init__(
@@ -161,6 +163,7 @@ class DesktopPetWindow(QWidget):
         self._drag_offset: QPoint | None = None
         self._drag_origin: QPoint | None = None
         self._position_dirty = False
+        self._last_drag_completed_at = 0.0
         self._temporarily_adjusted = False
         self._shutting_down = False
 
@@ -168,7 +171,7 @@ class DesktopPetWindow(QWidget):
         self._animation_timer.timeout.connect(self._advance_frame)
 
         self.setObjectName("desktop-pet-window")
-        self.setWindowTitle("ChatGPT Local Voice Bridge Desktop Pet")
+        self.setWindowTitle("Local Voice Bridge Desktop Pet")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setAutoFillBackground(False)
@@ -425,12 +428,20 @@ class DesktopPetWindow(QWidget):
             self._drag_origin = None
             if moved:
                 self._position_dirty = True
+                self._last_drag_completed_at = time.monotonic()
                 self.persist_settings()
             event.accept()
             return
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            if time.monotonic() - self._last_drag_completed_at < 0.45:
+                event.ignore()
+                return
+            self.panel_toggle_requested.emit()
+            event.accept()
+            return
         event.ignore()
 
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:  # noqa: N802

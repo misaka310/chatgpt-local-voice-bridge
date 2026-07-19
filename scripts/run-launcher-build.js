@@ -7,7 +7,7 @@ const { spawnSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
 const script = path.join(ROOT, 'scripts', 'build-launcher.ps1');
-const output = path.join(ROOT, 'ChatGPTLocalVoiceBridge.exe');
+const output = path.join(ROOT, 'LocalVoiceBridge.exe');
 const candidates = [
   process.env.POWERSHELL,
   process.platform === 'win32' ? 'powershell.exe' : '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe',

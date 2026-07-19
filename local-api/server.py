@@ -12,19 +12,26 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 # Public model downloads must not be broken by a stale token saved by another
 # Hugging Face login. Explicit environment settings still take precedence.
 os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 
+from control_state import ControlStateStore
 from desktop_pet_config import discover_available_pets
 from irodori_engine import IrodoriError, cache_hint, synthesize_irodori_direct
 
 ROOT = Path(__file__).resolve().parent
-DESKTOP_PET_SETTINGS_PATH = ROOT / "runtime" / "desktop-pet-settings.json"
+DESKTOP_PET_SETTINGS_PATH = Path(
+    os.environ.get("LOCAL_VOICE_DESKTOP_PET_SETTINGS") or ROOT / "runtime" / "desktop-pet-settings.json"
+).expanduser().resolve()
+CONTROL_PANEL_STATE_PATH = ROOT / "runtime" / "control-panel-state.json"
 DESKTOP_PET_ROOT = ROOT.parent / "extension" / "assets" / "pet"
 DESKTOP_PET_SETTINGS_LOCK = threading.Lock()
+CONTROL_STATE = ControlStateStore(
+    Path(os.environ.get("LOCAL_VOICE_CONTROL_STATE") or CONTROL_PANEL_STATE_PATH).expanduser().resolve()
+)
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac"}
 TEXT_FILES = ("voice.txt", "text.txt", "transcript.txt")
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -269,6 +276,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/v1/control-panel":
+            try:
+                payload = CONTROL_STATE.snapshot()
+                payload["referenceVoices"] = reference_voice_list(load_config())
+                json_response(self, HTTPStatus.OK, payload)
+            except Exception as exc:
+                json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
+            return
+        if parsed.path == "/v1/control-panel/poll":
+            try:
+                values = parse_qs(parsed.query).get("after", ["0"])
+                after_id = int(values[0] or 0)
+                json_response(self, HTTPStatus.OK, CONTROL_STATE.poll(after_id))
+            except (TypeError, ValueError) as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+            return
         if parsed.path == "/v1/desktop-pet":
             try:
                 settings = load_desktop_pet_settings()
@@ -318,6 +341,48 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if path == "/v1/control-panel/settings":
+            try:
+                payload = request_json(self)
+                payload["initialized"] = True
+                json_response(self, HTTPStatus.OK, CONTROL_STATE.update_settings(payload))
+            except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+            return
+        if path == "/v1/control-panel/command":
+            try:
+                payload = request_json(self)
+                command = CONTROL_STATE.enqueue_command(str(payload.get("command") or ""))
+                json_response(self, HTTPStatus.OK, {"ok": True, "command": command})
+            except (json.JSONDecodeError, ValueError) as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+            return
+        if path == "/v1/control-panel/state":
+            try:
+                payload = request_json(self)
+                extension = CONTROL_STATE.update_extension_state(payload)
+                json_response(self, HTTPStatus.OK, {"ok": True, "extension": extension})
+            except (json.JSONDecodeError, ValueError) as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+            return
+        if path == "/v1/conversation/state":
+            try:
+                payload = request_json(self)
+                json_response(self, HTTPStatus.OK, CONTROL_STATE.update_conversation_state(payload))
+            except (json.JSONDecodeError, ValueError) as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+            return
+        if path == "/v1/conversation/event":
+            try:
+                payload = request_json(self)
+                event = CONTROL_STATE.enqueue_conversation_event(
+                    str(payload.get("type") or ""),
+                    payload.get("payload") if isinstance(payload.get("payload"), dict) else {},
+                )
+                json_response(self, HTTPStatus.OK, {"ok": True, "event": event})
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+            return
         if path == "/v1/desktop-pet":
             try:
                 payload = request_json(self)

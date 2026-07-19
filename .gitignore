@@ -25,6 +25,8 @@ out/
 *.spec
 ChatGPTLocalVoiceBridge.exe
 ChatGPTLocalVoiceBridge.pdb
+LocalVoiceBridge.exe
+LocalVoiceBridge.pdb
 
 # local runtime
 local-api/runtime/
@@ -104,8 +106,9 @@ Thumbs.db
 .vm-*.png
 vm-*.png
 
-# local AI-agent handoff files
+# local AI-agent handoff and review files
 .ai-bridge/
+.ai-review/
 .codex/
 
 # removed optional native/background launch helpers

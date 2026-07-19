@@ -176,12 +176,14 @@ class DesktopPetQtTests(unittest.TestCase):
             self.assertTrue(store.load().visible)
             window.shutdown()
 
-    def test_plain_left_click_and_double_click_have_no_action(self) -> None:
+    def test_plain_left_click_does_nothing_and_double_click_requests_panel_toggle(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = self._create_pet_root(temp_dir)
             window = DesktopPetWindow(root, DesktopPetSettingsStore(Path(temp_dir) / "settings.json"))
             persisted: list[bool] = []
+            toggles: list[bool] = []
             window.persist_settings = lambda: persisted.append(True)
+            window.panel_toggle_requested.connect(lambda: toggles.append(True))
             origin = window.pos()
             global_position = window.frameGeometry().topLeft() + QPoint(4, 4)
 
@@ -194,9 +196,10 @@ class DesktopPetQtTests(unittest.TestCase):
 
             self.assertEqual(window.pos(), origin)
             self.assertEqual(persisted, [])
+            self.assertEqual(toggles, [True])
             self.assertTrue(press.accepted)
             self.assertTrue(release.accepted)
-            self.assertFalse(double_click.accepted)
+            self.assertTrue(double_click.accepted)
             self.assertTrue(window.isVisible())
             window.shutdown()
 
@@ -217,6 +220,12 @@ class DesktopPetQtTests(unittest.TestCase):
             self.assertEqual(window.pos(), origin + QPoint(25, 30))
             self.assertEqual(persisted, [True])
             self.assertTrue(window._position_dirty)
+            suppressed_double_click = FakeMouseEvent(Qt.MouseButton.LeftButton, global_position=target)
+            toggles: list[bool] = []
+            window.panel_toggle_requested.connect(lambda: toggles.append(True))
+            window.mouseDoubleClickEvent(suppressed_double_click)
+            self.assertEqual(toggles, [])
+            self.assertFalse(suppressed_double_click.accepted)
             window.shutdown()
     def test_right_click_has_no_pet_menu_or_visibility_effect(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -61,6 +61,83 @@ class FakeController:
         thread.join(timeout=2)
 
 
+class FakeControlClient:
+    def __init__(self) -> None:
+        self.settings_calls: list[dict[str, object]] = []
+        self.commands: list[str] = []
+
+    def get_snapshot(self) -> dict[str, object]:
+        return {
+            "ok": True,
+            "initialized": True,
+            "settings": {
+                "enabled": True,
+                "voiceVolume": 0.6,
+                "referenceVoice": "",
+                "micConversationEnabled": True,
+                "sttModel": "small",
+                "cancelGraceMs": 700,
+            },
+            "referenceVoices": [{"id": "", "label": "none"}],
+            "extension": {
+                "connected": False,
+                "statusText": "Waiting for ChatGPT",
+                "statusLevel": "info",
+                "currentText": "",
+                "queueSize": 0,
+                "isPlaying": False,
+                "playbackPhase": "idle",
+                "replayAvailable": False,
+                "tabsCount": 0,
+            },
+        }
+
+    def update_settings(self, payload: dict[str, object]) -> dict[str, object]:
+        self.settings_calls.append(dict(payload))
+        return {"ok": True}
+
+    def send_command(self, command: str) -> dict[str, object]:
+        self.commands.append(command)
+        return {"ok": True}
+
+    def send_conversation_event(self, event_type: str, payload: dict[str, object]) -> dict[str, object]:
+        return {"ok": True, "type": event_type, "payload": payload}
+
+    def update_conversation_state(self, payload: dict[str, object]) -> dict[str, object]:
+        return {"ok": True, "conversation": payload}
+
+
+class FakeConversationController:
+    def __init__(self) -> None:
+        self.configurations: list[dict[str, object]] = []
+        self.key_events: list[tuple[int, bool]] = []
+        self.shutdown_count = 0
+
+    def configure(self, *, enabled: bool, stt_model: str, cancel_grace_ms: int) -> None:
+        self.configurations.append(
+            {"enabled": enabled, "sttModel": stt_model, "cancelGraceMs": cancel_grace_ms}
+        )
+
+    def handle_key_event(self, vk_code: int, *, is_down: bool) -> bool:
+        self.key_events.append((vk_code, is_down))
+        return True
+
+    def shutdown(self) -> None:
+        self.shutdown_count += 1
+
+
+class FakeKeyboardHook:
+    def __init__(self) -> None:
+        self.start_count = 0
+        self.stop_count = 0
+
+    def start(self) -> None:
+        self.start_count += 1
+
+    def stop(self) -> None:
+        self.stop_count += 1
+
+
 class TrayQtRuntimeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -117,12 +194,24 @@ class TrayQtRuntimeTests(unittest.TestCase):
             )
         return root
 
-    def _create_runtime(self, temp_dir: str, controller: FakeController | None = None) -> tray.VoiceBridgeQtRuntime:
+    def _create_runtime(
+        self,
+        temp_dir: str,
+        controller: FakeController | None = None,
+        *,
+        conversation_controller: FakeConversationController | None = None,
+        keyboard_hook: FakeKeyboardHook | None = None,
+    ) -> tray.VoiceBridgeQtRuntime:
         return tray.VoiceBridgeQtRuntime(
             self.app,
             controller=controller or FakeController(),
             pet_root=self._create_pet_root(temp_dir),
             settings_path=Path(temp_dir) / "settings.json",
+            control_panel_client=FakeControlClient(),
+            panel_state_path=Path(temp_dir) / "panel-window.json",
+            conversation_controller=conversation_controller or FakeConversationController(),
+            keyboard_hook=keyboard_hook or FakeKeyboardHook(),
+            start_panel_polling=False,
             start_monitor=True,
             show_tray=False,
         )
@@ -151,17 +240,37 @@ class TrayQtRuntimeTests(unittest.TestCase):
             self.assertEqual(runtime.pet.current_state, "idle")
             runtime.shutdown()
 
-    def test_tray_menu_contains_service_controls_only(self) -> None:
+    def test_tray_menu_contains_external_panel_and_service_controls(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             runtime = self._create_runtime(temp_dir)
             action_texts = [action.text() for action in runtime.menu.actions()]
 
+            self.assertIn("Show Local Voice panel", action_texts)
             self.assertIn("Restart Voice Bridge", action_texts)
             self.assertIn("Exit", action_texts)
             self.assertNotIn("デスクトップペットを表示", action_texts)
             self.assertNotIn("使用するペット", action_texts)
             self.assertNotIn("ペットの位置を初期化", action_texts)
             self.assertNotIn("ペットを常に手前に表示", action_texts)
+            runtime.shutdown()
+
+    def test_runtime_owns_hidden_panel_and_pet_double_click_toggles_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime = self._create_runtime(temp_dir)
+            self.app.processEvents()
+
+            self.assertFalse(runtime.control_panel.isVisible())
+            self.assertEqual(runtime.panel_action.text(), "Show Local Voice panel")
+
+            runtime.pet.panel_toggle_requested.emit()
+            self.app.processEvents()
+            self.assertTrue(runtime.control_panel.isVisible())
+            self.assertEqual(runtime.panel_action.text(), "Hide Local Voice panel")
+
+            runtime.pet.panel_toggle_requested.emit()
+            self.app.processEvents()
+            self.assertFalse(runtime.control_panel.isVisible())
+            self.assertEqual(runtime.panel_action.text(), "Show Local Voice panel")
             runtime.shutdown()
 
     def test_monitor_starts_while_pet_stays_visible(self) -> None:
@@ -199,6 +308,26 @@ class TrayQtRuntimeTests(unittest.TestCase):
             self.assertTrue(runtime.pet.isVisible())
             runtime.shutdown()
 
+    def test_runtime_starts_hook_syncs_mic_settings_and_stops_both_on_shutdown(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conversation = FakeConversationController()
+            hook = FakeKeyboardHook()
+            runtime = self._create_runtime(
+                temp_dir,
+                conversation_controller=conversation,
+                keyboard_hook=hook,
+            )
+            runtime.sync_conversation_settings()
+
+            self.assertEqual(hook.start_count, 1)
+            self.assertIn(
+                {"enabled": True, "sttModel": "small", "cancelGraceMs": 700},
+                conversation.configurations,
+            )
+            runtime.shutdown()
+            self.assertEqual(hook.stop_count, 1)
+            self.assertEqual(conversation.shutdown_count, 1)
+
     def test_shutdown_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             controller = FakeController()
@@ -208,6 +337,7 @@ class TrayQtRuntimeTests(unittest.TestCase):
 
             self.assertEqual(controller.shutdown_count, 1)
             self.assertTrue(runtime._shutdown_started)
+            self.assertTrue(runtime.control_panel._shutting_down)
 
 
 if __name__ == "__main__":

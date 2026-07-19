@@ -1,10 +1,10 @@
 # 起動
 
-初回セットアップ後、Windows検索で`ChatGPT Local Voice Bridge`を開きます。セットアップは現在のユーザーのスタートメニューへショートカットを登録します。リポジトリ内の`ChatGPTLocalVoiceBridge.exe`を直接ダブルクリックしても同じです。
+初回セットアップ後、Windows検索で`Local Voice Bridge`を開きます。セットアップは現在のユーザーのスタートメニューへショートカットを登録します。リポジトリ内の`LocalVoiceBridge.exe`を直接ダブルクリックしても同じです。
 
-このEXEは既存の`local-api/.venv`を使って通知領域アプリを起動する小さなWindowsランチャーです。
+このEXEは既存の`local-api/.venv`を使って通知領域アプリ、Windows Local Voice小窓、デスクトップペット、ローカルAPIを管理する小さなWindowsランチャーです。
 
-通常起動ではターミナルは表示されません。Windows右下の通知領域に`ChatGPT Local Voice Bridge`アイコンが表示され、デスクトップペットが1体起動します。通知領域アイコンが隠れている場合は、タスクバー右端の上向き矢印を開いてください。
+通常起動ではターミナルは表示されません。Windows右下の通知領域に`Local Voice Bridge`アイコンが表示され、デスクトップペットが1体起動します。Local Voice小窓は起動直後は非表示です。通知領域アイコンが隠れている場合は、タスクバー右端の上向き矢印を開いてください。
 
 `start-voice-bridge.vbs`は既存利用者向けの互換入口としてのみ残り、内部ではEXEへ転送します。通常起動とWindowsログイン時の自動起動はEXEを使用します。
 
@@ -12,28 +12,57 @@
 
 ## 通知領域メニュー
 
-通知領域はVoice Bridgeの管理だけを行います。
-
 - `Status: ...`: APIの現在状態
+- `Show Local Voice panel` / `Hide Local Voice panel`: Windows小窓を開閉
 - `Restart Voice Bridge`: この通知領域アプリが起動したAPIだけを再起動
 - `Open controller log`: `local-api/logs/controller.log`を開く
 - `Open generated audio folder`: 生成された音声フォルダを開く
 - `Open reference voices folder`: 参照音声フォルダを開く
 - `Start with Windows`: 現在のユーザーのWindowsログイン時自動起動を切り替える
 - `Exit and run environment setup`: APIを停止し、セットアップを表示付きで再実行する
-- `Exit`: 通知領域アプリ、デスクトップペット、このアプリが所有するAPIを終了する
+- `Exit`: 通知領域アプリ、Windows小窓、デスクトップペット、このアプリが所有するAPIを終了する
 
-ペットの表示切り替え、種類選択、位置初期化、常に手前の切り替えは通知領域にはありません。
+ペットの種類選択、位置初期化、常に手前の切り替えは通知領域にはありません。
+
+## Windows Local Voice小窓
+
+ペットを左ダブルクリックするか、通知領域の`Show Local Voice panel`を選ぶと開きます。
+
+小窓には次を表示します。
+
+- `Ref`
+- `Volume`
+- `Auto`
+- `Next`
+- `Regen`
+- `Replay`
+- API・再生状態
+- 現在生成中または直前に再生した文章
+- 共通キュー数
+- 登録済みChatGPTタブ数
+
+×は終了ではなく非表示です。上部を左ドラッグすると位置を移動できます。位置は次へ保存されます。
+
+```text
+local-api/runtime/control-panel-window.json
+```
+
+Chrome / Brave内にはLocal Voice操作パネルを表示しません。Autoの対象は最後に触った1タブではなく、開いている全ChatGPTタブです。
 
 ## デスクトップペットの操作
 
-ペット本体を左ドラッグすると、Windowsデスクトップ上の好きな位置へ移動できます。通常クリック、ダブルクリック、右クリックでは何も起きません。
+- 左ドラッグ: Windowsデスクトップ上の位置を移動
+- 左ダブルクリック: Windows Local Voice小窓を表示・非表示
+- 通常クリック、右クリック: 何もしない
+- ドラッグ直後のダブルクリック: 誤操作防止のため無効
 
-ペットの種類はChrome / BraveのLocal Voiceパネルにある`Ref`と自動連動します。Chrome内にはペット本体や`Pet`選択欄を表示しません。`Ref=none`または空の場合と、同じIDの素材がない場合は既定ペットへフォールバックします。
+ペットの種類はWindows Local Voice小窓の`Ref`と自動連動します。Chrome内にはペット本体や`Pet`選択欄を表示しません。`Ref=none`または空の場合と、同じIDの素材がない場合は既定ペットへフォールバックします。
 
 設定は`local-api/runtime/desktop-pet-settings.json`へ保存されます。このファイルはローカル専用で、Gitには追加されません。モニター構成やDPIが変わって保存位置が完全に画面外になった場合は、起動時に操作できる位置へ一時補正されます。補正後にユーザーがドラッグした場合だけ新しい位置として保存します。
 
 ## 状態表示
+
+通知領域:
 
 - `Starting`: API起動中
 - `Checking environment`: CUDAとIrodoriの事前確認中
@@ -44,11 +73,19 @@
 - `Port 8717 in use`: 別サービスが同じポートを使用中
 - `Unhealthy` / `Restarting`: API異常を検出し、復旧処理中
 
-デスクトップペットは、Voice Bridgeが正常なときに`idle`、異常時に`error`を表示します。Chrome側の実際の音声再生開始・終了を正確に受け取る経路がないため、デスクトップ側で`thinking`、`talking`、`happy`を推測して切り替えることはしません。
+Windows小窓:
+
+- `Waiting for ChatGPT`: APIは動作しているが、更新後の拡張機能が接続していない
+- `Ready`: ChatGPTタブを認識し、待機中
+- `Generating`: Irodori音声を生成中
+- `Playing`: 音声を再生中
+- `Played chunk ...`: 再生完了
+
+デスクトップペットは、Voice Bridgeが正常なときに`idle`、異常時に`error`を表示します。
 
 ## 成功条件
 
-`http://127.0.0.1:8717/health`で次の状態になれば起動できています。
+`http://127.0.0.1:8717/health`で次の状態になればAPIは起動できています。
 
 - `ok=true`
 - `runtime=irodori_direct`
@@ -58,16 +95,18 @@
 
 ## Windowsで確認する手順
 
-1. Windows検索で`ChatGPT Local Voice Bridge`を開く
+1. Windows検索で`Local Voice Bridge`を開く
 2. 通知領域のアイコンで`Status: Ready`または`Status: Ready (existing)`を確認する
-3. Chrome / BraveのLocal Voiceパネルに`Voice`、`Tab`、`Pet`欄がなく、`Ref`、`Volume`、`Auto`、`Next`、`Regen`、`Replay`だけがあることを確認する
-4. Local Voiceバーをクリックし、展開・折りたたみと再読み込み後の状態復元を確認する
-5. Chrome内にペット本体が表示されていないことを確認する
-6. 白い背景と黒い背景の両方で、デスクトップペットの周囲に四角い背景や影がないことを確認する
-7. `Ref`を変更し、同じIDのデスクトップペットへ切り替わることを確認する
-8. ペットの通常クリック、ダブルクリック、右クリックで何も起きず、左ドラッグだけで移動できることを確認する
-9. 通知領域メニューにペット用の重複操作がないことを確認する
-10. `Exit`で終了し、再起動後に位置と`Ref`連動したペットが復元されることを確認する
+3. ペットを左ダブルクリックし、Windows Local Voice小窓が開くことを確認する
+4. もう一度ダブルクリックして非表示になり、通知領域からも開閉できることを確認する
+5. 小窓に`Ref`、`Volume`、`Auto`、`Next`、`Regen`、`Replay`だけがあり、Chrome内には操作パネルがないことを確認する
+6. Chrome / Braveで2つ以上のChatGPTタブを開き、小窓で`Auto`をオンにする
+7. 各タブで新しい返答を生成し、両方の返答が1つの共通キューで順番に読み上げられることを確認する
+8. `思考中`だけの途中状態は読まず、最終返答だけを読むことを確認する
+9. `Ref`を変更し、Chrome保存値、読み上げ参照音声、同じIDのデスクトップペットが一致することを確認する
+10. ペットの左ドラッグで位置を移動でき、ドラッグ終了直後に小窓が誤って開かないことを確認する
+11. 小窓の×で非表示にし、ペットのダブルクリックで再び開くことを確認する
+12. `Exit`で終了し、再起動後に小窓位置、ペット位置、`Ref`、`Volume`、`Auto`が復元されることを確認する
 
 `Exit`は通知領域アプリが起動した`server.py`だけを停止します。`run-voice-stack.cmd`などで先に起動した互換APIへ接続している場合、その外部プロセスは停止しません。
 

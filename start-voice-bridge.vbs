@@ -5,10 +5,10 @@ Set fso = CreateObject("Scripting.FileSystemObject")
 Set shell = CreateObject("WScript.Shell")
 
 root = fso.GetParentFolderName(WScript.ScriptFullName)
-launcher = root & "\ChatGPTLocalVoiceBridge.exe"
+launcher = root & "\LocalVoiceBridge.exe"
 
 If Not fso.FileExists(launcher) Then
-  MsgBox "ChatGPTLocalVoiceBridge.exe is missing. Run setup-voice-env.cmd first.", vbExclamation, "ChatGPT Local Voice Bridge"
+  MsgBox "LocalVoiceBridge.exe is missing. Run setup-voice-env.cmd first.", vbExclamation, "Local Voice Bridge"
   WScript.Quit 1
 End If
 

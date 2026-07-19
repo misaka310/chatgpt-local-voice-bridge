@@ -6,7 +6,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $sourcePath = Join-Path $PSScriptRoot "launcher\VoiceBridgeLauncher.cs"
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-    $OutputPath = Join-Path $root "ChatGPTLocalVoiceBridge.exe"
+    $OutputPath = Join-Path $root "LocalVoiceBridge.exe"
 }
 
 if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
@@ -35,4 +35,4 @@ if (-not (Test-Path -LiteralPath $OutputPath -PathType Leaf)) {
 }
 
 $size = (Get-Item -LiteralPath $OutputPath).Length
-Write-Host "[ok] Built ChatGPTLocalVoiceBridge.exe ($size bytes)"
+Write-Host "[ok] Built LocalVoiceBridge.exe ($size bytes)"

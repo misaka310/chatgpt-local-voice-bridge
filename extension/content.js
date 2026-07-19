@@ -1,5 +1,5 @@
 (() => {
-  const SETTINGS_VERSION = 8;
+  const SETTINGS_VERSION = 9;
   const DEFAULT_SETTINGS = {
     settingsVersion: SETTINGS_VERSION,
     enabled: false,
@@ -14,14 +14,13 @@
     previewMaxChars: 80,
     previewMinChars: 40,
     previewStableMs: 1000,
-    panelCollapsed: true,
+    micConversationEnabled: false,
+    sttModel: 'small',
+    cancelGraceMs: 700,
   };
   const AUTO_SENT_FLAG = 'localVoiceSent';
-  const PANEL_POSITION_KEY = 'panelPosition';
-  const PANEL_COLLAPSED_KEY = 'panelCollapsed';
   const DEFAULT_PET_ID = 'placeholder';
-  const LEGACY_PET_STORAGE_KEYS = ['petMode', 'selectedPetId', 'petPosition'];
-  const DEFAULT_REFERENCE_VOICES = [{ id: '', label: 'none' }];
+  const LEGACY_BROWSER_UI_STORAGE_KEYS = ['petMode', 'selectedPetId', 'petPosition', 'panelPosition', 'panelCollapsed'];
 
   const stateByElement = new WeakMap();
   const initializedElements = new WeakSet();
@@ -29,23 +28,14 @@
   let enabled = false;
   let observer = null;
   let inspectTimer = null;
-  let panel = null;
-  let panelBody = null;
-  let statusNode = null;
-  let detailNode = null;
-  let titleNode = null;
-  let referenceVoiceSelect = null;
-  let autoButton = null;
-  let actionButtons = [];
-  let volumeSlider = null;
-  let volumeValueNode = null;
   let currentAudio = null;
   let currentObjectUrl = null;
   let currentPlaybackToken = null;
+  let currentPlaybackCancel = null;
+  let currentConversationPhase = 'off';
+  let pendingSendController = null;
+  let cancelOverlay = null;
   let isUiOwner = null;
-  let queueSize = 0;
-  let dragMovedRecently = false;
-  let availableReferenceVoices = DEFAULT_REFERENCE_VOICES.slice();
 
   function normalizeText(text) {
     return String(text || '')
@@ -60,7 +50,7 @@
 
   function isTransientAssistantStatus(text) {
     const normalized = normalizeText(text).replace(/\s+/g, '');
-    return /^(?:思考中|考え中|Thinking)(?:[.…。・]+)?$/i.test(normalized);
+    return /^(?:(?:\d+|個の)?画像を(?:分析|解析)(?:中|しています)|思考中|考え中|Thinking|Analyzing(?:the)?images?)(?:ストリーミングが中断されました。?完全なメッセージを待機しています)?(?:[.…。・]+)?$/i.test(normalized);
   }
 
   function normalizeMarkdownLine(line) {
@@ -112,10 +102,10 @@
       referenceVoice: storedReferenceVoice(raw),
       voicePrompt: '',
     };
-    for (const key of LEGACY_PET_STORAGE_KEYS) delete next[key];
+    for (const key of LEGACY_BROWSER_UI_STORAGE_KEYS) delete next[key];
     if (globalThis.chrome && chrome.storage && chrome.storage.local) {
       await chrome.storage.local.set(next);
-      await chrome.storage.local.remove(LEGACY_PET_STORAGE_KEYS);
+      await chrome.storage.local.remove(LEGACY_BROWSER_UI_STORAGE_KEYS);
     }
     return next;
   }
@@ -161,7 +151,10 @@
     let text = normalizeText(fullText);
     if (!text) return [];
     text = text.replace(/```[\s\S]*?```/g, ' ').replace(/`[^`]*`/g, ' ').replace(/\n{2,}/g, '\n');
-    return text.split('\n').map((line) => normalizeMarkdownLine(line)).filter(Boolean);
+    return text
+      .split('\n')
+      .map((line) => normalizeMarkdownLine(line))
+      .filter((line) => Boolean(line) && !isTransientAssistantStatus(line));
   }
 
   function buildPreviewSourceText(fullText, options = {}) {
@@ -297,7 +290,32 @@
     const text = extractAssistantText(node);
     if (!text) return;
     const item = ensureElementState(node, text);
-    if (item.sent) return;
+    if (item.sent) {
+      if (text === item.lastText) return;
+      item.lastText = text;
+      item.lastChangedAt = Date.now();
+      const chunks = splitSpeakChunks(text, {
+        maxLines: Number(settings.previewMaxLines || DEFAULT_SETTINGS.previewMaxLines),
+        maxChars: Number(settings.previewMaxChars || DEFAULT_SETTINGS.previewMaxChars),
+        minChars: Number(settings.previewMinChars || DEFAULT_SETTINGS.previewMinChars),
+      });
+      const preview = extractAutoPreview(text, {
+        maxLines: Number(settings.previewMaxLines || DEFAULT_SETTINGS.previewMaxLines),
+        maxChars: Number(settings.previewMaxChars || DEFAULT_SETTINGS.previewMaxChars),
+        minChars: Number(settings.previewMinChars || DEFAULT_SETTINGS.previewMinChars),
+      });
+      if (chunks.length && preview) {
+        void reportChunks({
+          node,
+          text,
+          messageKey: item.key,
+          chunks,
+          autoPreview: preview,
+          capturedAt: Date.now(),
+        }, false);
+      }
+      return;
+    }
     if (!initializedElements.has(node)) {
       initializedElements.add(node);
       item.lastText = text;
@@ -364,318 +382,11 @@
     }, 200);
   }
 
-  function setPanelState(statusText, detailText = '') {
-    if (statusNode) {
-      statusNode.textContent = statusText;
-      statusNode.title = detailText || `${getCurrentVoiceProfile()} / Ref=${getCurrentReferenceVoice() || 'none'} / ${queueSize ? `Queued ${queueSize}` : 'Ready'}`;
-    }
-    if (detailNode) {
-      const refText = getCurrentReferenceVoice() || 'none';
-      const detail = detailText || `${getCurrentVoiceProfile()} Ref=${refText} / ${queueSize ? `Queued ${queueSize}` : 'ready'}`;
-      detailNode.textContent = detail;
-      detailNode.title = detail;
-    }
-    if (titleNode) titleNode.textContent = 'Local Voice';
-  }
-
-  function createButton(label, onClick, testId = '') {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.textContent = label;
-    if (testId) button.dataset.testid = testId;
-    button.style.cssText = 'font:600 11px/1.1 system-ui,sans-serif;padding:5px 7px;border-radius:9px;border:1px solid rgba(255,255,255,.18);cursor:pointer;background:rgba(255,255,255,.08);color:#f7f9ff';
-    button.addEventListener('click', onClick);
-    return button;
-  }
-
-  function isFiniteNumber(value) {
-    return Number.isFinite(Number(value));
-  }
-
-  function clampPanelPosition(left, top) {
-    if (!panel) return { left, top };
-    const margin = 8;
-    const panelWidth = panel.offsetWidth || 300;
-    const panelHeight = panel.offsetHeight || 110;
-    return {
-      left: Math.round(Math.min(Math.max(left, margin), Math.max(margin, window.innerWidth - panelWidth - margin))),
-      top: Math.round(Math.min(Math.max(top, margin), Math.max(margin, window.innerHeight - panelHeight - margin))),
-    };
-  }
-
-  function applyPanelPosition(position) {
-    if (!panel) return;
-    if (!position || !Number.isFinite(position.left) || !Number.isFinite(position.top)) {
-      panel.style.left = '';
-      panel.style.top = '';
-      panel.style.right = '16px';
-      panel.style.bottom = 'auto';
-      panel.style.top = '72px';
-      return;
-    }
-    const clamped = clampPanelPosition(Number(position.left), Number(position.top));
-    panel.style.right = 'auto';
-    panel.style.bottom = 'auto';
-    panel.style.left = `${clamped.left}px`;
-    panel.style.top = `${clamped.top}px`;
-  }
-
-  async function persistPanelPosition(left, top) {
-    const clamped = clampPanelPosition(left, top);
-    settings[PANEL_POSITION_KEY] = clamped;
-    await chrome.storage.local.set({ [PANEL_POSITION_KEY]: clamped });
-  }
-
-  function makePanelDraggable(dragHandle) {
-    let dragState = null;
-    const onMove = (event) => {
-      if (!dragState) return;
-      const clamped = clampPanelPosition(dragState.startLeft + event.clientX - dragState.startX, dragState.startTop + event.clientY - dragState.startY);
-      dragMovedRecently = true;
-      panel.style.right = 'auto';
-      panel.style.bottom = 'auto';
-      panel.style.left = `${clamped.left}px`;
-      panel.style.top = `${clamped.top}px`;
-    };
-    const onUp = async () => {
-      if (!dragState) return;
-      const left = Number.parseFloat(panel.style.left || '0');
-      const top = Number.parseFloat(panel.style.top || '0');
-      dragState = null;
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-      await persistPanelPosition(left, top);
-      setTimeout(() => { dragMovedRecently = false; }, 0);
-    };
-    dragHandle.addEventListener('mousedown', (event) => {
-      if (event.button !== 0) return;
-      const rect = panel.getBoundingClientRect();
-      dragMovedRecently = false;
-      dragState = { startX: event.clientX, startY: event.clientY, startLeft: rect.left, startTop: rect.top };
-      window.addEventListener('mousemove', onMove);
-      window.addEventListener('mouseup', onUp);
-      event.preventDefault();
-    });
-  }
-
-  async function setCollapsed(collapsed, persist = true) {
-    settings[PANEL_COLLAPSED_KEY] = Boolean(collapsed);
-    if (panelBody) panelBody.style.display = collapsed ? 'none' : 'flex';
-    if (panel) panel.style.width = collapsed ? 'fit-content' : 'min(92vw,320px)';
-    if (panel) panel.style.padding = collapsed ? '8px 10px' : '10px';
-    if (persist) await chrome.storage.local.set({ [PANEL_COLLAPSED_KEY]: Boolean(collapsed) });
-    setPanelState(statusNode ? statusNode.textContent : 'Ready');
-  }
-
-  function syncVolumeSlider() {
-    if (!volumeSlider) return;
-    const percent = Math.round(clampVolume(settings.voiceVolume) * 100);
-    volumeSlider.value = String(percent);
-    if (volumeValueNode) volumeValueNode.textContent = `${percent}%`;
-  }
-
-  async function persistVoiceVolume(percent) {
-    const nextVolume = clampVolume((Number(percent) || 0) / 100);
-    settings.voiceVolume = nextVolume;
-    syncVolumeSlider();
-    if (currentAudio) currentAudio.volume = nextVolume;
-    await chrome.storage.local.set({ voiceVolume: nextVolume });
-  }
-
-  function createSelectOption(value, label) {
-    const opt = document.createElement('option');
-    opt.value = String(value);
-    opt.textContent = String(label || value || 'none');
-    opt.style.backgroundColor = '#ffffff';
-    opt.style.color = '#111827';
-    return opt;
-  }
-
-  function setSelectOptions(select, options, selectedValue) {
-    if (!select) return;
-    select.innerHTML = '';
-    for (const option of options) select.appendChild(createSelectOption(option.id, option.label));
-    select.value = String(selectedValue || '');
-  }
-
-  function normalizeReferenceVoiceList(rawVoices) {
-    const result = DEFAULT_REFERENCE_VOICES.slice();
-    const seen = new Set(['']);
-    for (const item of Array.isArray(rawVoices) ? rawVoices : []) {
-      const id = normalizeReferenceVoice(typeof item === 'string' ? item : item && item.id);
-      if (!id || seen.has(id)) continue;
-      seen.add(id);
-      result.push({ id, label: String((item && item.label) || id) });
-    }
-    const current = getCurrentReferenceVoice();
-    if (current && !seen.has(current)) result.push({ id: current, label: current });
-    return result;
-  }
-
-  function referenceVoicesUrl() {
-    try {
-      const url = new URL(settings.healthUrl || DEFAULT_SETTINGS.healthUrl);
-      url.pathname = '/v1/reference-voices';
-      url.search = '';
-      return url.toString();
-    } catch (_error) {
-      return 'http://127.0.0.1:8717/v1/reference-voices';
-    }
-  }
-
-  async function loadReferenceVoiceChoices() {
-    try {
-      const payload = await runtimeMessage('reference-voices');
-      const voices = payload && (payload.voices || payload.referenceVoices || payload.availableReferenceVoices);
-      if (voices) {
-        availableReferenceVoices = normalizeReferenceVoiceList(voices);
-        return;
-      }
-    } catch (_error) {}
-
-    const urls = [referenceVoicesUrl(), settings.healthUrl || DEFAULT_SETTINGS.healthUrl];
-    for (const url of urls) {
-      try {
-        const response = await fetch(url, { cache: 'no-store' });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok || !payload) continue;
-        const voices = payload.voices || payload.referenceVoices || payload.availableReferenceVoices;
-        availableReferenceVoices = normalizeReferenceVoiceList(voices);
-        return;
-      } catch (_error) {}
-    }
-    availableReferenceVoices = normalizeReferenceVoiceList([]);
-  }
-
-  function syncReferenceVoiceSelect() {
-    setSelectOptions(referenceVoiceSelect, availableReferenceVoices, getCurrentReferenceVoice());
-  }
-
-  async function refreshReferenceVoiceChoices() {
-    await loadReferenceVoiceChoices();
-    syncReferenceVoiceSelect();
-  }
-
   async function syncDesktopPetSelection(referenceVoice = getCurrentReferenceVoice()) {
     const petId = resolveDesktopPetId(referenceVoice);
     try {
       await runtimeMessage('desktop-pet-selection', { petId });
-    } catch (error) {
-      if (panel) setPanelState('Error', `Desktop pet: ${error.message || String(error)}`);
-    }
-  }
-
-  async function persistReferenceVoice(value) {
-    const referenceVoice = normalizeReferenceVoice(value);
-    settings.voiceId = referenceVoice;
-    settings.referenceVoice = referenceVoice;
-    await chrome.storage.local.set({ voiceId: referenceVoice, referenceVoice, voicePrompt: '' });
-    syncReferenceVoiceSelect();
-    await syncDesktopPetSelection(referenceVoice);
-    setPanelState('Ready', `Ref=${referenceVoice || 'none'}`);
-  }
-
-  async function sendUiCommand(cmd, params = {}) {
-    try {
-      const payload = await runtimeMessage('ui-command', { cmd, params });
-      if (payload && payload.statusText) setPanelState(payload.statusLevel === 'error' ? 'Error' : 'Ready', String(payload.statusText));
-      return payload || null;
-    } catch (error) {
-      setPanelState('Error', error.message || String(error));
-      return null;
-    }
-  }
-
-  function createPanel() {
-    if (panel) return;
-    panel = document.createElement('div');
-    panel.id = 'local-voice-bridge-panel';
-    panel.style.cssText = 'position:fixed;right:16px;top:72px;bottom:auto;z-index:2147483647;font:12px/1.35 system-ui,sans-serif;background:rgba(10,12,18,.88);color:#f5f7ff;border:1px solid rgba(120,180,255,.25);border-radius:14px;padding:10px;box-shadow:0 10px 28px rgba(0,0,0,.45);display:flex;flex-direction:column;gap:8px;width:min(92vw,320px)';
-    const header = document.createElement('div');
-    header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:move;user-select:none';
-    titleNode = document.createElement('div');
-    titleNode.textContent = 'Local Voice';
-    titleNode.style.cssText = 'font-weight:700';
-    statusNode = document.createElement('div');
-    statusNode.style.cssText = 'font-size:11px;font-weight:700;padding:3px 8px;border-radius:999px;background:rgba(93,171,255,.2)';
-    panelBody = document.createElement('div');
-    panelBody.style.cssText = 'display:flex;flex-direction:column;gap:8px';
-    detailNode = document.createElement('div');
-    detailNode.dataset.testid = 'local-voice-current-text';
-    detailNode.style.cssText = 'font-size:11px;color:#c8d2e8;min-height:1.2em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-
-    const refRow = document.createElement('div');
-    refRow.dataset.localVoiceField = 'ref';
-    refRow.style.cssText = 'display:flex;align-items:center;gap:6px';
-    const refLabel = document.createElement('div');
-    refLabel.textContent = 'Ref';
-    refLabel.style.cssText = 'font-size:11px;color:#c8d2e8;min-width:52px';
-    referenceVoiceSelect = document.createElement('select');
-    referenceVoiceSelect.dataset.testid = 'local-voice-ref';
-    referenceVoiceSelect.style.cssText = 'flex:1;min-width:0;font:600 11px system-ui,sans-serif;padding:4px 6px;border-radius:8px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.08);color:#f7f9ff';
-    referenceVoiceSelect.addEventListener('change', async () => { await persistReferenceVoice(referenceVoiceSelect.value); });
-    refRow.append(refLabel, referenceVoiceSelect);
-
-    const volumeRow = document.createElement('div');
-    volumeRow.dataset.localVoiceField = 'volume';
-    volumeRow.style.cssText = 'display:flex;align-items:center;gap:8px';
-    const volumeLabel = document.createElement('div');
-    volumeLabel.textContent = 'Volume';
-    volumeLabel.style.cssText = 'font-size:11px;color:#c8d2e8;min-width:52px';
-    volumeSlider = document.createElement('input');
-    volumeSlider.type = 'range';
-    volumeSlider.min = '0';
-    volumeSlider.max = '100';
-    volumeSlider.step = '1';
-    volumeSlider.style.cssText = 'flex:1;min-width:0';
-    volumeSlider.addEventListener('input', () => { settings.voiceVolume = clampVolume((Number(volumeSlider.value) || 0) / 100); syncVolumeSlider(); if (currentAudio) currentAudio.volume = settings.voiceVolume; });
-    volumeSlider.addEventListener('change', async () => { await persistVoiceVolume(volumeSlider.value); });
-    volumeValueNode = document.createElement('div');
-    volumeValueNode.style.cssText = 'font-size:11px;color:#c8d2e8;min-width:36px;text-align:right';
-    volumeRow.append(volumeLabel, volumeSlider, volumeValueNode);
-
-    const controls = document.createElement('div');
-    controls.style.cssText = 'display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px';
-    autoButton = createButton('Auto', async () => {
-      const nextEnabled = !enabled;
-      if (nextEnabled) rebaselineAutoMessages();
-      enabled = nextEnabled;
-      settings.enabled = enabled;
-      await chrome.storage.local.set({ enabled });
-      setPanelState('Ready', enabled ? 'Auto read enabled' : 'Auto read disabled');
-      autoButton.style.background = enabled ? 'rgba(73,168,113,.25)' : 'rgba(255,255,255,.08)';
-    });
-    const nextButton = createButton('Next', () => {
-      setPanelState('Queued', 'Generating audio...');
-      void sendUiCommand('next', getSpeakParams());
-    });
-    const regenButton = createButton('Regen', () => {
-      setPanelState('Queued', 'Regenerating current chunk...');
-      void sendUiCommand('regen', getSpeakParams());
-    });
-    const replayButton = createButton('Replay', () => { void sendUiCommand('replay'); });
-    for (const button of [autoButton, nextButton, regenButton, replayButton]) {
-      button.style.padding = '5px 3px';
-      button.style.fontSize = '10px';
-      button.style.minWidth = '0';
-      button.style.whiteSpace = 'nowrap';
-    }
-    actionButtons = [nextButton, regenButton];
-    controls.append(autoButton, nextButton, regenButton, replayButton);
-
-    header.append(titleNode, statusNode);
-    panelBody.append(detailNode, refRow, volumeRow, controls);
-    panel.append(header, panelBody);
-    document.documentElement.appendChild(panel);
-    syncReferenceVoiceSelect();
-    void refreshReferenceVoiceChoices();
-    syncVolumeSlider();
-    autoButton.style.background = enabled ? 'rgba(73,168,113,.25)' : 'rgba(255,255,255,.08)';
-    applyPanelPosition(settings[PANEL_POSITION_KEY]);
-    void setCollapsed(Boolean(settings[PANEL_COLLAPSED_KEY]), false);
-    makePanelDraggable(header);
-    header.addEventListener('click', () => { if (!dragMovedRecently) void setCollapsed(!Boolean(settings[PANEL_COLLAPSED_KEY]), true); });
-    setPanelState('Ready');
+    } catch (_error) {}
   }
 
   function releaseObjectUrl() {
@@ -703,76 +414,131 @@
 
   async function playItem(url, text, item, playbackToken) {
     stopCurrentPlayback('replace');
-    currentPlaybackToken = String(playbackToken || '');
-    setPanelState('Playing', `${String(text || '').slice(0, 60)}${String(text || '').length > 60 ? '...' : ''}`);
+    const token = String(playbackToken || '');
+    currentPlaybackToken = token;
+    if (settings.micConversationEnabled) {
+      reportConversationState({ phase: 'speaking', statusText: '読み上げ中', error: '', sttModel: settings.sttModel });
+    }
     try {
       const audioSrc = await fetchAudioObjectUrl(url);
-      if (currentPlaybackToken !== playbackToken) return;
+      if (currentPlaybackToken !== token) return;
       await new Promise((resolve, reject) => {
         const audio = new Audio(audioSrc);
         audio.volume = clampVolume(settings.voiceVolume);
         currentAudio = audio;
+        currentPlaybackCancel = () => {
+          const stopped = new Error('playback stopped');
+          stopped.code = 'PLAYBACK_STOPPED';
+          reject(stopped);
+        };
         audio.onended = resolve;
         audio.onerror = () => reject(new Error('audio element failed'));
         audio.play().catch(reject);
       });
+      if (currentPlaybackToken !== token) return;
       releaseObjectUrl();
       currentAudio = null;
+      currentPlaybackCancel = null;
       currentPlaybackToken = null;
-      setPanelState('Ready', 'Playback done');
-      chrome.runtime.sendMessage({ type: 'playback-done', playbackToken, ok: true, stopped: false }).catch(() => {});
+      chrome.runtime.sendMessage({ type: 'playback-done', playbackToken: token, ok: true, stopped: false }).catch(() => {});
+      if (settings.micConversationEnabled && currentConversationPhase === 'speaking') {
+        reportConversationState({ phase: 'idle', statusText: '待機中（右Ctrl＋＼ 長押し）', error: '', sttModel: settings.sttModel });
+      }
     } catch (error) {
+      const stopped = error && error.code === 'PLAYBACK_STOPPED';
+      const stale = currentPlaybackToken !== token;
       releaseObjectUrl();
       currentAudio = null;
+      currentPlaybackCancel = null;
+      if (stale || stopped) return;
       currentPlaybackToken = null;
-      setPanelState('Error', error.message || String(error));
-      chrome.runtime.sendMessage({ type: 'playback-done', playbackToken, ok: false, stopped: false, error: error.message || String(error) }).catch(() => {});
+      chrome.runtime.sendMessage({ type: 'playback-done', playbackToken: token, ok: false, stopped: false, error: error.message || String(error) }).catch(() => {});
+      if (settings.micConversationEnabled && currentConversationPhase === 'speaking') {
+        reportConversationState({ phase: 'error', statusText: '読み上げに失敗しました', error: error.message || String(error), sttModel: settings.sttModel });
+      }
     }
   }
 
   function stopCurrentPlayback(reason = 'stop') {
-    const token = currentPlaybackToken;
+    const playbackId = currentPlaybackToken;
     if (currentAudio) {
       try { currentAudio.pause(); currentAudio.currentTime = 0; } catch (_error) {}
     }
+    if (currentPlaybackCancel) currentPlaybackCancel();
     currentAudio = null;
+    currentPlaybackCancel = null;
     currentPlaybackToken = null;
     releaseObjectUrl();
-    if (reason === 'stop') setPanelState('Ready', 'Playback stopped');
-    return token;
+    return playbackId;
   }
 
-  function applyOwnerState(nextIsOwner, payload = null) {
+  function applyOwnerState(nextIsOwner) {
     isUiOwner = nextIsOwner;
-    if (payload) {
-      queueSize = payload.queueSize || 0;
-    }
-    if (isUiOwner === false) {
-      if (panel) panel.style.display = 'none';
-      return;
-    }
-    if (!panel) createPanel();
-    if (panel) panel.style.display = 'flex';
-    if (payload) {
-      const busy = Boolean(payload.isPlaying);
-      for (const button of actionButtons) {
-        button.disabled = busy;
-        button.style.opacity = busy ? '0.45' : '1';
-        button.style.cursor = busy ? 'not-allowed' : 'pointer';
-      }
-      if (payload.isPlaying) {
-        const txt = payload.currentPlayingItem?.text || '';
-        const preview = `${txt.slice(0, 50)}${txt.length > 50 ? '...' : ''}`;
-        if (payload.playbackPhase === 'generating') {
-          setPanelState('Generating', preview || 'Generating audio...');
-        } else {
-          setPanelState('Playing', preview);
-        }
-      } else {
-        const queueText = queueSize > 0 ? `Queued ${queueSize}` : 'Queue empty';
-        setPanelState('Ready', payload.statusText ? `${payload.statusText} / ${queueText}` : queueText);
-      }
-    }
+  }
+
+  function hideCancelOverlay() {
+    if (cancelOverlay) cancelOverlay.remove();
+    cancelOverlay = null;
+  }
+
+  function showCancelOverlay(graceMs) {
+    hideCancelOverlay();
+    cancelOverlay = document.createElement('div');
+    cancelOverlay.id = 'local-voice-cancel-hint';
+    cancelOverlay.textContent = `Escでキャンセル · ${(Math.max(0, Number(graceMs) || 0) / 1000).toFixed(1)}秒`;
+    Object.assign(cancelOverlay.style, {
+      position: 'fixed',
+      right: '18px',
+      bottom: '18px',
+      zIndex: '2147483647',
+      padding: '7px 10px',
+      borderRadius: '8px',
+      background: 'rgba(16, 18, 24, 0.88)',
+      color: '#f7f8fb',
+      font: '12px system-ui, sans-serif',
+      pointerEvents: 'none',
+      boxShadow: '0 4px 18px rgba(0, 0, 0, 0.25)',
+    });
+    document.documentElement.appendChild(cancelOverlay);
+  }
+
+  function reportConversationState(payload) {
+    currentConversationPhase = String(payload && payload.phase || 'error');
+    if (!globalThis.chrome || !chrome.runtime || !chrome.runtime.sendMessage) return;
+    chrome.runtime.sendMessage({ type: 'conversation-state', payload }).catch(() => {});
+  }
+
+  function reportComposerFocus(target = document.activeElement) {
+    const api = globalThis.LocalVoicePromptInput;
+    if (!api || typeof api.findComposer !== 'function') return;
+    const composer = api.findComposer(document);
+    if (!composer || !target) return;
+    if (target !== composer && !(typeof composer.contains === 'function' && composer.contains(target))) return;
+    chrome.runtime.sendMessage({ type: 'composer-focused', title: document.title }).catch(() => {});
+  }
+
+  function ensurePendingSendController() {
+    if (pendingSendController) return pendingSendController;
+    const api = globalThis.LocalVoicePromptInput;
+    if (!api || typeof api.createPendingSendController !== 'function') return null;
+    pendingSendController = api.createPendingSendController({
+      document,
+      window,
+      Event,
+      InputEvent,
+      getLocation: () => location.href,
+      onState: (state) => {
+        if (state.phase === 'pending_send') showCancelOverlay(settings.cancelGraceMs);
+        else hideCancelOverlay();
+        reportConversationState({
+          phase: state.phase,
+          statusText: state.statusText,
+          error: state.error || '',
+          sttModel: settings.sttModel || 'small',
+        });
+      },
+    });
+    return pendingSendController;
   }
 
   async function loadSettings() {
@@ -798,6 +564,39 @@
         void playItem(message.payload.url, message.payload.text, message.payload.item, String(message.payload.playbackToken || ''));
         return false;
       }
+      if (message.type === 'voice-transcript') {
+        if (!settings.micConversationEnabled) {
+          sendResponse({ ok: false, reason: 'mic-conversation-disabled' });
+          return false;
+        }
+        const controller = ensurePendingSendController();
+        if (!controller) {
+          reportConversationState({
+            phase: 'error',
+            statusText: '音声入力モジュールを読み込めませんでした',
+            error: 'prompt-input-core-unavailable',
+            sttModel: settings.sttModel,
+          });
+          sendResponse({ ok: false, reason: 'prompt-input-core-unavailable' });
+          return false;
+        }
+        const payload = message.payload || {};
+        settings.cancelGraceMs = Math.max(0, Math.min(5000, Number(payload.cancelGraceMs) || 0));
+        const result = controller.start({
+          sessionId: Number(payload.sessionId) || 0,
+          text: String(payload.text || ''),
+          graceMs: settings.cancelGraceMs,
+        });
+        sendResponse(result);
+        return false;
+      }
+      if (message.type === 'cancel-voice-send') {
+        const controller = ensurePendingSendController();
+        const result = controller ? controller.cancel('new-recording') : { ok: false, reason: 'nothing-pending' };
+        hideCancelOverlay();
+        sendResponse(result);
+        return false;
+      }
       if (message.type === 'stop-audio') {
         const incomingToken = String((message.payload && message.payload.playbackToken) || '');
         if (!incomingToken || incomingToken === currentPlaybackToken) stopCurrentPlayback('stop');
@@ -811,6 +610,7 @@
   async function start() {
     registerMessageListener();
     document.getElementById('local-voice-pixel-pet')?.remove();
+    document.getElementById('local-voice-bridge-panel')?.remove();
     await loadSettings();
     await syncDesktopPetSelection();
     markExistingMessagesAsSeen();
@@ -825,8 +625,23 @@
     const claimUiOwnership = () => {
       chrome.runtime.sendMessage({ type: 'register-tab', title: document.title, claimOwner: true }).catch(() => {});
     };
+    const pollExternalControl = () => {
+      if (isUiOwner !== false) {
+        chrome.runtime.sendMessage({ type: 'external-control-poll' }).catch(() => {});
+      }
+      const delay = settings.micConversationEnabled ? 50 : 750;
+      window.setTimeout(pollExternalControl, delay);
+    };
     window.addEventListener('focus', claimUiOwnership);
     document.addEventListener('pointerdown', claimUiOwnership, { capture: true });
+    document.addEventListener('focusin', (event) => reportComposerFocus(event.target), { capture: true });
+    document.addEventListener('pointerdown', (event) => reportComposerFocus(event.target), { capture: true });
+    reportComposerFocus();
+    window.addEventListener('pagehide', () => {
+      if (pendingSendController) pendingSendController.cancel('page-changed');
+      hideCancelOverlay();
+    });
+    void pollExternalControl();
     setInterval(() => {
       chrome.runtime.sendMessage({ type: 'register-tab', title: document.title }).catch(() => {});
     }, 5000);
@@ -840,15 +655,17 @@
       enabled = Boolean(settings.enabled);
       if (!wasEnabled && enabled) rebaselineAutoMessages();
       settings.voiceVolume = clampVolume(settings.voiceVolume);
-      syncReferenceVoiceSelect();
-      syncVolumeSlider();
-      if (autoButton) autoButton.style.background = enabled ? 'rgba(73,168,113,.25)' : 'rgba(255,255,255,.08)';
+      if (Object.prototype.hasOwnProperty.call(changes, 'micConversationEnabled')) {
+        if (!settings.micConversationEnabled && pendingSendController) {
+          pendingSendController.cancel('disabled');
+          hideCancelOverlay();
+          reportConversationState({ phase: 'off', statusText: 'マイク会話オフ', error: '', sttModel: settings.sttModel });
+        }
+      }
       if (Object.prototype.hasOwnProperty.call(changes, 'voiceId')
         || Object.prototype.hasOwnProperty.call(changes, 'referenceVoice')) {
         void syncDesktopPetSelection();
       }
-      if (Object.prototype.hasOwnProperty.call(changes, PANEL_POSITION_KEY)) applyPanelPosition(changes[PANEL_POSITION_KEY].newValue);
-      if (Object.prototype.hasOwnProperty.call(changes, PANEL_COLLAPSED_KEY)) void setCollapsed(Boolean(changes[PANEL_COLLAPSED_KEY].newValue), false);
     });
   }
 
