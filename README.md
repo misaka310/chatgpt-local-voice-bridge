@@ -46,7 +46,7 @@ setup-voice-env.cmd
 
 ## Usage / 起動と操作
 
-セットアップ後は`ChatGPTLocalVoiceBridge.exe`をダブルクリックします。EXEは既存のPython環境をターミナルなしで起動するだけです。日常の音声操作はChrome / BraveのLocal Voiceパネルで行います。通知領域は状態確認、再起動、フォルダ表示、自動起動、再セットアップ、終了だけを担当します。デスクトップペットは`Ref`と自動連動して1体だけ表示され、左ドラッグで移動できます。クリック、ダブルクリック、右クリックでは何も起きません。
+セットアップ後はWindows検索で`ChatGPT Local Voice Bridge`を開きます。セットアップが現在のユーザーのスタートメニューへショートカットを登録します。リポジトリ内の`ChatGPTLocalVoiceBridge.exe`を直接ダブルクリックしても同じです。EXEは既存のPython環境をターミナルなしで起動するだけです。日常の音声操作はChrome / BraveのLocal Voiceパネルで行います。通知領域は状態確認、再起動、フォルダ表示、自動起動、再セットアップ、終了だけを担当します。デスクトップペットは`Ref`と自動連動して1体だけ表示され、左ドラッグで移動できます。クリック、ダブルクリック、右クリックでは何も起きません。
 
 `http://127.0.0.1:8717/health`を開き、`ok=true`と`engine=irodori_direct`を確認します。その後、Chrome / Braveの拡張機能画面でDeveloper modeを有効にし、**Load unpacked**から`extension/`を選択してください。
 
