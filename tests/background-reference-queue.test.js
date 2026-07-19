@@ -130,6 +130,24 @@ function createHarness() {
   return { petPosts, posts, send, sendAsync };
 }
 
+test('split-view heartbeats do not move the Local Voice owner between active tabs', () => {
+  const harness = createHarness();
+
+  const first = harness.send({ type: 'register-tab', title: 'Tab A' }, 101, 'Tab A');
+  const second = harness.send({ type: 'register-tab', title: 'Tab B' }, 202, 'Tab B');
+  const firstHeartbeat = harness.send({ type: 'register-tab', title: 'Tab A' }, 101, 'Tab A');
+  const secondHeartbeat = harness.send({ type: 'register-tab', title: 'Tab B' }, 202, 'Tab B');
+  const focusedSecond = harness.send({ type: 'register-tab', title: 'Tab B', claimOwner: true }, 202, 'Tab B');
+  const firstAfterFocus = harness.send({ type: 'register-tab', title: 'Tab A' }, 101, 'Tab A');
+
+  assert.equal(first.payload.isUiOwner, true);
+  assert.equal(second.payload.isUiOwner, false);
+  assert.equal(firstHeartbeat.payload.isUiOwner, true);
+  assert.equal(secondHeartbeat.payload.isUiOwner, false);
+  assert.equal(focusedSecond.payload.isUiOwner, true);
+  assert.equal(firstAfterFocus.payload.isUiOwner, false);
+});
+
 test('continuous queue keeps the selected reference voice when one tab omits legacy voice fields', async () => {
   const harness = createHarness();
   harness.send({ type: 'register-tab', title: 'Tab A' }, 101, 'Tab A');

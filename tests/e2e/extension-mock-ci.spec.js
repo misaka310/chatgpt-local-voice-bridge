@@ -14,6 +14,21 @@ const EXTENSION = EXTENSION_DIR.replaceAll('\\', '/');
 const PROFILE = path.join(ROOT, `.e2e-profile-mock-${process.pid}-${Date.now()}`);
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+async function waitForSettingsMigration(worker) {
+  await expect.poll(async () => worker.evaluate(async () => {
+    const stored = await chrome.storage.local.get('settingsVersion');
+    return stored.settingsVersion;
+  })).toBe(8);
+}
+
+async function claimPageOwnership(page) {
+  await page.bringToFront();
+  await expect.poll(async () => {
+    await page.locator('.chat').click({ position: { x: 20, y: 20 } }).catch(() => {});
+    return page.locator('#local-voice-bridge-panel').isVisible().catch(() => false);
+  }, { timeout: 15000 }).toBe(true);
+}
+
 function prepareTestExtension() {
   fs.rmSync(EXTENSION_DIR, { recursive: true, force: true });
   fs.cpSync(SOURCE_EXTENSION, EXTENSION_DIR, { recursive: true });
@@ -104,6 +119,7 @@ test('mock CI protects Auto baseline and proves Next, Regen, Replay, audio fetch
 
   try {
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
+    await waitForSettingsMigration(worker);
     await worker.evaluate(async (apiUrl) => {
       await chrome.storage.local.clear();
       await chrome.storage.local.set({
@@ -176,8 +192,18 @@ test('mock CI protects Auto baseline and proves Next, Regen, Replay, audio fetch
     await expect(panel.locator('[data-local-voice-field="ref"]')).toBeVisible();
     await expect.poll(async () => worker.evaluate(async () => (await chrome.storage.local.get('panelCollapsed')).panelCollapsed)).toBe(false);
     await panel.getByRole('button', { name: 'Auto' }).click();
+    await page.evaluate(() => {
+      const thinking = document.createElement('div');
+      thinking.dataset.messageAuthorRole = 'assistant';
+      thinking.dataset.messageId = 'thinking-reply';
+      thinking.textContent = '思考中';
+      document.body.appendChild(thinking);
+    });
     await page.waitForTimeout(1800);
     expect((await apiEvents()).filter((event) => event.path === '/v1/speak')).toHaveLength(0);
+    await page.evaluate(() => {
+      document.querySelector('[data-message-id="thinking-reply"]')?.remove();
+    });
 
     await page.locator('#add-reply').click();
     await expect(page.locator('[data-message-id="new-reply"]')).toHaveText(DEMO_REPLY);
@@ -236,6 +262,7 @@ test('two ChatGPT tabs keep the selected reference voice across a continuous Aut
 
   try {
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
+    await waitForSettingsMigration(worker);
     await worker.evaluate(async (apiUrl) => {
       await chrome.storage.local.clear();
       await chrome.storage.local.set({
@@ -257,10 +284,10 @@ test('two ChatGPT tabs keep the selected reference voice across a continuous Aut
         body: fixtureHtml(),
       }));
     }
-    await Promise.all(pages.map((page, index) => page.goto(`https://chatgpt.com/c/mock-${index}`, { waitUntil: 'domcontentloaded' })));
-
-    await pages[0].bringToFront();
-    await expect(pages[0].locator('#local-voice-bridge-panel')).toBeVisible({ timeout: 15000 });
+    for (let index = 0; index < pages.length; index += 1) {
+      await pages[index].goto(`https://chatgpt.com/c/mock-${index}`, { waitUntil: 'domcontentloaded' });
+    }
+    await claimPageOwnership(pages[0]);
     await expect(pages[1].locator('#local-voice-bridge-panel')).toBeHidden();
     const firstPanel = pages[0].locator('#local-voice-bridge-panel');
     await expect(firstPanel.locator('select')).toHaveCount(1);
@@ -270,8 +297,7 @@ test('two ChatGPT tabs keep the selected reference voice across a continuous Aut
     await pages[0].locator('#add-reply').click();
     await waitForCounts(1, 1);
 
-    await pages[1].bringToFront();
-    await expect(pages[1].locator('#local-voice-bridge-panel')).toBeVisible({ timeout: 15000 });
+    await claimPageOwnership(pages[1]);
     await expect(pages[0].locator('#local-voice-bridge-panel')).toBeHidden();
     await pages[1].locator('#add-reply').click();
     await waitForCounts(2, 2);
@@ -305,6 +331,7 @@ test('Auto reads a complete assistant reply shorter than 20 characters', async (
 
   try {
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
+    await waitForSettingsMigration(worker);
     await worker.evaluate(async (apiUrl) => {
       await chrome.storage.local.clear();
       await chrome.storage.local.set({

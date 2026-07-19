@@ -403,7 +403,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       existing.title = String(message.title || sender.tab.title || 'ChatGPT');
       existing.url = sender.tab.url || existing.url || '';
       tabs.set(senderTabId, existing);
-      if (sender.tab.active) {
+      if (message.claimOwner === true || (uiOwnerTabId == null && sender.tab.active)) {
         uiOwnerTabId = senderTabId;
         selectedTabId = senderTabId;
       }

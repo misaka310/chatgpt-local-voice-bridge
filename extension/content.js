@@ -58,6 +58,11 @@
       .trim();
   }
 
+  function isTransientAssistantStatus(text) {
+    const normalized = normalizeText(text).replace(/\s+/g, '');
+    return /^(?:思考中|考え中|Thinking)(?:[.…。・]+)?$/i.test(normalized);
+  }
+
   function normalizeMarkdownLine(line) {
     return String(line || '')
       .replace(/^>\s*/g, '')
@@ -227,7 +232,8 @@
   function extractAssistantText(node) {
     const clone = node.cloneNode(true);
     clone.querySelectorAll('pre, code, button, svg, menu, nav, script, style, textarea, input, select').forEach((item) => item.remove());
-    return normalizeText(clone.innerText || clone.textContent || '');
+    const text = normalizeText(clone.innerText || clone.textContent || '');
+    return isTransientAssistantStatus(text) ? '' : text;
   }
 
   function ensureElementState(node, text) {
@@ -816,6 +822,11 @@
     }
     observer = new MutationObserver(scheduleInspect);
     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    const claimUiOwnership = () => {
+      chrome.runtime.sendMessage({ type: 'register-tab', title: document.title, claimOwner: true }).catch(() => {});
+    };
+    window.addEventListener('focus', claimUiOwnership);
+    document.addEventListener('pointerdown', claimUiOwnership, { capture: true });
     setInterval(() => {
       chrome.runtime.sendMessage({ type: 'register-tab', title: document.title }).catch(() => {});
     }, 5000);

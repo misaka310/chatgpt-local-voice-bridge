@@ -19,3 +19,5 @@
 - Fixed Auto so complete short replies, including replies under 20 characters, are read after the stability delay.
 - Stopped real E2E startup failures from leaving orphaned local API processes on port 8717.
 - Registered `ChatGPT Local Voice Bridge` in the current user's Windows Start menu during setup so it can be launched from search.
+- Kept periodic split-view tab heartbeats from moving the Local Voice panel back and forth between panes.
+- Excluded transient assistant statuses such as `思考中` and `Thinking` from Auto speech.
