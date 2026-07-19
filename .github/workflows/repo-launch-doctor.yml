@@ -14,18 +14,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out target repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: target
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
       - name: Check out Repo Launch Doctor
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: misaka310/repo-launch-doctor
           ref: ce0be5b38588469d6d30cbaa68a9e7092a444b1e
