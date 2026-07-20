@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes
+import json
 import math
 import os
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -31,6 +35,68 @@ class ConversationApiClient(Protocol):
     def send_conversation_event(self, event_type: str, payload: dict[str, Any]) -> dict[str, Any]: ...
 
     def update_conversation_state(self, payload: dict[str, Any]) -> dict[str, Any]: ...
+
+
+class DictationPauseNotifier(Protocol):
+    def set_active(self, active: bool) -> bool: ...
+
+
+class YouTubePauseNotifier:
+    DEFAULT_STATE_URL = "http://127.0.0.1:17654/state"
+    SOURCE = "local-voice-bridge"
+
+    def __init__(
+        self,
+        *,
+        state_url: str | None = None,
+        timeout_seconds: float = 0.5,
+        opener: Callable[..., Any] | None = None,
+    ) -> None:
+        configured_url = state_url or os.environ.get("YOUTUBE_DICTATION_PAUSE_STATE_URL")
+        self.state_url = self._normalize_state_url(configured_url)
+        self.timeout_seconds = max(0.05, float(timeout_seconds))
+        self._opener = opener or urllib.request.urlopen
+
+    @classmethod
+    def _normalize_state_url(cls, value: str | None) -> str:
+        candidate = str(value or cls.DEFAULT_STATE_URL).strip()
+        try:
+            parsed = urllib.parse.urlsplit(candidate)
+            port = parsed.port
+        except ValueError:
+            return cls.DEFAULT_STATE_URL
+        if (
+            parsed.scheme.lower() != "http"
+            or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+            or parsed.username is not None
+            or parsed.password is not None
+            or port is None
+            or parsed.path != "/state"
+            or parsed.query
+            or parsed.fragment
+        ):
+            return cls.DEFAULT_STATE_URL
+        return f"http://127.0.0.1:{port}/state"
+
+    def set_active(self, active: bool) -> bool:
+        payload = json.dumps(
+            {"active": bool(active), "source": self.SOURCE},
+            ensure_ascii=True,
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            self.state_url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with self._opener(request, timeout=self.timeout_seconds) as response:
+                status_value = getattr(response, "status", None)
+                if status_value is None:
+                    status_value = response.getcode()
+                return 200 <= int(status_value) < 300
+        except (OSError, ValueError, urllib.error.URLError):
+            return False
 
 
 class SoundDeviceRecorder:
@@ -176,6 +242,8 @@ class VoiceConversationController:
         transcriber: FasterWhisperTranscriber | Any | None = None,
         executor: Any | None = None,
         control_executor: Any | None = None,
+        pause_notifier: DictationPauseNotifier | Any | None = None,
+        pause_executor: Any | None = None,
         sleep: Callable[[float], None] = time.sleep,
         stop_poll_interval_seconds: float = 0.02,
         stop_wait_seconds: float = 0.5,
@@ -190,6 +258,10 @@ class VoiceConversationController:
         self.control_executor = control_executor or ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="local-voice-control"
         )
+        self.pause_notifier = pause_notifier or YouTubePauseNotifier()
+        self.pause_executor = pause_executor or ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="local-voice-youtube-pause"
+        )
         self.sleep = sleep
         self.stop_poll_interval_seconds = max(0.005, float(stop_poll_interval_seconds))
         self.stop_wait_seconds = max(self.stop_poll_interval_seconds, float(stop_wait_seconds))
@@ -202,6 +274,7 @@ class VoiceConversationController:
         self._right_ctrl_down = False
         self._trigger_down = False
         self._recording = False
+        self._pause_source_active = False
         self._session_id = 0
         self._model_ready_for = ""
         self._model_device = ""
@@ -209,6 +282,23 @@ class VoiceConversationController:
         self._model_failed_for = ""
         self._shutdown = False
         self._phase = "off"
+
+    def _send_pause_source(self, active: bool) -> None:
+        try:
+            self.pause_notifier.set_active(bool(active))
+        except Exception:
+            pass
+
+    def _set_pause_source(self, active: bool) -> None:
+        normalized = bool(active)
+        with self._lock:
+            if self._pause_source_active == normalized:
+                return
+            self._pause_source_active = normalized
+        try:
+            self.pause_executor.submit(self._send_pause_source, normalized)
+        except Exception:
+            pass
 
     def configure(self, *, enabled: bool, stt_model: str, cancel_grace_ms: int) -> None:
         normalized_model = stt_model if stt_model in {"small", "medium", "large-v3-turbo"} else "small"
@@ -240,6 +330,8 @@ class VoiceConversationController:
             )
             if should_prepare:
                 self._model_preparing_for = normalized_model
+        if previous_enabled and not self._enabled:
+            self._set_pause_source(False)
         if was_recording:
             self.recorder.discard()
         if not self._enabled:
@@ -326,8 +418,10 @@ class VoiceConversationController:
                 session_id = self._session_id
             suppress_trigger = key == VK_OEM_102 and (was_pressed or chord_down)
         if action == "start":
+            self._set_pause_source(True)
             self.control_executor.submit(self._begin_recording, session_id)
         elif action == "stop":
+            self._set_pause_source(False)
             self.control_executor.submit(self._finish_recording, session_id)
         return suppress_trigger
 
@@ -535,12 +629,20 @@ class VoiceConversationController:
             self._enabled = False
             self._session_id += 1
             was_recording = self._recording
+            pause_was_active = self._pause_source_active
+            self._pause_source_active = False
             self._recording = False
             self._pressed = False
             self._right_ctrl_down = False
             self._trigger_down = False
         if was_recording:
             self.recorder.discard()
+        try:
+            self.pause_executor.shutdown(wait=True, cancel_futures=True)
+        except TypeError:
+            self.pause_executor.shutdown(wait=True)
+        if pause_was_active:
+            self._send_pause_source(False)
         for executor in (self.control_executor, self.executor):
             try:
                 executor.shutdown(wait=False, cancel_futures=True)
