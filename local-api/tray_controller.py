@@ -645,6 +645,8 @@ class VoiceBridgeQtRuntime(QObject):
 
         self.panel_action = self.menu.addAction("Show Local Voice panel")
         self.panel_action.triggered.connect(self.toggle_control_panel)
+        self.pet_return_action = self.menu.addAction("Bring Desktop Pet Back")
+        self.pet_return_action.triggered.connect(self.bring_desktop_pet_back)
         self.menu.addSeparator()
 
         restart_action = self.menu.addAction("Restart Voice Bridge")
@@ -680,6 +682,10 @@ class VoiceBridgeQtRuntime(QObject):
     def toggle_control_panel(self, *_: Any) -> None:
         self.control_panel.toggle_visibility()
         self._sync_panel_action(self.control_panel.isVisible())
+
+    def bring_desktop_pet_back(self, *_: Any) -> None:
+        self.pet.reset_position()
+        self.pet.show_pet()
 
     def _apply_status(self, status: str) -> None:
         self.status_action.setText(f"Status: {status}")
