@@ -106,9 +106,13 @@ def launch_app() -> psutil.Process:
     completed = subprocess.run([str(EXE)], cwd=ROOT, timeout=15, check=False)
     if completed.returncode != 0:
         raise RuntimeError(f"{EXE.name} returned {completed.returncode}")
+    def find_one_controller():
+        found = controller_processes()
+        return found if len(found) == 1 else None
+
     rows = wait_until(
         "one tray controller process",
-        lambda: (found := controller_processes()) if len(found) == 1 else None,
+        find_one_controller,
         timeout=15,
     )
     return rows[0]
@@ -167,7 +171,9 @@ def open_hidden_icons_if_needed() -> None:
 
 
 def find_tray_button():
-    predicate = lambda text: text.casefold().startswith(APP_NAME.casefold())
+    def predicate(text: str) -> bool:
+        return text.casefold().startswith(APP_NAME.casefold())
+
     button = find_named_button(candidate_scopes(), predicate)
     if button is not None:
         return button
