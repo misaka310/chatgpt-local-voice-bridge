@@ -15,7 +15,8 @@
     "demo:check": "npm run test:e2e:mock",
     "test:e2e:extension": "playwright test tests/e2e/extension-external-panel-irodori.spec.js --workers=1",
     "test:e2e:auto": "playwright test tests/e2e/extension-external-panel-irodori.spec.js --grep=external.Auto --workers=1",
-    "test:e2e:multichunk": "playwright test tests/e2e/extension-external-panel-irodori.spec.js --grep=external.Next --workers=1"
+    "test:e2e:multichunk": "playwright test tests/e2e/extension-external-panel-irodori.spec.js --grep=external.Next --workers=1",
+    "test:gui:windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-windows-gui-smoke.ps1"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0"
