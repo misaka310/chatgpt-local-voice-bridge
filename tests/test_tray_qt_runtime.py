@@ -246,12 +246,30 @@ class TrayQtRuntimeTests(unittest.TestCase):
             action_texts = [action.text() for action in runtime.menu.actions()]
 
             self.assertIn("Show Local Voice panel", action_texts)
+            self.assertIn("Bring Desktop Pet Back", action_texts)
             self.assertIn("Restart Voice Bridge", action_texts)
             self.assertIn("Exit", action_texts)
             self.assertNotIn("デスクトップペットを表示", action_texts)
             self.assertNotIn("使用するペット", action_texts)
-            self.assertNotIn("ペットの位置を初期化", action_texts)
             self.assertNotIn("ペットを常に手前に表示", action_texts)
+            runtime.shutdown()
+
+    def test_pet_return_action_restores_and_shows_the_desktop_pet(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_path = Path(temp_dir) / "settings.json"
+            runtime = self._create_runtime(temp_dir)
+            runtime.pet.move(-10000, -10000)
+            runtime.pet.hide_pet()
+
+            runtime.pet_return_action.trigger()
+            self.app.processEvents()
+
+            saved = json.loads(settings_path.read_text(encoding="utf-8"))
+            self.assertTrue(runtime.pet.isVisible())
+            self.assertNotEqual((runtime.pet.x(), runtime.pet.y()), (-10000, -10000))
+            self.assertTrue(saved["visible"])
+            self.assertEqual(saved["x"], runtime.pet.x())
+            self.assertEqual(saved["y"], runtime.pet.y())
             runtime.shutdown()
 
     def test_runtime_owns_hidden_panel_and_pet_double_click_toggles_it(self) -> None:
