@@ -5,30 +5,35 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: repo-launch-doctor-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
   doctor:
     name: public-readiness
+    if: github.event_name == 'workflow_dispatch' || github.event.repository.private == false
     runs-on: ubuntu-latest
     steps:
       - name: Check out target repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           path: target
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Check out Repo Launch Doctor
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           repository: misaka310/repo-launch-doctor
-          ref: ce0be5b38588469d6d30cbaa68a9e7092a444b1e
+          ref: b5d95da71ddc5733432dda4f78f4ae532a1685aa
           path: doctor
 
       - name: Scan current repository state
@@ -61,3 +66,4 @@ jobs:
           name: repo-launch-doctor-report
           path: ${{ runner.temp }}/repo-launch-doctor
           if-no-files-found: warn
+          retention-days: 7

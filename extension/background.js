@@ -662,12 +662,18 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
   if (!tabs.has(tabId)) return;
   uiOwnerTabId = tabId;
   selectedTabId = tabId;
+  chrome.tabs.sendMessage(tabId, { type: 'tab-activated' }).catch(() => {});
   broadcastState();
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message.type !== 'string') return false;
   const senderTabId = sender.tab ? sender.tab.id : null;
+
+  if (message.type === 'tab-attention-state') {
+    sendResponse({ ok: true, payload: { active: Boolean(sender.tab && sender.tab.active) } });
+    return false;
+  }
 
   if (message.type === 'register-tab') {
     if (senderTabId) {

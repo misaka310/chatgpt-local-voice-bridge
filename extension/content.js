@@ -19,6 +19,12 @@
     cancelGraceMs: 700,
   };
   const AUTO_SENT_FLAG = 'localVoiceSent';
+  const COMPLETION_TITLE_PREFIX = '● ';
+  const COMPLETION_SESSION_KEY = 'localVoiceCompletionPending';
+  const COMPLETION_FAVICON_ID = 'local-voice-completion-favicon';
+  const COMPLETION_FAVICON_DATA_URL = `data:image/svg+xml,${encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="9" fill="#facc15"/><path d="M8 16.5l5 5L24 10" fill="none" stroke="#111827" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  )}`;
   const DEFAULT_PET_ID = 'placeholder';
   const LEGACY_BROWSER_UI_STORAGE_KEYS = ['petMode', 'selectedPetId', 'petPosition', 'panelPosition', 'panelCollapsed'];
 
@@ -27,6 +33,7 @@
   let settings = { ...DEFAULT_SETTINGS };
   let enabled = false;
   let observer = null;
+  let titleObserver = null;
   let inspectTimer = null;
   let currentAudio = null;
   let currentObjectUrl = null;
@@ -36,6 +43,8 @@
   let pendingSendController = null;
   let cancelOverlay = null;
   let isUiOwner = null;
+  let completionMarkerPending = false;
+  let baseDocumentTitle = '';
 
   function normalizeText(text) {
     return String(text || '')
@@ -46,6 +55,93 @@
       .replace(/[ \t]{2,}/g, ' ')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
+  }
+
+  function stripCompletionTitlePrefix(title) {
+    const value = String(title || '');
+    return value.startsWith(COMPLETION_TITLE_PREFIX)
+      ? value.slice(COMPLETION_TITLE_PREFIX.length)
+      : value;
+  }
+
+  function getPlainDocumentTitle() {
+    return stripCompletionTitlePrefix(document.title) || baseDocumentTitle || '';
+  }
+
+  async function isTabActivelyViewed() {
+    let tabActive = document.visibilityState === 'visible';
+    try {
+      const attention = await runtimeMessage('tab-attention-state');
+      if (attention && typeof attention.active === 'boolean') tabActive = attention.active;
+    } catch (_error) {}
+    return tabActive && document.hasFocus();
+  }
+
+  function persistCompletionMarkerState() {
+    try {
+      if (completionMarkerPending) sessionStorage.setItem(COMPLETION_SESSION_KEY, '1');
+      else sessionStorage.removeItem(COMPLETION_SESSION_KEY);
+    } catch (_error) {}
+  }
+
+  function ensureCompletionFavicon() {
+    if (!document.head) return;
+    let favicon = document.getElementById(COMPLETION_FAVICON_ID);
+    if (!favicon) {
+      favicon = document.createElement('link');
+      favicon.id = COMPLETION_FAVICON_ID;
+      favicon.rel = 'icon';
+      favicon.type = 'image/svg+xml';
+      favicon.href = COMPLETION_FAVICON_DATA_URL;
+    }
+    if (document.head.lastElementChild !== favicon) document.head.appendChild(favicon);
+  }
+
+  function syncCompletionMarker() {
+    const currentTitle = stripCompletionTitlePrefix(document.title);
+    if (currentTitle) baseDocumentTitle = currentTitle;
+    if (!completionMarkerPending) {
+      if (document.title.startsWith(COMPLETION_TITLE_PREFIX) && baseDocumentTitle) {
+        document.title = baseDocumentTitle;
+      }
+      document.getElementById(COMPLETION_FAVICON_ID)?.remove();
+      return;
+    }
+    if (baseDocumentTitle) {
+      const markedTitle = `${COMPLETION_TITLE_PREFIX}${baseDocumentTitle}`;
+      if (document.title !== markedTitle) document.title = markedTitle;
+    }
+    ensureCompletionFavicon();
+  }
+
+  function setCompletionMarkerPending(nextPending) {
+    completionMarkerPending = Boolean(nextPending);
+    persistCompletionMarkerState();
+    syncCompletionMarker();
+  }
+
+  function clearCompletionMarker() {
+    if (!completionMarkerPending && !document.getElementById(COMPLETION_FAVICON_ID)) return;
+    setCompletionMarkerPending(false);
+  }
+
+  async function markResponseCompleted() {
+    if (await isTabActivelyViewed()) {
+      clearCompletionMarker();
+      return;
+    }
+    setCompletionMarkerPending(true);
+  }
+
+  function isResponseGenerating() {
+    return Boolean(document.querySelector([
+      '[data-testid="stop-button"]',
+      'button[aria-label="Stop generating"]',
+      'button[aria-label="Stop streaming"]',
+      'button[aria-label="生成を停止"]',
+      'button[aria-label="応答を停止"]',
+      'button[aria-label="ストリーミングを停止"]',
+    ].join(',')));
   }
 
   function isTransientAssistantStatus(text) {
@@ -232,7 +328,17 @@
   function ensureElementState(node, text) {
     let item = stateByElement.get(node);
     if (!item) {
-      item = { key: getStableKey(node), sent: node.dataset[AUTO_SENT_FLAG] === '1', lastText: text, lastChangedAt: Date.now(), idleTimer: null };
+      const alreadySent = node.dataset[AUTO_SENT_FLAG] === '1';
+      item = {
+        key: getStableKey(node),
+        sent: alreadySent,
+        completionNotified: alreadySent,
+        generationObserved: false,
+        lastText: text,
+        lastChangedAt: Date.now(),
+        idleTimer: null,
+        completionTimer: null,
+      };
       stateByElement.set(node, item);
     }
     return item;
@@ -244,7 +350,17 @@
       initializedElements.add(node);
       const item = stateByElement.get(node);
       if (item && item.idleTimer) clearTimeout(item.idleTimer);
-      stateByElement.set(node, { key: getStableKey(node), sent: true, lastText: text, lastChangedAt: Date.now(), idleTimer: null });
+      if (item && item.completionTimer) clearTimeout(item.completionTimer);
+      stateByElement.set(node, {
+        key: getStableKey(node),
+        sent: true,
+        completionNotified: true,
+        generationObserved: false,
+        lastText: text,
+        lastChangedAt: Date.now(),
+        idleTimer: null,
+        completionTimer: null,
+      });
       node.dataset[AUTO_SENT_FLAG] = '1';
     }
   }
@@ -282,8 +398,45 @@
       isAuto,
       voiceProfile: getCurrentVoiceProfile(),
       ...getSpeakParams(),
-      title: document.title,
+      title: getPlainDocumentTitle(),
     }).catch(() => {});
+  }
+
+  function maybeMarkResponseCompleted(node, item, text) {
+    if (!item.sent || item.completionNotified) return;
+    if (isResponseGenerating()) {
+      item.generationObserved = true;
+      if (item.completionTimer) clearTimeout(item.completionTimer);
+      item.completionTimer = null;
+      return;
+    }
+    const preview = extractAutoPreview(text, {
+      maxLines: Number(settings.previewMaxLines || DEFAULT_SETTINGS.previewMaxLines),
+      maxChars: Number(settings.previewMaxChars || DEFAULT_SETTINGS.previewMaxChars),
+      minChars: Number(settings.previewMinChars || DEFAULT_SETTINGS.previewMinChars),
+    });
+    if (!preview) return;
+    const stableMs = stableDelayForPreview(preview);
+    const requiredStableMs = item.generationObserved ? stableMs : Math.max(stableMs, 1800);
+    const remainingMs = requiredStableMs - (Date.now() - item.lastChangedAt);
+    if (remainingMs > 0) {
+      if (item.completionTimer) clearTimeout(item.completionTimer);
+      item.completionTimer = setTimeout(() => {
+        item.completionTimer = null;
+        const latest = extractAssistantText(node);
+        if (!latest) return;
+        if (latest !== item.lastText) {
+          processNode(node);
+          return;
+        }
+        maybeMarkResponseCompleted(node, item, latest);
+      }, remainingMs + 50);
+      return;
+    }
+    item.completionNotified = true;
+    if (item.completionTimer) clearTimeout(item.completionTimer);
+    item.completionTimer = null;
+    void markResponseCompleted();
   }
 
   function processNode(node) {
@@ -291,7 +444,10 @@
     if (!text) return;
     const item = ensureElementState(node, text);
     if (item.sent) {
-      if (text === item.lastText) return;
+      if (text === item.lastText) {
+        maybeMarkResponseCompleted(node, item, text);
+        return;
+      }
       item.lastText = text;
       item.lastChangedAt = Date.now();
       const chunks = splitSpeakChunks(text, {
@@ -313,6 +469,7 @@
           autoPreview: preview,
           capturedAt: Date.now(),
         }, false);
+        maybeMarkResponseCompleted(node, item, text);
       }
       return;
     }
@@ -342,6 +499,7 @@
       item.sent = true;
       node.dataset[AUTO_SENT_FLAG] = '1';
       void reportChunks(entry, Boolean(enabled && settings.enabled));
+      maybeMarkResponseCompleted(node, item, text);
       return;
     }
     if (item.idleTimer) clearTimeout(item.idleTimer);
@@ -364,6 +522,7 @@
         item.sent = true;
         node.dataset[AUTO_SENT_FLAG] = '1';
         void reportChunks({ node, text: latest, messageKey: item.key, chunks: pendingChunks, autoPreview: pendingPreview, capturedAt: Date.now() }, Boolean(enabled && settings.enabled));
+        maybeMarkResponseCompleted(node, item, latest);
       }
     }, stableDelayForPreview(preview) + 50);
   }
@@ -514,7 +673,7 @@
     const composer = api.findComposer(document);
     if (!composer || !target) return;
     if (target !== composer && !(typeof composer.contains === 'function' && composer.contains(target))) return;
-    chrome.runtime.sendMessage({ type: 'composer-focused', title: document.title }).catch(() => {});
+    chrome.runtime.sendMessage({ type: 'composer-focused', title: getPlainDocumentTitle() }).catch(() => {});
   }
 
   function ensurePendingSendController() {
@@ -556,6 +715,10 @@
   function registerMessageListener() {
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (!message || typeof message.type !== 'string') return false;
+      if (message.type === 'tab-activated') {
+        clearCompletionMarker();
+        return false;
+      }
       if (message.type === 'state-update') {
         applyOwnerState(message.payload.isUiOwner, message.payload);
         return false;
@@ -613,9 +776,19 @@
     document.getElementById('local-voice-bridge-panel')?.remove();
     await loadSettings();
     await syncDesktopPetSelection();
+    baseDocumentTitle = stripCompletionTitlePrefix(document.title);
+    try {
+      completionMarkerPending = sessionStorage.getItem(COMPLETION_SESSION_KEY) === '1';
+    } catch (_error) {
+      completionMarkerPending = false;
+    }
+    if (await isTabActivelyViewed()) setCompletionMarkerPending(false);
+    else syncCompletionMarker();
+    titleObserver = new MutationObserver(syncCompletionMarker);
+    titleObserver.observe(document.head, { childList: true, subtree: true, characterData: true });
     markExistingMessagesAsSeen();
     try {
-      const response = await runtimeMessage('register-tab', { title: document.title });
+      const response = await runtimeMessage('register-tab', { title: getPlainDocumentTitle() });
       applyOwnerState(response && typeof response.isUiOwner !== 'undefined' ? response.isUiOwner : null, response || null);
     } catch (_error) {
       applyOwnerState(null);
@@ -623,7 +796,7 @@
     observer = new MutationObserver(scheduleInspect);
     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
     const claimUiOwnership = () => {
-      chrome.runtime.sendMessage({ type: 'register-tab', title: document.title, claimOwner: true }).catch(() => {});
+      chrome.runtime.sendMessage({ type: 'register-tab', title: getPlainDocumentTitle(), claimOwner: true }).catch(() => {});
     };
     const pollExternalControl = () => {
       if (isUiOwner !== false) {
@@ -632,7 +805,14 @@
       const delay = settings.micConversationEnabled ? 50 : 750;
       window.setTimeout(pollExternalControl, delay);
     };
+    window.addEventListener('focus', clearCompletionMarker);
+    document.addEventListener('visibilitychange', () => {
+      void isTabActivelyViewed().then((active) => {
+        if (active) clearCompletionMarker();
+      });
+    });
     window.addEventListener('focus', claimUiOwnership);
+    document.addEventListener('pointerdown', clearCompletionMarker, { capture: true });
     document.addEventListener('pointerdown', claimUiOwnership, { capture: true });
     document.addEventListener('focusin', (event) => reportComposerFocus(event.target), { capture: true });
     document.addEventListener('pointerdown', (event) => reportComposerFocus(event.target), { capture: true });
@@ -643,7 +823,7 @@
     });
     void pollExternalControl();
     setInterval(() => {
-      chrome.runtime.sendMessage({ type: 'register-tab', title: document.title }).catch(() => {});
+      chrome.runtime.sendMessage({ type: 'register-tab', title: getPlainDocumentTitle() }).catch(() => {});
     }, 5000);
   }
 
