@@ -35,18 +35,8 @@ jobs:
         run: |
           $path = 'tests/windows/tray_uia_smoke.py'
           $content = [IO.File]::ReadAllText($path)
-          $old = @'
-          def find_qt_popup(pid: int) -> WindowInfo | None:
-              return next(
-                  (
-                      row
-                      for row in enum_top_windows()
-                      if row.pid == pid and row.title == APP_NAME and "QWindowPopup" in row.class_name
-                  ),
-                  None,
-              )
-          '@.Replace("          ", "")
-          $new = @'
+          $pattern = '(?ms)^def find_qt_popup\(pid: int\).*?^def close_popup'
+          $replacement = @'
           def find_qt_popup(pid: int) -> WindowInfo | None:
               desktop = Desktop(backend="uia")
               for row in enum_top_windows():
@@ -63,11 +53,15 @@ jobs:
                   if "Exit" in names and "Restart Voice Bridge" in names:
                       return row
               return None
+
+
+          def close_popup
           '@.Replace("          ", "")
-          if (-not $content.Contains($old)) {
+          $updated = [regex]::Replace($content, $pattern, $replacement, 1)
+          if ($updated -eq $content) {
             throw 'Expected Qt popup discovery function was not found.'
           }
-          [IO.File]::WriteAllText($path, $content.Replace($old, $new), [Text.UTF8Encoding]::new($false))
+          [IO.File]::WriteAllText($path, $updated, [Text.UTF8Encoding]::new($false))
 
       - name: Run packaged tray GUI smoke
         shell: powershell
