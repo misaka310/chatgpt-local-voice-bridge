@@ -95,7 +95,6 @@ jobs:
                   duplicate_dialog_windows,
                   timeout=10,
               )
-              duplicate_pids = {row.pid for row in dialogs}
               desktop = Desktop(backend="uia")
               for row in dialogs:
                   dialog = desktop.window(handle=row.hwnd)
@@ -110,15 +109,19 @@ jobs:
                   timeout=5,
               )
 
-              for duplicate_pid in duplicate_pids:
-                  if not psutil.pid_exists(duplicate_pid):
-                      continue
-                  duplicate_process = psutil.Process(duplicate_pid)
+              extras = [process for process in controller_processes() if process.pid != original_pid]
+              for process in extras:
                   try:
-                      duplicate_process.wait(timeout=3)
-                  except psutil.TimeoutExpired:
-                      duplicate_process.terminate()
-                      duplicate_process.wait(timeout=5)
+                      process.terminate()
+                  except psutil.NoSuchProcess:
+                      pass
+              _, alive = psutil.wait_procs(extras, timeout=5)
+              for process in alive:
+                  try:
+                      process.kill()
+                  except psutil.NoSuchProcess:
+                      pass
+              psutil.wait_procs(alive, timeout=5)
 
               pids = [process.pid for process in controller_processes()]
               if pids != [original_pid]:
