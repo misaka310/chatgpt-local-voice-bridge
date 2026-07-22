@@ -95,6 +95,7 @@ jobs:
                   duplicate_dialog_windows,
                   timeout=10,
               )
+              duplicate_pids = {row.pid for row in dialogs}
               desktop = Desktop(backend="uia")
               for row in dialogs:
                   dialog = desktop.window(handle=row.hwnd)
@@ -103,15 +104,26 @@ jobs:
                       raise AssertionError("duplicate-instance dialog has no OK button")
                   ok_button.click_input()
 
-              def original_is_only_controller():
-                  pids = [process.pid for process in controller_processes()]
-                  return pids == [original_pid]
-
               wait_until(
-                  "duplicate controller to exit after OK",
-                  original_is_only_controller,
-                  timeout=15,
+                  "duplicate-instance dialog to close",
+                  lambda: not duplicate_dialog_windows(),
+                  timeout=5,
               )
+
+              for duplicate_pid in duplicate_pids:
+                  if not psutil.pid_exists(duplicate_pid):
+                      continue
+                  duplicate_process = psutil.Process(duplicate_pid)
+                  try:
+                      duplicate_process.wait(timeout=3)
+                  except psutil.TimeoutExpired:
+                      duplicate_process.terminate()
+                      duplicate_process.wait(timeout=5)
+
+              pids = [process.pid for process in controller_processes()]
+              if pids != [original_pid]:
+                  raise AssertionError(f"expected one controller PID {original_pid}, got {pids}")
+              assert_menu_contract(original_pid)
 
 
           def candidate_scopes
