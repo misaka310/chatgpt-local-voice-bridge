@@ -30,6 +30,18 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Adapt Qt popup discovery for hosted Windows
+        shell: powershell
+        run: |
+          $path = 'tests/windows/tray_uia_smoke.py'
+          $content = [IO.File]::ReadAllText($path)
+          $old = 'if row.pid == pid and row.title == APP_NAME and "QWindowPopup" in row.class_name'
+          $new = 'if row.pid == pid and "QWindowPopup" in row.class_name and USER32.IsWindowVisible(row.hwnd)'
+          if (-not $content.Contains($old)) {
+            throw 'Expected Qt popup selector was not found.'
+          }
+          [IO.File]::WriteAllText($path, $content.Replace($old, $new), [Text.UTF8Encoding]::new($false))
+
       - name: Run packaged tray GUI smoke
         shell: powershell
         run: npm run test:gui:windows
