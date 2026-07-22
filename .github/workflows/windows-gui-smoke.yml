@@ -104,12 +104,16 @@ jobs:
           def create_qt_application
           '@
           $updated = [regex]::Replace($content, $pattern, $replacement, 1)
-          $updated = [regex]::Replace(
-            $updated,
-            '(?ms)^    if not acquire_single_instance\(\):\s+show_message\(APP_NAME, "すでに通知領域で起動しています。"\)\s+return 0',
-            "    if not acquire_single_instance():`n        LOGGER.info(\"A tray controller instance is already running\")`n        return 0",
-            1
-          )
+          $duplicatePattern = '(?ms)^    if not acquire_single_instance\(\):\s+show_message\(APP_NAME, "すでに通知領域で起動しています。"\)\s+return 0'
+          $duplicateReplacement = @'
+              if not acquire_single_instance():
+                  LOGGER.info("A tray controller instance is already running")
+                  return 0
+          '@
+          $updated = [regex]::Replace($updated, $duplicatePattern, $duplicateReplacement, 1)
+          if ($updated -notmatch 'A tray controller instance is already running') {
+            throw 'Expected duplicate-launch message block was not replaced.'
+          }
           [IO.File]::WriteAllText($path, $updated, [Text.UTF8Encoding]::new($false))
           python -m py_compile 'tests/windows/tray_uia_smoke.py' 'local-api/tray_controller.py'
           if ($LASTEXITCODE -ne 0) {
