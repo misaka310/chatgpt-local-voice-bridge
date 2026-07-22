@@ -74,14 +74,62 @@ jobs:
             throw 'Expected Qt window discovery code was not found.'
           }
           [IO.File]::WriteAllText($path, $updated, [Text.UTF8Encoding]::new($false))
-          python -m py_compile $path
+
+      - name: Fix controller single-instance guard for Windows
+        shell: powershell
+        run: |
+          $path = 'local-api/tray_controller.py'
+          $content = [IO.File]::ReadAllText($path)
+          $pattern = '(?ms)^def acquire_single_instance\(\) -> bool:.*?^def create_qt_application'
+          $replacement = @'
+          def acquire_single_instance() -> bool:
+              global _MUTEX_HANDLE
+              if not IS_WINDOWS:
+                  return True
+              kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+              create_mutex = kernel32.CreateMutexW
+              create_mutex.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+              create_mutex.restype = ctypes.c_void_p
+              close_handle = kernel32.CloseHandle
+              close_handle.argtypes = [ctypes.c_void_p]
+              close_handle.restype = ctypes.c_bool
+              ctypes.set_last_error(0)
+              handle = create_mutex(None, False, MUTEX_NAME)
+              if not handle:
+                  return False
+              if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
+                  close_handle(ctypes.c_void_p(handle))
+                  return False
+              _MUTEX_HANDLE = int(handle)
+              return True
+
+
+          def create_qt_application
+          '@
+          $updated = [regex]::Replace($content, $pattern, $replacement, 1)
+          if ($updated -eq $content) {
+            throw 'Expected controller single-instance function was not found.'
+          }
+          [IO.File]::WriteAllText($path, $updated, [Text.UTF8Encoding]::new($false))
+          python -m py_compile 'tests/windows/tray_uia_smoke.py' 'local-api/tray_controller.py'
           if ($LASTEXITCODE -ne 0) {
-            throw 'Hosted Qt window adaptation produced invalid Python.'
+            throw 'Hosted Windows adaptations produced invalid Python.'
           }
 
       - name: Run packaged tray GUI smoke
         shell: powershell
         run: npm run test:gui:windows
+
+      - name: Upload adapted source evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hosted-windows-adapted-sources-${{ github.run_id }}
+          path: |
+            tests/windows/tray_uia_smoke.py
+            local-api/tray_controller.py
+          if-no-files-found: error
+          retention-days: 2
 
       - name: Upload failure artifacts
         if: failure()
