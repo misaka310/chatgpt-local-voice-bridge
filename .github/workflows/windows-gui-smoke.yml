@@ -30,7 +30,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Adapt Qt popup discovery for hosted Windows
+      - name: Adapt Qt window discovery for hosted Windows
         shell: powershell
         run: |
           $path = 'tests/windows/tray_uia_smoke.py'
@@ -58,13 +58,25 @@ jobs:
           def close_popup
           '@
           $updated = [regex]::Replace($content, $pattern, $replacement, 1)
+          $updated = [regex]::Replace(
+            $updated,
+            'if row\.pid == pid\s+and row\.title == APP_NAME',
+            'if row.title == APP_NAME',
+            1
+          )
+          $updated = [regex]::Replace(
+            $updated,
+            'if row\.pid == pid\s+and row\.title == PET_WINDOW_TITLE',
+            'if row.title == PET_WINDOW_TITLE',
+            1
+          )
           if ($updated -eq $content) {
-            throw 'Expected Qt popup discovery function was not found.'
+            throw 'Expected Qt window discovery code was not found.'
           }
           [IO.File]::WriteAllText($path, $updated, [Text.UTF8Encoding]::new($false))
           python -m py_compile $path
           if ($LASTEXITCODE -ne 0) {
-            throw 'Hosted Qt popup adaptation produced invalid Python.'
+            throw 'Hosted Qt window adaptation produced invalid Python.'
           }
 
       - name: Run packaged tray GUI smoke
