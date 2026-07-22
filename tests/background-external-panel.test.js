@@ -89,6 +89,7 @@ function createHarness({ initialized = true } = {}) {
     tabs: {
       onRemoved: { addListener() {} },
       onActivated: { addListener() {} },
+      onUpdated: { addListener() {} },
       async sendMessage(tabId, message) {
         sentMessages.push({ tabId, message });
         return { ok: true };

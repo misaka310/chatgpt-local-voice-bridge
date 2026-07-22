@@ -21,9 +21,10 @@ function waitFor(predicate, timeoutMs = 2000) {
   });
 }
 
-function createHarness() {
+function createHarness(harnessOptions = {}) {
   const posts = [];
   const petPosts = [];
+  const tabMessages = [];
   const storage = {
     enabled: true,
     apiUrl: 'http://127.0.0.1:8717/v1/speak',
@@ -33,6 +34,10 @@ function createHarness() {
     referenceVoice: 'sample',
   };
   let runtimeListener = null;
+  let tabRemovedListener = null;
+  let tabActivatedListener = null;
+  let tabUpdatedListener = null;
+  let playbackSequence = 0;
 
   const chrome = {
     storage: {
@@ -62,9 +67,11 @@ function createHarness() {
       },
     },
     tabs: {
-      onRemoved: { addListener() {} },
-      onActivated: { addListener() {} },
-      async sendMessage() {
+      onRemoved: { addListener(listener) { tabRemovedListener = listener; } },
+      onActivated: { addListener(listener) { tabActivatedListener = listener; } },
+      onUpdated: { addListener(listener) { tabUpdatedListener = listener; } },
+      async sendMessage(tabId, message) {
+        tabMessages.push({ tabId, message });
         return { ok: true };
       },
     },
@@ -73,6 +80,15 @@ function createHarness() {
   async function fetch(url, options = {}) {
     if (String(url).endsWith('/v1/speak') && options.method === 'POST') {
       posts.push(JSON.parse(options.body || '{}'));
+      if (harnessOptions.speakSucceeds) {
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return { ok: true, audioUrl: `http://127.0.0.1:8717/audio/test-${posts.length}.wav` };
+          },
+        };
+      }
       throw new Error('captured request');
     }
     if (String(url).endsWith('/v1/desktop-pet') && options.method === 'POST') {
@@ -92,7 +108,7 @@ function createHarness() {
   const context = vm.createContext({
     chrome,
     console,
-    crypto: { randomUUID: () => 'playback-id' },
+    crypto: { randomUUID: () => `playback-id-${++playbackSequence}` },
     fetch,
     setTimeout,
     clearTimeout,
@@ -128,7 +144,17 @@ function createHarness() {
     });
   }
 
-  return { petPosts, posts, send, sendAsync };
+  return {
+    petPosts,
+    posts,
+    send,
+    sendAsync,
+    tabMessages,
+    removeTab(tabId) { tabRemovedListener(tabId); },
+    activateTab(tabId) { tabActivatedListener({ tabId }); },
+    updateTab(tabId, changeInfo) { tabUpdatedListener(tabId, changeInfo, {}); },
+    expirePlayback() { return vm.runInContext('recoverExpiredPlayback(Date.now() + 1_000_000)', context); },
+  };
 }
 
 test('split-view heartbeats do not move the Local Voice owner between active tabs', () => {
@@ -254,4 +280,57 @@ test('desktop pet selection is forwarded to the local desktop pet API', async ()
   assert.equal(response.ok, true);
   assert.equal(response.payload.ok, true);
   assert.equal(response.payload.selectedPetId, 'misaka');
+});
+
+test('closing the playback owner releases the queue and continues on another ChatGPT tab', async () => {
+  const harness = createHarness({ speakSucceeds: true });
+  harness.send({ type: 'register-tab', title: 'Tab A' }, 101, 'Tab A');
+  harness.send({ type: 'register-tab', title: 'Tab B' }, 202, 'Tab B');
+  harness.send({
+    type: 'report-chunks', messageKey: 'reply-a', chunks: ['最初の読み上げです。'], autoPreview: '最初の読み上げです。', isAuto: true,
+  }, 101, 'Tab A');
+  await waitFor(() => harness.tabMessages.some((entry) => entry.tabId === 101 && entry.message.type === 'play-audio'));
+  harness.send({
+    type: 'report-chunks', messageKey: 'reply-b', chunks: ['次の読み上げです。'], autoPreview: '次の読み上げです。', isAuto: true,
+  }, 202, 'Tab B');
+
+  harness.removeTab(101);
+
+  await waitFor(() => harness.tabMessages.some((entry) => entry.tabId === 202 && entry.message.type === 'play-audio'));
+  assert.equal(harness.posts.length, 2);
+  harness.send({ type: 'ui-command', cmd: 'stop' }, 202, 'Tab B');
+});
+
+test('a lost playback completion is skipped when its lease expires', async () => {
+  const harness = createHarness({ speakSucceeds: true });
+  harness.send({ type: 'register-tab', title: 'Tab A' }, 101, 'Tab A');
+  harness.send({
+    type: 'report-chunks', messageKey: 'reply-a', chunks: ['一件目です。'], autoPreview: '一件目です。', isAuto: true,
+  }, 101, 'Tab A');
+  await waitFor(() => harness.tabMessages.filter((entry) => entry.message.type === 'play-audio').length === 1);
+  harness.send({
+    type: 'report-chunks', messageKey: 'reply-b', chunks: ['二件目です。'], autoPreview: '二件目です。', isAuto: true,
+  }, 101, 'Tab A');
+
+  assert.equal(harness.expirePlayback(), true);
+
+  await waitFor(() => harness.tabMessages.filter((entry) => entry.message.type === 'play-audio').length === 2);
+  assert.equal(harness.posts.length, 2);
+  harness.send({ type: 'ui-command', cmd: 'stop' }, 101, 'Tab A');
+});
+
+test('Stop targets the tab that owns playback after another tab becomes active', async () => {
+  const harness = createHarness({ speakSucceeds: true });
+  harness.send({ type: 'register-tab', title: 'Tab A' }, 101, 'Tab A');
+  harness.send({ type: 'register-tab', title: 'Tab B' }, 202, 'Tab B');
+  harness.send({
+    type: 'report-chunks', messageKey: 'reply-a', chunks: ['再生中です。'], autoPreview: '再生中です。', isAuto: true,
+  }, 101, 'Tab A');
+  await waitFor(() => harness.tabMessages.some((entry) => entry.tabId === 101 && entry.message.type === 'play-audio'));
+
+  harness.activateTab(202);
+  harness.send({ type: 'ui-command', cmd: 'stop' }, 202, 'Tab B');
+
+  const stopMessages = harness.tabMessages.filter((entry) => entry.message.type === 'stop-audio');
+  assert.equal(stopMessages.at(-1).tabId, 101);
 });
