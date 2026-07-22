@@ -34,8 +34,8 @@ $profiles = [ordered]@{
         Disk = "必要な空き容量: 約18〜29 GB"
     }
     dev = [pscustomobject]@{
-        Title = "開発環境"
-        Summary = "読み上げ・STTに加え、npm、Playwright Chromium、GUIスモーク依存を導入します。"
+        Title = "開発者向け（通常は不要）"
+        Summary = "アプリのソースコードを修正・テストする人向けです。読み上げ・STTに加え、npm、Playwright Chromium、GUIスモーク依存を導入します。"
         Download = "推定ダウンロード: 約9〜19 GB"
         Disk = "必要な空き容量: 約20〜33 GB"
     }
@@ -68,10 +68,14 @@ $profileBox.Location = New-Object System.Drawing.Point(170, 61)
 $profileBox.Width = 280
 $profileBox.DisplayMember = "Label"
 $profileBox.ValueMember = "Id"
-foreach ($key in $profiles.Keys) {
-    [void]$profileBox.Items.Add([pscustomobject]@{ Label = $profiles[$key].Title; Id = $key })
-}
 $form.Controls.Add($profileBox)
+
+$advancedCheck = New-Object System.Windows.Forms.CheckBox
+$advancedCheck.Text = "開発者向けの項目を表示"
+$advancedCheck.AutoSize = $true
+$advancedCheck.Location = New-Object System.Drawing.Point(470, 64)
+$advancedCheck.Checked = ($InitialProfile -eq "dev")
+$form.Controls.Add($advancedCheck)
 
 $summary = New-Object System.Windows.Forms.Label
 $summary.Location = New-Object System.Drawing.Point(28, 103)
@@ -160,6 +164,36 @@ function Get-SelectedProfile {
     return "reading"
 }
 
+function Refresh-ProfileItems {
+    param([string]$PreferredProfile = "")
+
+    if ([string]::IsNullOrWhiteSpace($PreferredProfile)) {
+        $PreferredProfile = Get-SelectedProfile
+    }
+    $visibleProfileKeys = @("reading", "stt")
+    if ($advancedCheck.Checked) {
+        $visibleProfileKeys += "dev"
+    }
+
+    $profileBox.BeginUpdate()
+    try {
+        $profileBox.Items.Clear()
+        foreach ($key in $visibleProfileKeys) {
+            [void]$profileBox.Items.Add([pscustomobject]@{ Label = $profiles[$key].Title; Id = $key })
+        }
+        $targetIndex = 0
+        for ($i = 0; $i -lt $profileBox.Items.Count; $i++) {
+            if ([string]$profileBox.Items[$i].Id -eq $PreferredProfile) {
+                $targetIndex = $i
+                break
+            }
+        }
+        $profileBox.SelectedIndex = $targetIndex
+    } finally {
+        $profileBox.EndUpdate()
+    }
+}
+
 function Update-ProfileDescription {
     $id = Get-SelectedProfile
     $item = $profiles[$id]
@@ -235,6 +269,7 @@ function Finish-SetupProcess {
     }
     $startButton.Enabled = $true
     $profileBox.Enabled = $true
+    $advancedCheck.Enabled = $true
     $closeButton.Enabled = $true
     $script:process.Dispose()
     $script:process = $null
@@ -249,6 +284,14 @@ $timer.Add_Tick({
 })
 
 $profileBox.Add_SelectedIndexChanged({ Update-ProfileDescription })
+$advancedCheck.Add_CheckedChanged({
+    $preferred = Get-SelectedProfile
+    if (-not $advancedCheck.Checked -and $preferred -eq "dev") {
+        $preferred = "reading"
+    }
+    Refresh-ProfileItems -PreferredProfile $preferred
+    Update-ProfileDescription
+})
 $startButton.Add_Click({
     if ($null -ne $script:process) { return }
     $script:activeProfile = Get-SelectedProfile
@@ -263,6 +306,7 @@ $startButton.Add_Click({
     $status.ForeColor = [System.Drawing.Color]::Black
     $startButton.Enabled = $false
     $profileBox.Enabled = $false
+    $advancedCheck.Enabled = $false
     $closeButton.Enabled = $false
     try {
         $arguments = @(
@@ -278,6 +322,7 @@ $startButton.Add_Click({
         $status.ForeColor = [System.Drawing.Color]::DarkRed
         $startButton.Enabled = $true
         $profileBox.Enabled = $true
+        $advancedCheck.Enabled = $true
         $closeButton.Enabled = $true
     }
 })
@@ -324,11 +369,6 @@ $form.Add_FormClosing({
     }
 })
 
-$initialIndex = 0
-$profileKeys = @($profiles.Keys)
-for ($i = 0; $i -lt $profileKeys.Count; $i++) {
-    if ($profileKeys[$i] -eq $InitialProfile) { $initialIndex = $i; break }
-}
-$profileBox.SelectedIndex = $initialIndex
+Refresh-ProfileItems -PreferredProfile $InitialProfile
 Update-ProfileDescription
 [void]$form.ShowDialog()

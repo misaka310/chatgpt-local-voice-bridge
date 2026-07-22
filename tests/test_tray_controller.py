@@ -141,6 +141,10 @@ class TrayControllerContractTests(unittest.TestCase):
         self.assertIn("LVB_PROGRESS", setup_engine)
         self.assertIn("build-launcher.ps1", setup_engine)
         self.assertIn("install-start-menu-shortcut.ps1", setup_engine)
+        self.assertIn("開発者向け（通常は不要）", setup_gui)
+        self.assertIn("開発者向けの項目を表示", setup_gui)
+        self.assertIn('$visibleProfileKeys = @("reading", "stt")', setup_gui)
+        self.assertIn('if ($advancedCheck.Checked)', setup_gui)
         self.assertIn("失敗内容をコピー", setup_gui)
 
     def test_legacy_vbs_only_forwards_to_the_exe(self) -> None:

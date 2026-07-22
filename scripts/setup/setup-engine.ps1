@@ -36,7 +36,7 @@ $profileInfo = @{
         Detail = "読み上げ環境を導入または確認したうえで、faster-whisperと録音依存を追加します。"
     }
     dev = @{
-        Title = "開発環境"
+        Title = "開発者向け（通常は不要）"
         Download = "完全環境に加えて約0.5〜1.5 GB"
         Disk = "完全環境に加えて約2〜4 GB"
         MinimumFreeGb = 20
