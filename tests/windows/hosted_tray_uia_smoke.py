@@ -56,33 +56,14 @@ def assert_single_instance(original_pid: int) -> None:
     if completed.returncode != 0:
         raise RuntimeError(f"second launcher returned {completed.returncode}")
 
-    def duplicate_dialog_windows():
-        rows = [
-            row
-            for row in smoke.enum_top_windows()
-            if row.title == smoke.APP_NAME
-            and row.class_name == "#32770"
-            and smoke.USER32.IsWindowVisible(row.hwnd)
-        ]
-        return rows or None
-
-    dialogs = smoke.wait_until(
-        "duplicate-instance information dialog",
-        duplicate_dialog_windows,
-        timeout=10,
-    )
-    desktop = Desktop(backend="uia")
-    for row in dialogs:
-        dialog = desktop.window(handle=row.hwnd)
-        ok_button = dialog.child_window(title="OK", control_type="Button")
-        if not ok_button.exists(timeout=2):
-            raise AssertionError("duplicate-instance dialog has no OK button")
-        ok_button.click_input()
+    def original_controller_only():
+        pids = [process.pid for process in smoke.controller_processes()]
+        return pids if pids == [original_pid] else None
 
     smoke.wait_until(
-        "duplicate-instance dialog to close",
-        lambda: not duplicate_dialog_windows(),
-        timeout=5,
+        "duplicate controller to exit",
+        original_controller_only,
+        timeout=10,
     )
     smoke.assert_menu_contract(original_pid)
 
