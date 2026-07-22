@@ -7,10 +7,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: windows-gui-smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   tray-ui-smoke:
-    if: github.event_name == 'workflow_dispatch' || vars.GUI_SELF_HOSTED_ENABLED == 'true'
-    runs-on: [self-hosted, windows, x64, gui-automation]
+    runs-on: windows-latest
     timeout-minutes: 20
 
     steps:

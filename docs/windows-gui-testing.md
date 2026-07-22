@@ -16,27 +16,11 @@ The normal CI workflow verifies source behavior with headless and offscreen test
 
 The menu contract also checks the presence of Logs, generated-audio, reference-voice, Windows-startup, and setup actions. Destructive setup execution and Windows startup registry changes are intentionally outside this first smoke test.
 
-## Runner requirements
+## GitHub-hosted runner
 
-Use a dedicated Windows 11 VM or test machine. The runner must:
+This public repository runs the GUI smoke on GitHub-hosted `windows-latest`, so it does not require the 74 self-hosted VM and does not consume private-repository Actions minutes. The job runs for pull requests and remains available through `workflow_dispatch`.
 
-- run in a logged-in interactive desktop session;
-- not run as a Windows service in Session 0;
-- have the labels `self-hosted`, `windows`, `x64`, and `gui-automation`;
-- have no controller from the same checkout already running;
-- allow the test account to interact with the Windows taskbar.
-
-Do not use the everyday desktop for this workflow because UI Automation opens the tray menu and panel during the test.
-
-## Enabling pull-request runs
-
-The workflow is safe to merge before the runner is ready. Pull-request GUI jobs stay skipped until the repository variable below is set:
-
-```text
-GUI_SELF_HOSTED_ENABLED=true
-```
-
-`workflow_dispatch` remains available for an explicit first run after the runner is registered.
+The hosted runner provides a logged-in interactive Windows desktop. The smoke fails explicitly when the taskbar is unavailable, when another controller from the same checkout is already running, or when UI Automation cannot reach the tray menu or panel.
 
 ## Output
 

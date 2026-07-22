@@ -130,25 +130,68 @@ def assert_single_instance(original_pid: int) -> None:
 
 def candidate_scopes() -> Iterable[object]:
     desktop = Desktop(backend="uia")
+    seen_handles: set[int] = set()
+
+    def add_scope(window):
+        try:
+            handle = int(window.handle)
+            if handle in seen_handles or not window.is_visible():
+                return None
+            seen_handles.add(handle)
+            return window
+        except Exception:
+            return None
+
     taskbar = desktop.window(class_name="Shell_TrayWnd")
     if taskbar.exists(timeout=1):
-        yield taskbar
-    for class_name in ("TopLevelWindowForOverflowXamlIsland", "NotifyIconOverflowWindow"):
-        window = desktop.window(class_name=class_name)
-        if window.exists(timeout=0.5) and window.is_visible():
-            yield window
+        scope = add_scope(taskbar)
+        if scope is not None:
+            yield scope
+
+    for class_name in (
+        "TopLevelWindowForOverflowXamlIsland",
+        "NotifyIconOverflowWindow",
+        "Windows.UI.Core.CoreWindow",
+        "XamlExplorerHostIslandWindow",
+    ):
+        for window in desktop.windows(class_name=class_name):
+            scope = add_scope(window)
+            if scope is not None:
+                yield scope
+
+    for row in enum_top_windows():
+        marker = f"{row.class_name} {row.title}".casefold()
+        if not any(token in marker for token in ("tray", "notify", "overflow", "xaml")):
+            continue
+        scope = add_scope(desktop.window(handle=row.hwnd))
+        if scope is not None:
+            yield scope
 
 
-def find_named_button(scopes: Iterable[object], predicate: Callable[[str], bool]):
-    for scope in scopes:
+def element_name(element) -> str:
+    for getter in (
+        lambda: element.window_text(),
+        lambda: element.element_info.name,
+    ):
         try:
-            buttons = scope.descendants(control_type="Button")
+            value = str(getter() or "").strip()
+            if value:
+                return value
         except Exception:
             continue
-        for button in buttons:
+    return ""
+
+
+def find_named_control(scopes: Iterable[object], predicate: Callable[[str], bool]):
+    for scope in scopes:
+        try:
+            controls = scope.descendants()
+        except Exception:
+            continue
+        for control in controls:
             try:
-                if predicate(button.window_text().strip()):
-                    return button
+                if predicate(element_name(control)):
+                    return control
             except Exception:
                 continue
     return None
@@ -156,6 +199,10 @@ def find_named_button(scopes: Iterable[object], predicate: Callable[[str], bool]
 
 def open_hidden_icons_if_needed() -> None:
     desktop = Desktop(backend="uia")
+    for class_name in ("TopLevelWindowForOverflowXamlIsland", "NotifyIconOverflowWindow"):
+        if any(window.is_visible() for window in desktop.windows(class_name=class_name)):
+            return
+
     taskbar = desktop.window(class_name="Shell_TrayWnd")
     if not taskbar.exists(timeout=2):
         raise RuntimeError("Windows taskbar was not found; use a logged-in interactive runner session")
@@ -164,24 +211,29 @@ def open_hidden_icons_if_needed() -> None:
         lowered = text.casefold()
         return "hidden icon" in lowered or "show hidden" in lowered or "非表示のアイコン" in text
 
-    button = find_named_button((taskbar,), is_hidden_icons_button)
+    button = find_named_control((taskbar,), is_hidden_icons_button)
     if button is not None:
         button.click_input()
         time.sleep(0.7)
 
 
-def find_tray_button():
-    def predicate(text: str) -> bool:
-        return text.casefold().startswith(APP_NAME.casefold())
+def tray_name_matches(text: str) -> bool:
+    return APP_NAME.casefold() in text.casefold()
 
-    button = find_named_button(candidate_scopes(), predicate)
+
+def find_existing_tray_button():
+    return find_named_control(candidate_scopes(), tray_name_matches)
+
+
+def find_tray_button():
+    button = find_existing_tray_button()
     if button is not None:
         return button
     open_hidden_icons_if_needed()
     return wait_until(
         f"{APP_NAME} tray icon",
-        lambda: find_named_button(candidate_scopes(), predicate),
-        timeout=8,
+        find_existing_tray_button,
+        timeout=15,
     )
 
 
@@ -199,15 +251,25 @@ def find_qt_popup(pid: int) -> WindowInfo | None:
 def close_popup(hwnd: int) -> None:
     if USER32.IsWindow(hwnd):
         USER32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
-        time.sleep(0.2)
+        wait_until("tray menu to close", lambda: not USER32.IsWindow(hwnd), timeout=3)
 
 
 def open_menu(pid: int):
-    find_tray_button().click_input(button="right")
-    popup = wait_until("Qt tray menu", lambda: find_qt_popup(pid), timeout=5)
-    wrapper = Desktop(backend="uia").window(handle=popup.hwnd)
-    wait_until("tray menu items", lambda: wrapper.descendants(control_type="MenuItem"), timeout=3)
-    return popup, wrapper
+    last_error: Exception | None = None
+    for _attempt in range(3):
+        existing = find_qt_popup(pid)
+        if existing is not None:
+            close_popup(existing.hwnd)
+        try:
+            find_tray_button().click_input(button="right")
+            popup = wait_until("Qt tray menu", lambda: find_qt_popup(pid), timeout=5)
+            wrapper = Desktop(backend="uia").window(handle=popup.hwnd)
+            wait_until("tray menu items", lambda: wrapper.descendants(control_type="MenuItem"), timeout=3)
+            return popup, wrapper
+        except TimeoutError as exc:
+            last_error = exc
+            time.sleep(0.7)
+    raise last_error or TimeoutError("Timed out waiting for Qt tray menu")
 
 
 def menu_items(wrapper) -> dict[str, object]:
@@ -305,6 +367,61 @@ def verify_exit_and_relaunch(pid: int) -> int:
     return next_process.pid
 
 
+def control_snapshot(control) -> dict[str, object]:
+    info = control.element_info
+    rectangle = getattr(info, "rectangle", None)
+    return {
+        "name": element_name(control),
+        "controlType": str(getattr(info, "control_type", "") or ""),
+        "className": str(getattr(info, "class_name", "") or ""),
+        "automationId": str(getattr(info, "automation_id", "") or ""),
+        "rectangle": (
+            {
+                "left": int(rectangle.left),
+                "top": int(rectangle.top),
+                "right": int(rectangle.right),
+                "bottom": int(rectangle.bottom),
+            }
+            if rectangle is not None
+            else None
+        ),
+    }
+
+
+def save_uia_diagnostics() -> None:
+    diagnostics: dict[str, object] = {
+        "sessionName": os.environ.get("SESSIONNAME", ""),
+        "scopes": [],
+        "topWindows": [],
+    }
+    scope_rows: list[dict[str, object]] = []
+    for scope in candidate_scopes():
+        try:
+            descendants = scope.descendants()
+            scope_rows.append(
+                {
+                    "scope": control_snapshot(scope),
+                    "descendants": [control_snapshot(control) for control in descendants[:500]],
+                    "truncated": len(descendants) > 500,
+                }
+            )
+        except Exception as exc:
+            scope_rows.append({"error": f"{type(exc).__name__}: {exc}"})
+    diagnostics["scopes"] = scope_rows
+    diagnostics["topWindows"] = [
+        asdict(row)
+        for row in enum_top_windows()
+        if any(
+            token in f"{row.class_name} {row.title}".casefold()
+            for token in ("shell", "tray", "notify", "overflow", "xaml", "local voice")
+        )
+    ][:500]
+    (RESULT_DIR / "uia-diagnostics.json").write_text(
+        json.dumps(diagnostics, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
 def save_result(results: list[ScenarioResult], error: BaseException | None = None) -> None:
     RESULT_DIR.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -314,6 +431,10 @@ def save_result(results: list[ScenarioResult], error: BaseException | None = Non
     if error is not None:
         payload["error"] = f"{type(error).__name__}: {error}"
         payload["traceback"] = traceback.format_exc()
+        try:
+            save_uia_diagnostics()
+        except Exception as diagnostic_error:
+            payload["uiaDiagnosticsError"] = f"{type(diagnostic_error).__name__}: {diagnostic_error}"
         try:
             ImageGrab.grab(all_screens=True).save(FAILURE_SCREENSHOT)
         except Exception:
