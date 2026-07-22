@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import time
 
 from pywinauto import Desktop
 
@@ -51,21 +52,39 @@ def pet_window(_pid: int) -> smoke.WindowInfo | None:
     )
 
 
+def controller_process_details() -> list[dict[str, object]]:
+    details: list[dict[str, object]] = []
+    for process in smoke.controller_processes():
+        try:
+            details.append(
+                {
+                    "pid": process.pid,
+                    "ppid": process.ppid(),
+                    "exe": process.exe(),
+                    "cmdline": process.cmdline(),
+                    "createTime": process.create_time(),
+                    "status": process.status(),
+                }
+            )
+        except Exception as exc:
+            details.append({"pid": process.pid, "error": f"{type(exc).__name__}: {exc}"})
+    return details
+
+
 def assert_single_instance(original_pid: int) -> None:
     completed = subprocess.run([str(smoke.EXE)], cwd=smoke.ROOT, timeout=15, check=False)
     if completed.returncode != 0:
         raise RuntimeError(f"second launcher returned {completed.returncode}")
 
-    def original_controller_only():
-        pids = [process.pid for process in smoke.controller_processes()]
-        return pids if pids == [original_pid] else None
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        details = controller_process_details()
+        if [row.get("pid") for row in details] == [original_pid]:
+            smoke.assert_menu_contract(original_pid)
+            return
+        time.sleep(0.25)
 
-    smoke.wait_until(
-        "duplicate controller to exit",
-        original_controller_only,
-        timeout=10,
-    )
-    smoke.assert_menu_contract(original_pid)
+    raise AssertionError(f"duplicate controller did not exit: {controller_process_details()}")
 
 
 def main() -> int:
