@@ -238,11 +238,15 @@ def find_tray_button():
 
 
 def find_qt_popup(pid: int) -> WindowInfo | None:
+    controller_pids = {pid, *(process.pid for process in controller_processes())}
     return next(
         (
             row
             for row in enum_top_windows()
-            if row.pid == pid and row.title == APP_NAME and "QWindowPopup" in row.class_name
+            if row.pid in controller_pids
+            and row.title == APP_NAME
+            and "QWindowPopup" in row.class_name
+            and USER32.IsWindowVisible(row.hwnd)
         ),
         None,
     )
