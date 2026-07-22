@@ -30,13 +30,14 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Adapt Qt window discovery for hosted Windows
+      - name: Adapt Qt UI discovery for hosted Windows
         shell: powershell
         run: |
           $path = 'tests/windows/tray_uia_smoke.py'
           $content = [IO.File]::ReadAllText($path)
-          $pattern = '(?ms)^def find_qt_popup\(pid: int\).*?^def close_popup'
-          $replacement = @'
+
+          $popupPattern = '(?ms)^def find_qt_popup\(pid: int\).*?^def close_popup'
+          $popupReplacement = @'
           def find_qt_popup(pid: int) -> WindowInfo | None:
               desktop = Desktop(backend="uia")
               for row in enum_top_windows():
@@ -57,7 +58,7 @@ jobs:
 
           def close_popup
           '@
-          $updated = [regex]::Replace($content, $pattern, $replacement, 1)
+          $updated = [regex]::Replace($content, $popupPattern, $popupReplacement, 1)
           $updated = [regex]::Replace(
             $updated,
             'if row\.pid == pid\s+and row\.title == APP_NAME',
@@ -70,71 +71,59 @@ jobs:
             'if row.title == PET_WINDOW_TITLE',
             1
           )
-          [IO.File]::WriteAllText($path, $updated, [Text.UTF8Encoding]::new($false))
 
-      - name: Fix controller single-instance guard for Windows
-        shell: powershell
-        run: |
-          $path = 'local-api/tray_controller.py'
-          $content = [IO.File]::ReadAllText($path)
-          $pattern = '(?ms)^def acquire_single_instance\(\) -> bool:.*?^def create_qt_application'
-          $replacement = @'
-          def acquire_single_instance() -> bool:
-              global _MUTEX_HANDLE
-              if not IS_WINDOWS:
-                  return True
-              kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-              create_mutex = kernel32.CreateMutexW
-              create_mutex.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
-              create_mutex.restype = ctypes.c_void_p
-              close_handle = kernel32.CloseHandle
-              close_handle.argtypes = [ctypes.c_void_p]
-              close_handle.restype = ctypes.c_bool
-              ctypes.set_last_error(0)
-              handle = create_mutex(None, False, MUTEX_NAME)
-              if not handle:
-                  return False
-              if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
-                  close_handle(ctypes.c_void_p(handle))
-                  return False
-              _MUTEX_HANDLE = int(handle)
-              return True
+          $singlePattern = '(?ms)^def assert_single_instance\(original_pid: int\).*?^def candidate_scopes'
+          $singleReplacement = @'
+          def assert_single_instance(original_pid: int) -> None:
+              completed = subprocess.run([str(EXE)], cwd=ROOT, timeout=15, check=False)
+              if completed.returncode != 0:
+                  raise RuntimeError(f"second launcher returned {completed.returncode}")
+
+              def duplicate_dialog_windows():
+                  rows = [
+                      row
+                      for row in enum_top_windows()
+                      if row.pid != original_pid
+                      and row.title == APP_NAME
+                      and row.class_name == "#32770"
+                      and USER32.IsWindowVisible(row.hwnd)
+                  ]
+                  return rows or None
+
+              dialogs = wait_until(
+                  "duplicate-instance information dialog",
+                  duplicate_dialog_windows,
+                  timeout=10,
+              )
+              for row in dialogs:
+                  USER32.PostMessageW(row.hwnd, WM_CLOSE, 0, 0)
+
+              def original_is_only_controller():
+                  pids = [process.pid for process in controller_processes()]
+                  return pids == [original_pid]
+
+              wait_until(
+                  "duplicate controller to exit",
+                  original_is_only_controller,
+                  timeout=10,
+              )
 
 
-          def create_qt_application
+          def candidate_scopes
           '@
-          $updated = [regex]::Replace($content, $pattern, $replacement, 1)
-          $duplicatePattern = 'if not acquire_single_instance\(\):\s+show_message\(APP_NAME,\s*"すでに通知領域で起動しています。"\)\s+return 0'
-          $duplicateReplacement = @'
-          if not acquire_single_instance():
-                  LOGGER.info("A tray controller instance is already running")
-                  return 0
-          '@
-          $duplicateReplacement = $duplicateReplacement.Replace("`r`n", "`n").TrimEnd()
-          $updated = [regex]::Replace($updated, $duplicatePattern, $duplicateReplacement, 1)
-          if ($updated -notmatch 'A tray controller instance is already running') {
-            throw 'Expected duplicate-launch message block was not replaced.'
+          $updated = [regex]::Replace($updated, $singlePattern, $singleReplacement, 1)
+          if ($updated -eq $content) {
+            throw 'Expected hosted-Windows test adaptations were not applied.'
           }
           [IO.File]::WriteAllText($path, $updated, [Text.UTF8Encoding]::new($false))
-          python -m py_compile 'tests/windows/tray_uia_smoke.py' 'local-api/tray_controller.py'
+          python -m py_compile $path
           if ($LASTEXITCODE -ne 0) {
-            throw 'Hosted Windows adaptations produced invalid Python.'
+            throw 'Hosted Windows test adaptation produced invalid Python.'
           }
 
       - name: Run packaged tray GUI smoke
         shell: powershell
         run: npm run test:gui:windows
-
-      - name: Upload adapted source evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: hosted-windows-adapted-sources-${{ github.run_id }}
-          path: |
-            tests/windows/tray_uia_smoke.py
-            local-api/tray_controller.py
-          if-no-files-found: error
-          retention-days: 2
 
       - name: Upload failure artifacts
         if: failure()
