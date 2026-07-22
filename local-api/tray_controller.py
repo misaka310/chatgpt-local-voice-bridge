@@ -265,15 +265,36 @@ def show_message(title: str, message: str, error: bool = False) -> None:
         print(f"{title}: {message}", file=sys.stderr if error else sys.stdout)
 
 
+def _open_named_mutex(name: str) -> tuple[int, int]:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_mutex = kernel32.CreateMutexW
+    create_mutex.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+    create_mutex.restype = ctypes.c_void_p
+    ctypes.set_last_error(0)
+    handle = create_mutex(None, False, name)
+    return int(handle or 0), int(ctypes.get_last_error())
+
+
+def _close_windows_handle(handle: int) -> None:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [ctypes.c_void_p]
+    close_handle.restype = ctypes.c_bool
+    close_handle(ctypes.c_void_p(handle))
+
+
 def acquire_single_instance() -> bool:
     global _MUTEX_HANDLE
     if not IS_WINDOWS:
         return True
-    handle = ctypes.windll.kernel32.CreateMutexW(None, False, MUTEX_NAME)
+    handle, last_error = _open_named_mutex(MUTEX_NAME)
     if not handle:
         return False
-    _MUTEX_HANDLE = int(handle)
-    return ctypes.windll.kernel32.GetLastError() != ERROR_ALREADY_EXISTS
+    if last_error == ERROR_ALREADY_EXISTS:
+        _close_windows_handle(handle)
+        return False
+    _MUTEX_HANDLE = handle
+    return True
 
 
 def create_qt_application(argv: Sequence[str] | None = None) -> QApplication:
@@ -784,7 +805,7 @@ def main() -> int:
         LOGGER.error("Tray mode is supported only on Windows")
         return 2
     if not acquire_single_instance():
-        show_message(APP_NAME, "すでに通知領域で起動しています。")
+        LOGGER.info("Tray application is already running; duplicate launch ignored")
         return 0
 
     app = create_qt_application(sys.argv)

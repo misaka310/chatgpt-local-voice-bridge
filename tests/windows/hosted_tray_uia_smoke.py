@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import time
 
 from pywinauto import Desktop
 
@@ -51,40 +52,68 @@ def pet_window(_pid: int) -> smoke.WindowInfo | None:
     )
 
 
+def controller_process_details() -> list[dict[str, object]]:
+    details: list[dict[str, object]] = []
+    for process in smoke.controller_processes():
+        try:
+            details.append(
+                {
+                    "pid": process.pid,
+                    "ppid": process.ppid(),
+                    "exe": process.exe(),
+                    "cmdline": process.cmdline(),
+                    "createTime": process.create_time(),
+                    "status": process.status(),
+                }
+            )
+        except Exception as exc:
+            details.append({"pid": process.pid, "error": f"{type(exc).__name__}: {exc}"})
+    return details
+
+
+def stable_controller_pids(timeout: float = 15.0, stable_for: float = 1.0) -> tuple[int, ...]:
+    deadline = time.monotonic() + timeout
+    last: tuple[int, ...] = ()
+    stable_since = time.monotonic()
+    while time.monotonic() < deadline:
+        current = tuple(sorted(process.pid for process in smoke.controller_processes()))
+        if current and current == last:
+            if time.monotonic() - stable_since >= stable_for:
+                return current
+        else:
+            last = current
+            stable_since = time.monotonic()
+        time.sleep(0.25)
+    raise AssertionError(f"controller process set did not stabilize: {controller_process_details()}")
+
+
 def assert_single_instance(original_pid: int) -> None:
+    baseline = stable_controller_pids()
+    if original_pid not in baseline:
+        raise AssertionError(f"original controller PID {original_pid} not in baseline {baseline}")
+
     completed = subprocess.run([str(smoke.EXE)], cwd=smoke.ROOT, timeout=15, check=False)
     if completed.returncode != 0:
         raise RuntimeError(f"second launcher returned {completed.returncode}")
 
-    def duplicate_dialog_windows():
-        rows = [
-            row
-            for row in smoke.enum_top_windows()
-            if row.title == smoke.APP_NAME
-            and row.class_name == "#32770"
-            and smoke.USER32.IsWindowVisible(row.hwnd)
-        ]
-        return rows or None
+    deadline = time.monotonic() + 30
+    baseline_since: float | None = None
+    while time.monotonic() < deadline:
+        current = tuple(sorted(process.pid for process in smoke.controller_processes()))
+        if current == baseline:
+            if baseline_since is None:
+                baseline_since = time.monotonic()
+            elif time.monotonic() - baseline_since >= 5:
+                smoke.assert_menu_contract(original_pid)
+                return
+        else:
+            baseline_since = None
+        time.sleep(0.25)
 
-    dialogs = smoke.wait_until(
-        "duplicate-instance information dialog",
-        duplicate_dialog_windows,
-        timeout=10,
+    raise AssertionError(
+        f"controller process tree changed after duplicate launch: baseline={baseline}; "
+        f"current={controller_process_details()}"
     )
-    desktop = Desktop(backend="uia")
-    for row in dialogs:
-        dialog = desktop.window(handle=row.hwnd)
-        ok_button = dialog.child_window(title="OK", control_type="Button")
-        if not ok_button.exists(timeout=2):
-            raise AssertionError("duplicate-instance dialog has no OK button")
-        ok_button.click_input()
-
-    smoke.wait_until(
-        "duplicate-instance dialog to close",
-        lambda: not duplicate_dialog_windows(),
-        timeout=5,
-    )
-    smoke.assert_menu_contract(original_pid)
 
 
 def main() -> int:

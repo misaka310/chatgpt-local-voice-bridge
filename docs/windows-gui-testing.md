@@ -9,7 +9,7 @@ The normal CI workflow verifies source behavior with headless and offscreen test
 - the packaged launcher starts and exposes one operable notification-area UI;
 - the expected tray menu items exist and are enabled;
 - the desktop pet is visible, responsive, and returns from a moved position through `Bring Desktop Pet Back`;
-- a second launch is rejected through the real duplicate-instance information dialog while the original tray remains operable;
+- a second launch exits without creating another controller while the original tray remains operable;
 - the Local Voice panel can be shown, remains responsive, and can be hidden;
 - Restart dispatches and the tray remains operable;
 - Exit removes the controller UI;
@@ -21,7 +21,7 @@ The menu contract also checks the presence of Logs, generated-audio, reference-v
 
 The public repository runs `.github/workflows/windows-gui-smoke.yml` on GitHub-hosted `windows-latest` for pull requests and manual `workflow_dispatch` runs. No self-hosted runner, central VM workflow, repository variable, or runner label is required.
 
-The workflow checks out a fresh Windows runner, installs Node.js and Python, builds the packaged launcher, and operates the real notification-area UI. Hosted-Windows compatibility handling uses accessible Qt controls and the duplicate-instance dialog rather than PID counts or screen coordinates.
+The workflow checks out a fresh Windows runner, installs Node.js and Python, builds the packaged launcher, and operates the real notification-area UI. Hosted-Windows compatibility handling uses accessible Qt controls and verifies that duplicate launch processes exit while the original controller remains the only instance.
 
 ## Local execution
 
