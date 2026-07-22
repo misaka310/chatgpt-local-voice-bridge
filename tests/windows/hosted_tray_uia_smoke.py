@@ -71,20 +71,49 @@ def controller_process_details() -> list[dict[str, object]]:
     return details
 
 
+def stable_controller_pids(timeout: float = 15.0, stable_for: float = 1.0) -> tuple[int, ...]:
+    deadline = time.monotonic() + timeout
+    last: tuple[int, ...] = ()
+    stable_since = time.monotonic()
+    while time.monotonic() < deadline:
+        current = tuple(sorted(process.pid for process in smoke.controller_processes()))
+        if current and current == last:
+            if time.monotonic() - stable_since >= stable_for:
+                return current
+        else:
+            last = current
+            stable_since = time.monotonic()
+        time.sleep(0.25)
+    raise AssertionError(f"controller process set did not stabilize: {controller_process_details()}")
+
+
 def assert_single_instance(original_pid: int) -> None:
+    baseline = stable_controller_pids()
+    if original_pid not in baseline:
+        raise AssertionError(f"original controller PID {original_pid} not in baseline {baseline}")
+
     completed = subprocess.run([str(smoke.EXE)], cwd=smoke.ROOT, timeout=15, check=False)
     if completed.returncode != 0:
         raise RuntimeError(f"second launcher returned {completed.returncode}")
 
     deadline = time.monotonic() + 30
+    baseline_since: float | None = None
     while time.monotonic() < deadline:
-        details = controller_process_details()
-        if [row.get("pid") for row in details] == [original_pid]:
-            smoke.assert_menu_contract(original_pid)
-            return
+        current = tuple(sorted(process.pid for process in smoke.controller_processes()))
+        if current == baseline:
+            if baseline_since is None:
+                baseline_since = time.monotonic()
+            elif time.monotonic() - baseline_since >= 5:
+                smoke.assert_menu_contract(original_pid)
+                return
+        else:
+            baseline_since = None
         time.sleep(0.25)
 
-    raise AssertionError(f"duplicate controller did not exit: {controller_process_details()}")
+    raise AssertionError(
+        f"controller process tree changed after duplicate launch: baseline={baseline}; "
+        f"current={controller_process_details()}"
+    )
 
 
 def main() -> int:
