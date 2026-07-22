@@ -40,7 +40,7 @@ jobs:
           def find_qt_popup(pid: int) -> WindowInfo | None:
               desktop = Desktop(backend="uia")
               for row in enum_top_windows():
-                  if row.pid != pid or not USER32.IsWindowVisible(row.hwnd):
+                  if not USER32.IsWindowVisible(row.hwnd):
                       continue
                   try:
                       wrapper = desktop.window(handle=row.hwnd)
