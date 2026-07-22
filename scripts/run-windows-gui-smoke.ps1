@@ -9,7 +9,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $venvRoot = Join-Path $repoRoot 'local-api\.venv'
 $python = Join-Path $venvRoot 'Scripts\python.exe'
 $requirements = Join-Path $repoRoot 'tests\windows\requirements-gui-smoke.txt'
-$smokeScript = Join-Path $repoRoot 'tests\windows\tray_uia_smoke.py'
+$smokeScript = Join-Path $repoRoot 'tests\windows\hosted_tray_uia_smoke.py'
 $launcher = Join-Path $repoRoot 'LocalVoiceBridge.exe'
 
 if (-not [Environment]::UserInteractive) {
