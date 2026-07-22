@@ -122,10 +122,12 @@ def assert_single_instance(original_pid: int) -> None:
     completed = subprocess.run([str(EXE)], cwd=ROOT, timeout=15, check=False)
     if completed.returncode != 0:
         raise RuntimeError(f"second launcher returned {completed.returncode}")
-    time.sleep(2)
-    pids = [process.pid for process in controller_processes()]
-    if pids != [original_pid]:
-        raise AssertionError(f"expected one controller PID {original_pid}, got {pids}")
+
+    def original_controller_only():
+        pids = [process.pid for process in controller_processes()]
+        return pids if pids == [original_pid] else None
+
+    wait_until("duplicate controller to exit", original_controller_only, timeout=10)
 
 
 def candidate_scopes() -> Iterable[object]:

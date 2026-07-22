@@ -32,6 +32,18 @@ class TrayControllerProcessTests(unittest.TestCase):
 
         kernel32.CreateMutexW.assert_called_once_with(None, False, tray.MUTEX_NAME)
 
+    def test_duplicate_launch_exits_without_blocking_message(self) -> None:
+        with (
+            mock.patch.object(tray, "IS_WINDOWS", True),
+            mock.patch.object(tray, "configure_logging"),
+            mock.patch.object(tray, "migrate_legacy_startup"),
+            mock.patch.object(tray, "acquire_single_instance", return_value=False),
+            mock.patch.object(tray, "show_message") as show_message,
+        ):
+            self.assertEqual(tray.main(), 0)
+
+        show_message.assert_not_called()
+
     def test_compatible_existing_server_is_not_owned_or_terminated(self) -> None:
         controller = tray.VoiceBridgeController()
         with (

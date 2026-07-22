@@ -784,7 +784,7 @@ def main() -> int:
         LOGGER.error("Tray mode is supported only on Windows")
         return 2
     if not acquire_single_instance():
-        show_message(APP_NAME, "すでに通知領域で起動しています。")
+        LOGGER.info("Tray application is already running; duplicate launch ignored")
         return 0
 
     app = create_qt_application(sys.argv)
