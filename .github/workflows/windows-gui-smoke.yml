@@ -56,12 +56,16 @@ jobs:
 
 
           def close_popup
-          '@.Replace("          ", "")
+          '@
           $updated = [regex]::Replace($content, $pattern, $replacement, 1)
           if ($updated -eq $content) {
             throw 'Expected Qt popup discovery function was not found.'
           }
           [IO.File]::WriteAllText($path, $updated, [Text.UTF8Encoding]::new($false))
+          python -m py_compile $path
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Hosted Qt popup adaptation produced invalid Python.'
+          }
 
       - name: Run packaged tray GUI smoke
         shell: powershell
