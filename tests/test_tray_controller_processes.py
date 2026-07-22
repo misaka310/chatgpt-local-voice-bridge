@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import sys
-import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -19,18 +18,42 @@ import tray_controller as tray  # noqa: E402
 
 class TrayControllerProcessTests(unittest.TestCase):
     def test_windows_mutex_rejects_second_instance(self) -> None:
-        kernel32 = types.SimpleNamespace(
-            CreateMutexW=mock.Mock(return_value=123),
-            GetLastError=mock.Mock(return_value=tray.ERROR_ALREADY_EXISTS),
-        )
-        fake_windll = types.SimpleNamespace(kernel32=kernel32)
         with (
             mock.patch.object(tray, "IS_WINDOWS", True),
-            mock.patch.object(tray.ctypes, "windll", fake_windll, create=True),
+            mock.patch.object(
+                tray,
+                "_open_named_mutex",
+                return_value=(123, tray.ERROR_ALREADY_EXISTS),
+            ) as open_mutex,
+            mock.patch.object(tray, "_close_windows_handle") as close_handle,
         ):
             self.assertFalse(tray.acquire_single_instance())
 
-        kernel32.CreateMutexW.assert_called_once_with(None, False, tray.MUTEX_NAME)
+        open_mutex.assert_called_once_with(tray.MUTEX_NAME)
+        close_handle.assert_called_once_with(123)
+
+    def test_windows_mutex_keeps_unique_instance_handle_open(self) -> None:
+        with (
+            mock.patch.object(tray, "IS_WINDOWS", True),
+            mock.patch.object(tray, "_open_named_mutex", return_value=(456, 0)),
+            mock.patch.object(tray, "_close_windows_handle") as close_handle,
+        ):
+            self.assertTrue(tray.acquire_single_instance())
+
+        self.assertEqual(tray._MUTEX_HANDLE, 456)
+        close_handle.assert_not_called()
+
+    def test_duplicate_launch_exits_without_blocking_message(self) -> None:
+        with (
+            mock.patch.object(tray, "IS_WINDOWS", True),
+            mock.patch.object(tray, "configure_logging"),
+            mock.patch.object(tray, "migrate_legacy_startup"),
+            mock.patch.object(tray, "acquire_single_instance", return_value=False),
+            mock.patch.object(tray, "show_message") as show_message,
+        ):
+            self.assertEqual(tray.main(), 0)
+
+        show_message.assert_not_called()
 
     def test_compatible_existing_server_is_not_owned_or_terminated(self) -> None:
         controller = tray.VoiceBridgeController()
