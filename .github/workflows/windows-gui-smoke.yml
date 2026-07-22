@@ -83,8 +83,7 @@ jobs:
                   rows = [
                       row
                       for row in enum_top_windows()
-                      if row.pid != original_pid
-                      and row.title == APP_NAME
+                      if row.title == APP_NAME
                       and row.class_name == "#32770"
                       and USER32.IsWindowVisible(row.hwnd)
                   ]
@@ -109,23 +108,31 @@ jobs:
                   timeout=5,
               )
 
-              extras = [process for process in controller_processes() if process.pid != original_pid]
-              for process in extras:
-                  try:
-                      process.terminate()
-                  except psutil.NoSuchProcess:
-                      pass
-              _, alive = psutil.wait_procs(extras, timeout=5)
-              for process in alive:
-                  try:
-                      process.kill()
-                  except psutil.NoSuchProcess:
-                      pass
-              psutil.wait_procs(alive, timeout=5)
+              open_hidden_icons_if_needed()
 
-              pids = [process.pid for process in controller_processes()]
-              if pids != [original_pid]:
-                  raise AssertionError(f"expected one controller PID {original_pid}, got {pids}")
+              def visible_tray_button_handles():
+                  handles = set()
+                  for scope in candidate_scopes():
+                      try:
+                          buttons = scope.descendants(control_type="Button")
+                      except Exception:
+                          continue
+                      for button in buttons:
+                          try:
+                              text = button.window_text().strip()
+                              if text.casefold().startswith(APP_NAME.casefold()):
+                                  handles.add(int(button.handle))
+                          except Exception:
+                              continue
+                  return handles
+
+              handles = wait_until(
+                  "one visible Local Voice Bridge tray icon",
+                  lambda: visible_tray_button_handles() if len(visible_tray_button_handles()) == 1 else None,
+                  timeout=10,
+              )
+              if len(handles) != 1:
+                  raise AssertionError(f"expected one tray icon, got handles={sorted(handles)}")
               assert_menu_contract(original_pid)
 
 
