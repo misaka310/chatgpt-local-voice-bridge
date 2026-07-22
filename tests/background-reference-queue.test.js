@@ -52,6 +52,7 @@ function createHarness() {
       },
     },
     runtime: {
+      getManifest() { return { version: '0.2.0' }; },
       onInstalled: { addListener() {} },
       onStartup: { addListener() {} },
       onMessage: {

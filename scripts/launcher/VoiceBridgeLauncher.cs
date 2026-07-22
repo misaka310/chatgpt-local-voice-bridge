@@ -5,8 +5,8 @@ using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyTitle("Local Voice Bridge Launcher")]
 [assembly: System.Reflection.AssemblyProduct("Local Voice Bridge")]
-[assembly: System.Reflection.AssemblyDescription("Small Windows launcher for the local tray application")]
-[assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
+[assembly: System.Reflection.AssemblyDescription("Small Windows launcher for the local tray application and setup")]
+[assembly: System.Reflection.AssemblyVersion("1.1.0.0")]
 
 namespace LocalVoiceBridgeLauncher
 {
@@ -18,25 +18,32 @@ namespace LocalVoiceBridgeLauncher
         private static int Main(string[] args)
         {
             bool selfTest = HasArgument(args, "--self-test");
+            bool setup = HasArgument(args, "--setup");
             string root = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
             string localApi = Path.Combine(root, "local-api");
             string python = Path.Combine(localApi, ".venv", "Scripts", "python.exe");
             string pythonw = Path.Combine(localApi, ".venv", "Scripts", "pythonw.exe");
             string controller = Path.Combine(localApi, "tray_controller.py");
+            string setupGui = Path.Combine(root, "scripts", "setup", "setup-gui.ps1");
+
+            if (setup)
+            {
+                return LaunchSetup(setupGui, root, selfTest);
+            }
 
             string validationError = ValidateEnvironment(python, pythonw, controller, localApi);
             if (!String.IsNullOrEmpty(validationError))
             {
-                if (!selfTest)
+                if (!selfTest && ShowSetupPrompt(validationError))
                 {
-                    ShowError(validationError);
+                    return LaunchSetup(setupGui, root, false);
                 }
                 return 2;
             }
 
             if (selfTest)
             {
-                return 0;
+                return File.Exists(setupGui) ? 0 : 4;
             }
 
             try
@@ -58,11 +65,58 @@ namespace LocalVoiceBridgeLauncher
             }
         }
 
+        private static int LaunchSetup(string setupGui, string root, bool selfTest)
+        {
+            if (!File.Exists(setupGui))
+            {
+                if (!selfTest)
+                {
+                    ShowError("セットアップ画面が見つかりません。\n\n" + setupGui);
+                }
+                return 4;
+            }
+
+            if (selfTest)
+            {
+                return 0;
+            }
+
+            try
+            {
+                string powershell = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+                    "System32",
+                    "WindowsPowerShell",
+                    "v1.0",
+                    "powershell.exe"
+                );
+                if (!File.Exists(powershell))
+                {
+                    powershell = "powershell.exe";
+                }
+
+                ProcessStartInfo startInfo = new ProcessStartInfo();
+                startInfo.FileName = powershell;
+                startInfo.Arguments = "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File " + Quote(setupGui);
+                startInfo.WorkingDirectory = root;
+                startInfo.UseShellExecute = false;
+                startInfo.CreateNoWindow = true;
+                startInfo.WindowStyle = ProcessWindowStyle.Hidden;
+                Process.Start(startInfo);
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                ShowError("セットアップ画面を起動できませんでした。\n\n" + ex.Message);
+                return 5;
+            }
+        }
+
         private static string ValidateEnvironment(string python, string pythonw, string controller, string workingDirectory)
         {
             if (!File.Exists(python) || !File.Exists(pythonw))
             {
-                return "音声環境がありません。setup-voice-env.cmd を実行してください。";
+                return "音声環境がありません。";
             }
 
             if (!File.Exists(controller))
@@ -84,12 +138,12 @@ namespace LocalVoiceBridgeLauncher
                 {
                     if (check == null)
                     {
-                        return "Python環境を確認できませんでした。setup-voice-env.cmd を再実行してください。";
+                        return "Python環境を確認できませんでした。";
                     }
                     check.WaitForExit();
                     if (check.ExitCode != 0)
                     {
-                        return "PySide6 が見つかりません。setup-voice-env.cmd を再実行してください。";
+                        return "Windows小窓に必要なPySide6が見つかりません。";
                     }
                 }
             }
@@ -99,6 +153,18 @@ namespace LocalVoiceBridgeLauncher
             }
 
             return null;
+        }
+
+        private static bool ShowSetupPrompt(string message)
+        {
+            Application.EnableVisualStyles();
+            DialogResult result = MessageBox.Show(
+                message + "\n\nセットアップ画面を開きますか？",
+                AppTitle,
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Information
+            );
+            return result == DialogResult.Yes;
         }
 
         private static bool HasArgument(string[] args, string expected)
