@@ -47,6 +47,7 @@ DEFAULT_EXTENSION_STATE: dict[str, Any] = {
     "playbackPhase": "idle",
     "replayAvailable": False,
     "tabsCount": 0,
+    "loadedVersion": "",
     "updatedAt": 0.0,
 }
 
@@ -134,6 +135,7 @@ def _normalize_extension_state(value: Any, *, now: float) -> dict[str, Any]:
         "playbackPhase": playback_phase,
         "replayAvailable": bool(raw.get("replayAvailable")),
         "tabsCount": tabs_count,
+        "loadedVersion": str(raw.get("loadedVersion") or "").strip()[:32],
         "updatedAt": float(now),
     }
 

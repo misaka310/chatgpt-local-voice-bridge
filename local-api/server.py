@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import importlib.util
 import json
 import mimetypes
 import os
@@ -29,6 +30,7 @@ DESKTOP_PET_SETTINGS_PATH = Path(
 CONTROL_PANEL_STATE_PATH = ROOT / "runtime" / "control-panel-state.json"
 DESKTOP_PET_ROOT = ROOT.parent / "extension" / "assets" / "pet"
 DESKTOP_PET_SETTINGS_LOCK = threading.Lock()
+EXTENSION_MANIFEST_PATH = ROOT.parent / "extension" / "manifest.json"
 CONTROL_STATE = ControlStateStore(
     Path(os.environ.get("LOCAL_VOICE_CONTROL_STATE") or CONTROL_PANEL_STATE_PATH).expanduser().resolve()
 )
@@ -80,6 +82,32 @@ def deep_merge(base: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
 def load_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8-sig") as handle:
         return json.load(handle)
+
+
+def extension_package_version(path: Path = EXTENSION_MANIFEST_PATH) -> str:
+    try:
+        payload = load_json(path)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("version") or "").strip()[:32]
+
+
+def enrich_control_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
+    result = dict(payload)
+    extension = dict(result.get("extension") or {})
+    expected = extension_package_version()
+    loaded = str(extension.get("loadedVersion") or "").strip()
+    connected = bool(extension.get("connected"))
+    extension["expectedVersion"] = expected
+    extension["updateRequired"] = bool(connected and expected and loaded != expected)
+    result["extension"] = extension
+    result["components"] = {
+        "sttInstalled": importlib.util.find_spec("faster_whisper") is not None
+        and importlib.util.find_spec("sounddevice") is not None,
+    }
+    return result
 
 
 def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -278,7 +306,7 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/v1/control-panel":
             try:
-                payload = CONTROL_STATE.snapshot()
+                payload = enrich_control_snapshot(CONTROL_STATE.snapshot())
                 payload["referenceVoices"] = reference_voice_list(load_config())
                 json_response(self, HTTPStatus.OK, payload)
             except Exception as exc:
@@ -288,7 +316,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 values = parse_qs(parsed.query).get("after", ["0"])
                 after_id = int(values[0] or 0)
-                json_response(self, HTTPStatus.OK, CONTROL_STATE.poll(after_id))
+                json_response(self, HTTPStatus.OK, enrich_control_snapshot(CONTROL_STATE.poll(after_id)))
             except (TypeError, ValueError) as exc:
                 json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
             return

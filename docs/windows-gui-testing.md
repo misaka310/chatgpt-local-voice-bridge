@@ -8,6 +8,7 @@ The normal CI workflow verifies source behavior with headless and offscreen test
 
 - the packaged launcher starts exactly one tray controller;
 - the expected tray menu items exist and are enabled;
+- the desktop pet is visible, responsive, and returns from a moved position through `Bring Desktop Pet Back`;
 - a second launch does not create another controller;
 - the Local Voice panel can be shown, remains responsive, and can be hidden;
 - Restart dispatches and the tray remains operable;

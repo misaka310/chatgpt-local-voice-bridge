@@ -287,6 +287,7 @@ class LocalVoiceControlPanel(QWidget):
         settings = snapshot.get("settings") if isinstance(snapshot.get("settings"), dict) else {}
         extension = snapshot.get("extension") if isinstance(snapshot.get("extension"), dict) else {}
         conversation = snapshot.get("conversation") if isinstance(snapshot.get("conversation"), dict) else {}
+        components = snapshot.get("components") if isinstance(snapshot.get("components"), dict) else {}
         voices = snapshot.get("referenceVoices") if isinstance(snapshot.get("referenceVoices"), list) else []
         reference_voice = str(settings.get("referenceVoice") or "")
 
@@ -319,7 +320,14 @@ class LocalVoiceControlPanel(QWidget):
             self._set_current_text("Open or reload a ChatGPT tab", tooltip="")
 
         mic_enabled = bool(settings.get("micConversationEnabled"))
-        if mic_enabled:
+        stt_installed = bool(components.get("sttInstalled"))
+        self.mic_button.setEnabled(stt_installed)
+        self.stt_model_combo.setEnabled(stt_installed)
+        self.cancel_grace_spin.setEnabled(stt_installed)
+        self.mic_button.setText("マイク会話" if stt_installed else "マイク会話（追加セットアップ）")
+        if not stt_installed:
+            self.mic_detail_label.setText("通知領域の環境セットアップから「読み上げ + マイク会話」を追加してください")
+        elif mic_enabled:
             self.status_label.setText(str(conversation.get("statusText") or "待機中（右Ctrl＋＼ 長押し）"))
             device = str(conversation.get("sttDevice") or "未ロード")
             device_label = "CUDA" if device.lower() == "cuda" else "CPU fallback" if device.lower() == "cpu" else device
@@ -335,6 +343,14 @@ class LocalVoiceControlPanel(QWidget):
         self.next_button.setEnabled(connected)
         self.regen_button.setEnabled(connected)
         self.replay_button.setEnabled(connected and bool(extension.get("replayAvailable")))
+
+        if bool(extension.get("updateRequired")):
+            loaded = str(extension.get("loadedVersion") or "旧版")
+            expected = str(extension.get("expectedVersion") or "最新版")
+            self.status_label.setText("拡張機能の再読み込みが必要")
+            self._set_current_text(
+                f"Chrome / Braveの拡張機能画面でLocal Voice Bridgeを再読み込みしてください（{loaded} → {expected}）"
+            )
 
     def _set_current_text(self, text: str, *, tooltip: str | None = None) -> None:
         self._current_text_full = str(text or "")

@@ -71,6 +71,7 @@ class ControlStateStoreTests(unittest.TestCase):
                     "playbackPhase": "playing",
                     "replayAvailable": True,
                     "tabsCount": 3,
+                    "loadedVersion": "0.2.0",
                 },
                 now=10.0,
             )
@@ -79,6 +80,7 @@ class ControlStateStoreTests(unittest.TestCase):
             self.assertTrue(connected["connected"])
             self.assertEqual(connected["currentText"], "全タブの返答です。")
             self.assertEqual(connected["tabsCount"], 3)
+            self.assertEqual(connected["loadedVersion"], "0.2.0")
 
             stale = store.snapshot(now=14.1)["extension"]
             self.assertFalse(stale["connected"])

@@ -1,20 +1,4 @@
-huggingface-hub==1.23.0
-soundfile>=0.12.0
-descript-audiotools>=0.7.2
-transformers==5.5.0
-sentencepiece>=0.1.99,<0.2
-safetensors>=0.7.0
-pyyaml>=6.0
-tqdm>=4.67.3
-datasets>=3.0.0
-numpy>=1.24
-numba>=0.57.0
-llvmlite>=0.40.0
-peft>=0.18.0
-gradio>=5.0.0
-wandb>=0.17.0
-PySide6==6.11.1
-faster-whisper==1.2.1
-sounddevice>=0.5.1,<0.6
-dacvae @ git+https://github.com/facebookresearch/dacvae.git
-silentcipher @ git+https://github.com/SesameAILabs/silentcipher.git@d46d7d0893a583d8968ab3a6626e2289faec9152
+# Compatibility bundle for existing developer workflows.
+# Normal users should install through LocalVoiceBridge.exe and choose a component profile.
+-r requirements-core.txt
+-r requirements-stt.txt

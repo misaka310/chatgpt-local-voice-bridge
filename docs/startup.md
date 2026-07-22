@@ -8,7 +8,7 @@
 
 `start-voice-bridge.vbs`は既存利用者向けの互換入口としてのみ残り、内部ではEXEへ転送します。通常起動とWindowsログイン時の自動起動はEXEを使用します。
 
-`.venv`、`pythonw.exe`、`PySide6`、`QtWidgets`、`QtSvg`のいずれかが不足している場合は、`setup-voice-env.cmd`をもう一度実行するよう案内されます。セットアップを再実行すると、既存の音声環境へ必要なQt依存関係が追加されます。
+`.venv`、`pythonw.exe`、`PySide6`、`QtWidgets`、`QtSvg`のいずれかが不足している場合は、EXEがセットアップ画面を開くか確認します。再実行時は完了済み工程を検証後にスキップし、不足工程だけを続行します。
 
 ## 通知領域メニュー
 

@@ -4,26 +4,49 @@
 
 ## 実行
 
-リポジトリルートで `setup-voice-env.cmd` を実行します。
+リポジトリルートで `setup-voice-env.cmd` を実行します。`LocalVoiceBridge.exe --setup`でも同じ画面を開けます。
 
-このbatは次を行います。
+セットアップ画面では次のプロファイルを選択します。
 
-1. `local-api/.venv` 作成
-2. pip更新
-3. CUDA対応Torch導入
-4. Irodori direct依存導入
-5. CUDA/Torch確認
-6. Irodoriモデルとcodecを Hugging Face cache へ事前取得
-7. `local-api/runtime/audio` 作成
-8. 通常起動用の小さな`LocalVoiceBridge.exe`を生成
-9. Windowsのスタートメニューへ`Local Voice Bridge`を登録
+| プロファイル | 導入内容 | 推定ダウンロード | 必要な空き容量 |
+| --- | --- | ---: | ---: |
+| 読み上げのみ | CUDA版PyTorch、TorchCodec、FFmpeg、Irodori、PySide6 | 約8〜14 GB | 約15〜25 GB |
+| 読み上げ + マイク会話 | 読み上げ環境 + faster-whisper、sounddevice | 約8〜17 GB | 約18〜29 GB |
+| 開発環境 | 読み上げ・STT + npm、Playwright Chromium、Windows GUIスモーク依存 | 約9〜19 GB | 約20〜33 GB |
 
-setup完了表示は、モデルとcodecの取得確認、ランチャーEXEの生成、スタートメニュー登録が終わった後にだけ出ます。登録後はWindows検索から`Local Voice Bridge`を起動できます。
+通常利用で読み上げだけを使う場合は、`読み上げのみ`を選択してください。マイク会話を後から使う場合は、再度セットアップ画面を開いて`読み上げ + マイク会話`を実行します。
+
+## 工程表示と再開
+
+各工程は画面上で`running`、`passed`、`skipped`、`failed`として表示されます。失敗時は`LVB-SETUP-xxx`形式のコードと失敗工程を表示します。
+
+- 完了記録: `local-api/runtime/setup/state.json`
+- 失敗詳細: `local-api/runtime/setup/last-failure.json`
+- 全ログ: `local-api/runtime/setup/setup.log`
+
+再実行時は完了済み工程を再検証し、問題がなければスキップします。途中でネットワーク切断や容量不足が起きても、最初から全工程を繰り返しません。画面の`失敗内容をコピー`で、失敗コードとログ末尾をクリップボードへ取得できます。
+
+## 導入する主な工程
+
+1. Pythonと空き容量の確認
+2. `local-api/.venv`作成
+3. CUDA対応Torch、TorchCodec、共有FFmpegの導入
+4. 読み上げ用依存とIrodoriの導入
+5. CUDA/Torchとモデル・codecの確認
+6. `LocalVoiceBridge.exe`の構築
+7. Windowsスタートメニューへの登録
+8. 選択時のみSTTまたは開発依存の追加
+
+完了表示は、選択したプロファイルに必要な全工程が成功した後にだけ出ます。
+
+## ブラウザ拡張
+
+セットアップ画面の`拡張機能の導入手順`または[extension/INSTALL.md](../extension/INSTALL.md)を開き、Chrome / Braveへ`extension`フォルダを読み込みます。リポジトリ更新後に旧版が残っている場合は、Windows Local Voice小窓が再読み込みを案内します。
 
 ## キャッシュ
 
 通常は `%USERPROFILE%\.cache\huggingface` です。`HF_HOME` を指定している場合はその場所です。
 
-## CUDA を使えない場合
+## CUDAを使えない場合
 
-公開初回導線は NVIDIA GPU/CUDA を前提にしています。CUDA が使えない場合、setup は止まります。CPU 実行へ設定を書き換える方法は通常利用としてサポートしていません。GPU要件を満たせない場合でも、拡張の通信確認だけなら `npm run test:ci` を利用できます。
+公開初回導線は NVIDIA GPU/CUDA を前提にしています。CUDA が使えない場合、セットアップは止まります。CPU実行へ設定を書き換える方法は通常利用としてサポートしていません。GPU要件を満たせない場合でも、拡張の通信確認だけなら `npm run test:ci` を利用できます。

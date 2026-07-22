@@ -390,6 +390,7 @@ function externalStateSnapshot() {
     playbackPhase,
     replayAvailable: Boolean(lastPlayedItem && lastPlayedItem.audioUrl),
     tabsCount: tabs.size,
+    loadedVersion: chrome.runtime.getManifest().version,
   };
 }
 

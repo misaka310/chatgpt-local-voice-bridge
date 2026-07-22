@@ -16,6 +16,7 @@ from PIL import ImageGrab
 from pywinauto import Desktop
 
 APP_NAME = "Local Voice Bridge"
+PET_WINDOW_TITLE = "Local Voice Bridge Desktop Pet"
 ROOT = Path(__file__).resolve().parents[2]
 EXE = ROOT / "LocalVoiceBridge.exe"
 CONTROLLER = (ROOT / "local-api" / "tray_controller.py").resolve()
@@ -25,6 +26,7 @@ RESULT_JSON = RESULT_DIR / "result.json"
 FAILURE_SCREENSHOT = RESULT_DIR / "failure.png"
 EXPECTED_ACTIONS = (
     "Show Local Voice panel",
+    "Bring Desktop Pet Back",
     "Restart Voice Bridge",
     "Open controller log",
     "Open generated audio folder",
@@ -38,6 +40,9 @@ USER32 = ctypes.windll.user32
 WM_CLOSE = 0x0010
 WM_NULL = 0x0000
 SMTO_ABORTIFHUNG = 0x0002
+SWP_NOSIZE = 0x0001
+SWP_NOZORDER = 0x0004
+SWP_NOACTIVATE = 0x0010
 
 
 @dataclass(frozen=True)
@@ -263,6 +268,32 @@ def panel_window(pid: int) -> WindowInfo | None:
     )
 
 
+def pet_window(pid: int) -> WindowInfo | None:
+    return next(
+        (
+            row
+            for row in enum_top_windows()
+            if row.pid == pid
+            and row.title == PET_WINDOW_TITLE
+            and USER32.IsWindowVisible(row.hwnd)
+        ),
+        None,
+    )
+
+
+def window_rect(hwnd: int) -> tuple[int, int, int, int]:
+    rect = wt.RECT()
+    if not USER32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        raise ctypes.WinError()
+    return int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)
+
+
+def move_window(hwnd: int, x: int, y: int) -> None:
+    flags = SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+    if not USER32.SetWindowPos(hwnd, 0, int(x), int(y), 0, 0, flags):
+        raise ctypes.WinError()
+
+
 def assert_window_responsive(hwnd: int) -> None:
     result = ctypes.c_size_t()
     ok = USER32.SendMessageTimeoutW(hwnd, WM_NULL, 0, 0, SMTO_ABORTIFHUNG, 2000, ctypes.byref(result))
@@ -276,6 +307,35 @@ def verify_panel_toggle(pid: int) -> None:
     assert_window_responsive(panel.hwnd)
     click_menu_item(pid, "Hide Local Voice panel")
     wait_until("Local Voice panel to hide", lambda: panel_window(pid) is None, timeout=8)
+
+
+def verify_pet_visible_and_position_reset(pid: int) -> None:
+    pet = wait_until("desktop pet window", lambda: pet_window(pid), timeout=8)
+    assert_window_responsive(pet.hwnd)
+    original = window_rect(pet.hwnd)
+    target_x, target_y = 20, 20
+    move_window(pet.hwnd, target_x, target_y)
+
+    def moved_to_test_position():
+        current = window_rect(pet.hwnd)
+        if abs(current[0] - target_x) <= 3 and abs(current[1] - target_y) <= 3:
+            return current
+        return None
+
+    moved = wait_until("desktop pet test position", moved_to_test_position, timeout=5)
+    click_menu_item(pid, "Bring Desktop Pet Back")
+
+    def moved_from_test_position():
+        current = window_rect(pet.hwnd)
+        if abs(current[0] - moved[0]) > 30 or abs(current[1] - moved[1]) > 30:
+            return current
+        return None
+
+    restored = wait_until("desktop pet default position", moved_from_test_position, timeout=8)
+    if restored[2] <= restored[0] or restored[3] <= restored[1]:
+        raise AssertionError(f"invalid restored pet bounds: {restored}")
+    if original == moved:
+        raise AssertionError("desktop pet did not move to the test position")
 
 
 def log_tail_from(offset: int) -> str:
@@ -362,6 +422,11 @@ def main() -> int:
         current_pid = process.pid
         run_scenario(results, "packaged launcher starts", lambda: None)
         run_scenario(results, "tray menu contract", lambda: assert_menu_contract(current_pid))
+        run_scenario(
+            results,
+            "desktop pet visible and position reset",
+            lambda: verify_pet_visible_and_position_reset(current_pid),
+        )
         run_scenario(results, "single instance", lambda: assert_single_instance(current_pid))
         run_scenario(results, "panel show hide and responsiveness", lambda: verify_panel_toggle(current_pid))
         run_scenario(results, "restart stays operable", lambda: verify_restart(current_pid))

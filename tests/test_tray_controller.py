@@ -116,10 +116,13 @@ class TrayControllerContractTests(unittest.TestCase):
         build_script = (ROOT / "scripts" / "build-launcher.ps1").read_text(encoding="utf-8")
         shortcut_script_path = ROOT / "scripts" / "install-start-menu-shortcut.ps1"
         setup_script = (ROOT / "setup-voice-env.cmd").read_text(encoding="utf-8")
+        setup_engine = (ROOT / "scripts" / "setup" / "setup-engine.ps1").read_text(encoding="utf-8")
+        setup_gui = (ROOT / "scripts" / "setup" / "setup-gui.ps1").read_text(encoding="utf-8")
 
         self.assertIn("pythonw.exe", launcher)
         self.assertIn("from PySide6 import QtWidgets, QtSvg", launcher)
         self.assertIn("--self-test", launcher)
+        self.assertIn("--setup", launcher)
         self.assertIn("WindowsApplication", build_script)
         self.assertIn("LocalVoiceBridge.exe", build_script)
         self.assertTrue(shortcut_script_path.is_file())
@@ -130,10 +133,15 @@ class TrayControllerContractTests(unittest.TestCase):
         self.assertIn("TargetPath", shortcut_script)
         self.assertIn("WorkingDirectory", shortcut_script)
         self.assertIn("IconLocation", shortcut_script)
-        self.assertIn("build-launcher.ps1", setup_script)
-        self.assertIn("install-start-menu-shortcut.ps1", setup_script)
         self.assertIn("LocalVoiceBridge.exe", setup_script)
-        self.assertIn('del /f /q "%CD%\\ChatGPTLocalVoiceBridge.exe"', setup_script)
+        self.assertIn("--setup", setup_script)
+        self.assertIn("requirements-core.txt", setup_engine)
+        self.assertIn("requirements-stt.txt", setup_engine)
+        self.assertIn("runtime\\setup", setup_engine)
+        self.assertIn("LVB_PROGRESS", setup_engine)
+        self.assertIn("build-launcher.ps1", setup_engine)
+        self.assertIn("install-start-menu-shortcut.ps1", setup_engine)
+        self.assertIn("失敗内容をコピー", setup_gui)
 
     def test_legacy_vbs_only_forwards_to_the_exe(self) -> None:
         launcher = (ROOT / "start-voice-bridge.vbs").read_text(encoding="utf-8")
@@ -197,9 +205,15 @@ class TrayControllerContractTests(unittest.TestCase):
         self.assertNotIn("icon.run(", source)
 
     def test_requirements_pin_pyside_and_remove_pystray(self) -> None:
-        requirements = (ROOT / "local-api" / "requirements.txt").read_text(encoding="utf-8")
-        self.assertIn("PySide6==", requirements)
-        self.assertNotIn("pystray", requirements)
+        core = (ROOT / "local-api" / "requirements-core.txt").read_text(encoding="utf-8")
+        stt = (ROOT / "local-api" / "requirements-stt.txt").read_text(encoding="utf-8")
+        bundle = (ROOT / "local-api" / "requirements.txt").read_text(encoding="utf-8")
+        self.assertIn("PySide6==", core)
+        self.assertNotIn("faster-whisper", core)
+        self.assertIn("faster-whisper", stt)
+        self.assertIn("requirements-core.txt", bundle)
+        self.assertIn("requirements-stt.txt", bundle)
+        self.assertNotIn("pystray", core + stt + bundle)
 
 
 if __name__ == "__main__":

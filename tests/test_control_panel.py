@@ -46,6 +46,7 @@ class FakeControlClient:
                 "sttModel": "medium",
                 "error": "",
             },
+            "components": {"sttInstalled": True},
             "extension": {
                 "connected": True,
                 "statusText": "Playing chunk 1/2",
@@ -133,6 +134,63 @@ class ControlPanelQtTests(unittest.TestCase):
             self.assertIn({"voiceVolume": 0.25}, client.settings_calls)
             self.assertIn({"referenceVoice": ""}, client.settings_calls)
             self.assertEqual(client.commands, ["next", "regen", "replay"])
+            panel.shutdown()
+
+    def test_missing_stt_component_disables_microphone_controls(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeControlClient()
+            original = client.get_snapshot
+
+            def snapshot_without_stt() -> dict[str, object]:
+                payload = original()
+                payload["components"] = {"sttInstalled": False}
+                return payload
+
+            client.get_snapshot = snapshot_without_stt  # type: ignore[method-assign]
+            panel = LocalVoiceControlPanel(
+                client,
+                state_path=Path(temp_dir) / "panel-window.json",
+                start_polling=False,
+            )
+            panel.refresh_now()
+            self.app.processEvents()
+
+            self.assertFalse(panel.mic_button.isEnabled())
+            self.assertFalse(panel.stt_model_combo.isEnabled())
+            self.assertFalse(panel.cancel_grace_spin.isEnabled())
+            self.assertIn("追加セットアップ", panel.mic_button.text())
+            self.assertIn("読み上げ + マイク会話", panel.mic_detail_label.text())
+            panel.shutdown()
+
+    def test_old_extension_version_shows_reload_instruction(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeControlClient()
+            original = client.get_snapshot
+
+            def snapshot_with_old_extension() -> dict[str, object]:
+                payload = original()
+                extension = dict(payload["extension"])
+                extension.update(
+                    {
+                        "loadedVersion": "0.1.0",
+                        "expectedVersion": "0.2.0",
+                        "updateRequired": True,
+                    }
+                )
+                payload["extension"] = extension
+                return payload
+
+            client.get_snapshot = snapshot_with_old_extension  # type: ignore[method-assign]
+            panel = LocalVoiceControlPanel(
+                client,
+                state_path=Path(temp_dir) / "panel-window.json",
+                start_polling=False,
+            )
+            panel.refresh_now()
+            self.app.processEvents()
+
+            self.assertEqual(panel.status_label.text(), "拡張機能の再読み込みが必要")
+            self.assertIn("0.1.0 → 0.2.0", panel.current_text_label.toolTip())
             panel.shutdown()
 
     def test_toggle_visibility_and_close_hide_the_panel(self) -> None:

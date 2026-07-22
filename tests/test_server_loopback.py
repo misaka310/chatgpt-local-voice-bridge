@@ -88,6 +88,36 @@ class LoopbackConfigTests(unittest.TestCase):
                 with self.assertRaisesRegex(server.BridgeError, "ローカル専用"):
                     server.normalize_config(self.config(publicBaseUrl=url))
 
+    def test_extension_package_version_reads_manifest(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manifest = Path(temp_dir) / "manifest.json"
+            manifest.write_text(json.dumps({"version": "1.2.3"}), encoding="utf-8")
+            self.assertEqual(server.extension_package_version(manifest), "1.2.3")
+
+    def test_control_snapshot_requires_reload_for_old_or_unknown_extension(self):
+        original = server.extension_package_version
+        server.extension_package_version = lambda: "0.2.0"
+        try:
+            matching = server.enrich_control_snapshot(
+                {"extension": {"connected": True, "loadedVersion": "0.2.0"}}
+            )
+            old = server.enrich_control_snapshot(
+                {"extension": {"connected": True, "loadedVersion": "0.1.0"}}
+            )
+            unknown = server.enrich_control_snapshot(
+                {"extension": {"connected": True, "loadedVersion": ""}}
+            )
+            disconnected = server.enrich_control_snapshot(
+                {"extension": {"connected": False, "loadedVersion": ""}}
+            )
+        finally:
+            server.extension_package_version = original
+
+        self.assertFalse(matching["extension"]["updateRequired"])
+        self.assertTrue(old["extension"]["updateRequired"])
+        self.assertTrue(unknown["extension"]["updateRequired"])
+        self.assertFalse(disconnected["extension"]["updateRequired"])
+        self.assertEqual(old["extension"]["expectedVersion"], "0.2.0")
 
     def test_desktop_pet_id_rejects_path_like_values(self):
         for value in ("", "none", ".", "..", "../misaka", "voices/misaka", r"voices\misaka"):
