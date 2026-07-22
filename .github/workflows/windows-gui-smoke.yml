@@ -104,23 +104,17 @@ jobs:
           def create_qt_application
           '@
           $updated = [regex]::Replace($content, $pattern, $replacement, 1)
-          $updated = $updated.Replace("`r`n", "`n")
-          $duplicateOld = @'
-              if not acquire_single_instance():
-                  show_message(APP_NAME, "すでに通知領域で起動しています。")
-                  return 0
-          '@
-          $duplicateNew = @'
-              if not acquire_single_instance():
+          $duplicatePattern = 'if not acquire_single_instance\(\):\s+show_message\(APP_NAME,\s*"すでに通知領域で起動しています。"\)\s+return 0'
+          $duplicateReplacement = @'
+          if not acquire_single_instance():
                   LOGGER.info("A tray controller instance is already running")
                   return 0
           '@
-          $duplicateOld = $duplicateOld.Replace("`r`n", "`n").Trim()
-          $duplicateNew = $duplicateNew.Replace("`r`n", "`n").Trim()
-          if (-not $updated.Contains($duplicateOld)) {
-            throw 'Expected duplicate-launch message block was not found.'
+          $duplicateReplacement = $duplicateReplacement.Replace("`r`n", "`n").TrimEnd()
+          $updated = [regex]::Replace($updated, $duplicatePattern, $duplicateReplacement, 1)
+          if ($updated -notmatch 'A tray controller instance is already running') {
+            throw 'Expected duplicate-launch message block was not replaced.'
           }
-          $updated = $updated.Replace($duplicateOld, $duplicateNew)
           [IO.File]::WriteAllText($path, $updated, [Text.UTF8Encoding]::new($false))
           python -m py_compile 'tests/windows/tray_uia_smoke.py' 'local-api/tray_controller.py'
           if ($LASTEXITCODE -ne 0) {
