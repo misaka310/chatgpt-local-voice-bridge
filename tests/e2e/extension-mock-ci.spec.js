@@ -388,6 +388,68 @@ test('all ChatGPT tabs continue to enqueue into one Auto queue without an in-pag
   }
 });
 
+test('a completed reply marks its background tab until the user focuses it', async () => {
+  test.setTimeout(90000);
+  const api = await startMock();
+  const context = await launchContext();
+
+  try {
+    const backgroundPage = await context.newPage();
+    const foregroundPage = await context.newPage();
+    for (const [index, page] of [backgroundPage, foregroundPage].entries()) {
+      await page.route('https://chatgpt.com/**', (route) => route.fulfill({
+        status: 200,
+        contentType: 'text/html; charset=utf-8',
+        body: fixtureHtml(),
+      }));
+      await page.goto(`https://chatgpt.com/c/completion-marker-${index}`, { waitUntil: 'domcontentloaded' });
+      await expect(page.locator('#chat')).toBeVisible();
+    }
+
+    const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
+    await configureWorker(worker, { voiceId: 'sample', referenceVoice: 'sample' });
+    await waitForControlReady(2);
+    await updateControlSettings({ enabled: true, voiceVolume: 0, referenceVoice: 'sample' });
+    await expect.poll(async () => worker.evaluate(async () => (await chrome.storage.local.get('enabled')).enabled)).toBe(true);
+
+    await foregroundPage.bringToFront();
+    await backgroundPage.evaluate(() => {
+      const stopButton = document.createElement('button');
+      stopButton.dataset.testid = 'stop-button';
+      stopButton.textContent = 'Stop generating';
+      document.body.append(stopButton);
+
+      const turn = document.createElement('article');
+      turn.dataset.testid = 'conversation-turn-assistant-completion-marker';
+      const reply = document.createElement('div');
+      reply.dataset.messageAuthorRole = 'assistant';
+      reply.dataset.messageId = 'completion-marker-reply';
+      reply.textContent = 'バックグラウンドタブで完了した返答です。';
+      turn.append(reply);
+      document.querySelector('#chat').append(turn);
+    });
+
+    await waitForCounts(1, 1);
+    await backgroundPage.waitForTimeout(1200);
+    expect(await backgroundPage.title()).toBe('Local Voice Demo Fixture');
+    await expect(backgroundPage.locator('#local-voice-completion-favicon')).toHaveCount(0);
+
+    await backgroundPage.evaluate(() => document.querySelector('[data-testid="stop-button"]')?.remove());
+    await expect.poll(() => backgroundPage.title(), { timeout: 10000 }).toBe('● Local Voice Demo Fixture');
+    await expect(backgroundPage.locator('#local-voice-completion-favicon')).toHaveAttribute('href', /^data:image\/svg\+xml,/);
+    expect(await foregroundPage.title()).toBe('Local Voice Demo Fixture');
+    await expect(foregroundPage.locator('#local-voice-completion-favicon')).toHaveCount(0);
+
+    await backgroundPage.bringToFront();
+    await expect.poll(() => backgroundPage.title(), { timeout: 5000 }).toBe('Local Voice Demo Fixture');
+    await expect(backgroundPage.locator('#local-voice-completion-favicon')).toHaveCount(0);
+  } finally {
+    await context.close().catch(() => {});
+    if (api) api.kill();
+    fs.rmSync(PROFILE, { recursive: true, force: true });
+  }
+});
+
 test('microphone transcript supports Esc cancellation, 0.7 second auto-send, and reply TTS', async () => {
   test.setTimeout(90000);
   const api = await startMock();
