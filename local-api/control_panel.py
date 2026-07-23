@@ -6,9 +6,10 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Protocol
 
-from PySide6.QtCore import QPoint, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QMouseEvent
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDoubleSpinBox,
     QFrame,
@@ -95,6 +96,55 @@ class PanelWindowStateStore:
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")
         temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         temporary.replace(self.path)
+
+
+def clamp_window_position(
+    position: QPoint,
+    window_size: QSize,
+    screen_geometries: list[QRect],
+    *,
+    margin: int = 8,
+) -> QPoint:
+    """Keep a window fully reachable after monitor topology changes."""
+    if not screen_geometries:
+        return QPoint(position)
+
+    width = max(1, int(window_size.width()))
+    height = max(1, int(window_size.height()))
+    requested = QRect(position, QSize(width, height))
+    safe_geometries: list[QRect] = []
+    for geometry in screen_geometries:
+        safe = geometry.adjusted(margin, margin, -margin, -margin)
+        if safe.width() < 1 or safe.height() < 1:
+            safe = QRect(geometry)
+        safe_geometries.append(safe)
+        if safe.contains(requested):
+            return QPoint(position)
+
+    requested_center = requested.center()
+
+    def target_score(geometry: QRect) -> tuple[int, int]:
+        intersection = geometry.intersected(requested)
+        intersection_area = max(0, intersection.width()) * max(0, intersection.height())
+        dx = 0
+        if requested_center.x() < geometry.left():
+            dx = geometry.left() - requested_center.x()
+        elif requested_center.x() > geometry.right():
+            dx = requested_center.x() - geometry.right()
+        dy = 0
+        if requested_center.y() < geometry.top():
+            dy = geometry.top() - requested_center.y()
+        elif requested_center.y() > geometry.bottom():
+            dy = requested_center.y() - geometry.bottom()
+        return (-intersection_area, dx * dx + dy * dy)
+
+    target = min(safe_geometries, key=target_score)
+    max_x = target.x() + max(0, target.width() - width)
+    max_y = target.y() + max(0, target.height() - height)
+    return QPoint(
+        min(max(position.x(), target.x()), max_x),
+        min(max(position.y(), target.y()), max_y),
+    )
 
 
 class LocalVoiceControlPanel(QWidget):
@@ -448,6 +498,14 @@ class LocalVoiceControlPanel(QWidget):
     def show_panel(self) -> None:
         self.refresh_now()
         self.show()
+        corrected_position = clamp_window_position(
+            self.pos(),
+            self.frameGeometry().size(),
+            [screen.availableGeometry() for screen in QApplication.screens()],
+        )
+        if corrected_position != self.pos():
+            self.move(corrected_position)
+            self.state_store.save_position(corrected_position)
         self.raise_()
         self.activateWindow()
         if self._poll_when_visible and not self.refresh_timer.isActive():

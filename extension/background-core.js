@@ -73,11 +73,22 @@
     return count > 0 ? `${index}/${count}` : String(index);
   }
 
+  /**
+   * Give playback enough time to finish while still recovering from a renderer
+   * that disappears without sending playback-done.
+   */
+  function playbackLeaseMs(durationSeconds) {
+    const duration = Number(durationSeconds);
+    if (!Number.isFinite(duration) || duration <= 0) return 90_000;
+    return Math.max(30_000, Math.min(900_000, Math.ceil(duration * 1000) + 15_000));
+  }
+
   return {
     arrayBufferToBase64,
     chunkLabel,
     isAllowedAudioUrl,
     normalizeReferenceVoice,
+    playbackLeaseMs,
     resolveReferenceVoice,
   };
 });

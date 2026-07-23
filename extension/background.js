@@ -27,6 +27,9 @@ let isPlaying = false;
 let playbackPhase = 'idle';
 let currentItem = null;
 let currentToken = null;
+let currentPlaybackTabId = null;
+let currentPlaybackDeadlineAt = 0;
+let playbackWatchdogTimer = null;
 let lastPlayedItem = null;
 let seq = 1;
 let lastStatusText = 'Ready';
@@ -395,6 +398,7 @@ function externalStateSnapshot() {
 }
 
 async function syncExternalControlPanel() {
+  recoverExpiredPlayback(Date.now());
   if (externalControlPollPromise) return externalControlPollPromise;
   externalControlPollPromise = (async () => {
     const localSettings = await getSettings();
@@ -503,6 +507,59 @@ function chunkLabel(item) {
   return count > 0 ? `${index}/${count}` : String(index);
 }
 
+function playbackLeaseMs(durationSeconds) {
+  const duration = Number(durationSeconds);
+  if (!Number.isFinite(duration) || duration <= 0) return 90_000;
+  return Math.max(30_000, Math.min(900_000, Math.ceil(duration * 1000) + 15_000));
+}
+
+function clearPlaybackWatchdog() {
+  if (playbackWatchdogTimer) clearTimeout(playbackWatchdogTimer);
+  playbackWatchdogTimer = null;
+  currentPlaybackDeadlineAt = 0;
+}
+
+function clearCurrentPlayback() {
+  clearPlaybackWatchdog();
+  isPlaying = false;
+  playbackPhase = 'idle';
+  currentItem = null;
+  currentToken = null;
+  currentPlaybackTabId = null;
+}
+
+function armPlaybackWatchdog(timeoutMs) {
+  clearPlaybackWatchdog();
+  const safeTimeout = Math.max(1000, Number(timeoutMs) || playbackLeaseMs(0));
+  currentPlaybackDeadlineAt = Date.now() + safeTimeout;
+  playbackWatchdogTimer = setTimeout(() => {
+    playbackWatchdogTimer = null;
+    recoverExpiredPlayback(Date.now());
+  }, safeTimeout + 50);
+  if (playbackWatchdogTimer && typeof playbackWatchdogTimer.unref === 'function') playbackWatchdogTimer.unref();
+}
+
+function abandonCurrentPlayback(reason, level = 'warn') {
+  if (!isPlaying) return false;
+  const done = currentItem;
+  const playbackToken = currentToken;
+  const playbackTabId = currentPlaybackTabId;
+  clearCurrentPlayback();
+  if (playbackTabId) {
+    chrome.tabs.sendMessage(playbackTabId, { type: 'stop-audio', payload: { playbackToken } }).catch(() => {});
+  }
+  setStatus(`${reason} chunk ${chunkLabel(done)}`, level);
+  broadcastState();
+  void playNext();
+  return true;
+}
+
+function recoverExpiredPlayback(now = Date.now()) {
+  if (!isPlaying || playbackPhase !== 'playing' || !currentPlaybackDeadlineAt) return false;
+  if (Number(now) < currentPlaybackDeadlineAt) return false;
+  return abandonCurrentPlayback('Playback timed out; skipped', 'warn');
+}
+
 function selectedTarget(senderTabId) {
   if (senderTabId && tabs.has(senderTabId)) return senderTabId;
   if (selectedTabId && tabs.has(selectedTabId)) return selectedTabId;
@@ -565,6 +622,7 @@ async function playNext() {
   currentItem = item;
   const playbackToken = crypto.randomUUID();
   currentToken = playbackToken;
+  currentPlaybackTabId = uiOwnerTabId;
   setStatus(`Generating audio chunk ${chunkLabel(item)}`, 'info');
   broadcastState();
   try {
@@ -578,14 +636,12 @@ async function playNext() {
     if (!isPlaying || currentToken !== playbackToken || currentItem !== item) return;
     playbackPhase = 'playing';
     setStatus(`Playing chunk ${chunkLabel(item)}`, 'info');
+    armPlaybackWatchdog(playbackLeaseMs(0));
     broadcastState();
-    await chrome.tabs.sendMessage(uiOwnerTabId, { type: 'play-audio', payload: { url: item.audioUrl, text: item.text, playbackToken, item: cloneItem(item) } });
+    await chrome.tabs.sendMessage(currentPlaybackTabId, { type: 'play-audio', payload: { url: item.audioUrl, text: item.text, playbackToken, item: cloneItem(item) } });
   } catch (error) {
     if (!isPlaying || currentToken !== playbackToken || currentItem !== item) return;
-    isPlaying = false;
-    playbackPhase = 'idle';
-    currentItem = null;
-    currentToken = null;
+    clearCurrentPlayback();
     setStatus(`Playback failed: ${error.message || String(error)}`, 'error');
     broadcastState();
     void playNext();
@@ -595,6 +651,8 @@ async function playNext() {
 function finishPlayback(message) {
   const token = String((message && message.playbackToken) || '');
   if (!isPlaying || token !== currentToken) return { ok: true, payload: { ignored: true } };
+  clearPlaybackWatchdog();
+  currentPlaybackTabId = null;
   const done = currentItem;
   isPlaying = false;
   playbackPhase = 'idle';
@@ -615,11 +673,15 @@ function executeUiCommand(cmd, senderTabId, params = {}) {
   const normalized = String(cmd || '').toLowerCase();
   if (normalized === 'stop' || normalized === 'skip') {
     queue = [];
-    if (uiOwnerTabId) chrome.tabs.sendMessage(uiOwnerTabId, { type: 'stop-audio', payload: { playbackToken: currentToken } }).catch(() => {});
+    const playbackTabId = currentPlaybackTabId || uiOwnerTabId;
+    const playbackToken = currentToken;
+    if (playbackTabId) chrome.tabs.sendMessage(playbackTabId, { type: 'stop-audio', payload: { playbackToken } }).catch(() => {});
     isPlaying = false;
     playbackPhase = 'idle';
     currentItem = null;
     currentToken = null;
+    clearPlaybackWatchdog();
+    currentPlaybackTabId = null;
     setStatus(normalized === 'skip' ? 'Skipped' : 'Stopped', 'info');
     broadcastState();
     if (normalized === 'skip') void playNext();
@@ -647,6 +709,7 @@ function executeUiCommand(cmd, senderTabId, params = {}) {
 chrome.runtime.onInstalled.addListener(migrateSettings);
 chrome.runtime.onStartup.addListener(migrateSettings);
 chrome.tabs.onRemoved.addListener((tabId) => {
+  const ownedCurrentPlayback = isPlaying && currentPlaybackTabId === tabId;
   tabs.delete(tabId);
   queue = queue.filter((item) => item.tabId !== tabId);
   if (uiOwnerTabId === tabId) uiOwnerTabId = null;
@@ -656,7 +719,22 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   for (const [sessionId, targetTabId] of conversationSessionTargets.entries()) {
     if (targetTabId === tabId) conversationSessionTargets.delete(sessionId);
   }
-  broadcastState();
+  if (ownedCurrentPlayback) abandonCurrentPlayback('Playback tab closed; skipped', 'warn');
+  else broadcastState();
+});
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (!changeInfo || changeInfo.status !== 'loading') return;
+  const ownedCurrentPlayback = isPlaying && currentPlaybackTabId === tabId;
+  tabs.delete(tabId);
+  if (uiOwnerTabId === tabId) uiOwnerTabId = null;
+  if (selectedTabId === tabId) selectedTabId = null;
+  if (lastComposerFocusedTabId === tabId) lastComposerFocusedTabId = null;
+  if (activeConversationTargetTabId === tabId) activeConversationTargetTabId = null;
+  for (const [sessionId, targetTabId] of conversationSessionTargets.entries()) {
+    if (targetTabId === tabId) conversationSessionTargets.delete(sessionId);
+  }
+  if (ownedCurrentPlayback) abandonCurrentPlayback('Playback tab reloaded; skipped', 'warn');
+  else broadcastState();
 });
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   if (!tabs.has(tabId)) return;
@@ -733,6 +811,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     sendResponse({ ok: true, payload: { statusText: lastStatusText, statusLevel: lastStatusLevel } });
     broadcastState();
+    return false;
+  }
+
+  if (message.type === 'playback-started') {
+    const token = String(message.playbackToken || '');
+    if (isPlaying && token === currentToken && senderTabId === currentPlaybackTabId) {
+      armPlaybackWatchdog(playbackLeaseMs(message.durationSeconds));
+      sendResponse({ ok: true, payload: { accepted: true } });
+    } else {
+      sendResponse({ ok: true, payload: { ignored: true } });
+    }
     return false;
   }
 

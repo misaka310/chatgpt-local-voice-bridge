@@ -8,6 +8,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QPoint, QRect, QSize
 from PySide6.QtWidgets import QApplication
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,7 +16,7 @@ LOCAL_API = ROOT / "local-api"
 if str(LOCAL_API) not in sys.path:
     sys.path.insert(0, str(LOCAL_API))
 
-from control_panel import LocalVoiceControlPanel  # noqa: E402
+from control_panel import LocalVoiceControlPanel, clamp_window_position  # noqa: E402
 
 
 class FakeControlClient:
@@ -234,6 +235,40 @@ class ControlPanelQtTests(unittest.TestCase):
             self.app.processEvents()
             self.assertFalse(panel.refresh_timer.isActive())
             panel.shutdown()
+
+
+    def test_show_panel_recovers_a_saved_position_outside_current_screens(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "panel-window.json"
+            state_path.write_text('{"version": 1, "x": -618, "y": 54}\n', encoding="utf-8")
+            panel = LocalVoiceControlPanel(
+                FakeControlClient(),
+                state_path=state_path,
+                start_polling=False,
+            )
+
+            panel.show_panel()
+            self.app.processEvents()
+
+            available = self.app.primaryScreen().availableGeometry()
+            self.assertTrue(available.contains(panel.frameGeometry()))
+            self.assertEqual(panel.state_store.load_position(), panel.pos())
+            panel.shutdown()
+
+
+class ClampWindowPositionTests(unittest.TestCase):
+    def test_valid_position_is_unchanged(self) -> None:
+        position = QPoint(200, 100)
+        self.assertEqual(
+            clamp_window_position(position, QSize(320, 280), [QRect(0, 0, 1920, 1032)]),
+            position,
+        )
+
+    def test_position_on_disconnected_left_monitor_is_clamped_to_primary(self) -> None:
+        self.assertEqual(
+            clamp_window_position(QPoint(-618, 54), QSize(320, 280), [QRect(0, 0, 1920, 1032)]),
+            QPoint(8, 54),
+        )
 
 
 if __name__ == "__main__":

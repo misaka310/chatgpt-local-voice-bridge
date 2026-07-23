@@ -42,6 +42,14 @@ test('binary conversion and chunk labels are deterministic', () => {
   assert.equal(core.chunkLabel(null), '1');
 });
 
+test('playback leases recover lost completion events without truncating valid audio', () => {
+  assert.equal(core.playbackLeaseMs(0), 90_000);
+  assert.equal(core.playbackLeaseMs(Number.NaN), 90_000);
+  assert.equal(core.playbackLeaseMs(1), 30_000);
+  assert.equal(core.playbackLeaseMs(120), 135_000);
+  assert.equal(core.playbackLeaseMs(1200), 900_000);
+});
+
 test('manifest uses the core-backed service worker entry', () => {
   const root = path.resolve(__dirname, '..');
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'extension', 'manifest.json'), 'utf8'));

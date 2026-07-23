@@ -553,6 +553,18 @@
     currentObjectUrl = null;
   }
 
+  function releaseSpecificObjectUrl(objectUrl) {
+    if (!objectUrl) return;
+    try { URL.revokeObjectURL(objectUrl); } catch (_error) {}
+    if (currentObjectUrl === objectUrl) currentObjectUrl = null;
+  }
+
+  function playbackLeaseMs(durationSeconds) {
+    const duration = Number(durationSeconds);
+    if (!Number.isFinite(duration) || duration <= 0) return 90_000;
+    return Math.max(30_000, Math.min(900_000, Math.ceil(duration * 1000) + 15_000));
+  }
+
   function base64ToBlob(base64, contentType) {
     const binary = atob(String(base64 || ''));
     const bytes = new Uint8Array(binary.length);
@@ -565,9 +577,7 @@
     if (!payload || !payload.base64) throw new Error('audio data is empty');
     const blob = base64ToBlob(payload.base64, payload.contentType || 'audio/wav');
     if (!blob || blob.size === 0) throw new Error('audio blob is empty');
-    releaseObjectUrl();
-    currentObjectUrl = URL.createObjectURL(blob);
-    return currentObjectUrl;
+    return URL.createObjectURL(blob);
   }
 
 
@@ -575,27 +585,63 @@
     stopCurrentPlayback('replace');
     const token = String(playbackToken || '');
     currentPlaybackToken = token;
+    let audioSrc = null;
+    let playbackAudio = null;
     if (settings.micConversationEnabled) {
       reportConversationState({ phase: 'speaking', statusText: '読み上げ中', error: '', sttModel: settings.sttModel });
     }
     try {
-      const audioSrc = await fetchAudioObjectUrl(url);
-      if (currentPlaybackToken !== token) return;
+      audioSrc = await fetchAudioObjectUrl(url);
+      if (currentPlaybackToken !== token) {
+        releaseSpecificObjectUrl(audioSrc);
+        return;
+      }
+      releaseObjectUrl();
+      currentObjectUrl = audioSrc;
       await new Promise((resolve, reject) => {
         const audio = new Audio(audioSrc);
+        playbackAudio = audio;
         audio.volume = clampVolume(settings.voiceVolume);
         currentAudio = audio;
+        let settled = false;
+        let watchdogTimer = null;
+        const cleanup = () => {
+          if (watchdogTimer) clearTimeout(watchdogTimer);
+          watchdogTimer = null;
+          audio.onended = null;
+          audio.onerror = null;
+          audio.onabort = null;
+        };
+        const settle = (callback, value) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          callback(value);
+        };
+        const armWatchdog = (durationSeconds) => {
+          if (watchdogTimer) clearTimeout(watchdogTimer);
+          watchdogTimer = setTimeout(() => {
+            settle(reject, new Error('audio playback timed out'));
+          }, playbackLeaseMs(durationSeconds));
+        };
         currentPlaybackCancel = () => {
           const stopped = new Error('playback stopped');
           stopped.code = 'PLAYBACK_STOPPED';
-          reject(stopped);
+          settle(reject, stopped);
         };
-        audio.onended = resolve;
-        audio.onerror = () => reject(new Error('audio element failed'));
-        audio.play().catch(reject);
+        audio.onended = () => settle(resolve);
+        audio.onerror = () => settle(reject, new Error('audio element failed'));
+        audio.onabort = () => settle(reject, new Error('audio playback aborted'));
+        armWatchdog(0);
+        audio.play().then(() => {
+          if (settled || currentPlaybackToken !== token) return;
+          const durationSeconds = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
+          armWatchdog(durationSeconds);
+          chrome.runtime.sendMessage({ type: 'playback-started', playbackToken: token, durationSeconds }).catch(() => {});
+        }).catch((error) => settle(reject, error));
       });
       if (currentPlaybackToken !== token) return;
-      releaseObjectUrl();
+      releaseSpecificObjectUrl(audioSrc);
       currentAudio = null;
       currentPlaybackCancel = null;
       currentPlaybackToken = null;
@@ -606,9 +652,9 @@
     } catch (error) {
       const stopped = error && error.code === 'PLAYBACK_STOPPED';
       const stale = currentPlaybackToken !== token;
-      releaseObjectUrl();
-      currentAudio = null;
-      currentPlaybackCancel = null;
+      releaseSpecificObjectUrl(audioSrc);
+      if (currentAudio === playbackAudio) currentAudio = null;
+      if (!stale) currentPlaybackCancel = null;
       if (stale || stopped) return;
       currentPlaybackToken = null;
       chrome.runtime.sendMessage({ type: 'playback-done', playbackToken: token, ok: false, stopped: false, error: error.message || String(error) }).catch(() => {});
