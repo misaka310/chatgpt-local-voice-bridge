@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import json
 import logging
 import logging.handlers
@@ -23,7 +24,7 @@ except ImportError:
 try:
     from PySide6.QtCore import QObject, QTimer, Qt, Signal
     from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QPixmap
-    from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+    from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 except ImportError as exc:
     message = "PySide6 が見つかりません。setup-voice-env.cmd をもう一度実行してください。"
     if os.name == "nt":
@@ -41,12 +42,14 @@ from control_panel import ControlPanelApiClient, LocalVoiceControlPanel  # noqa:
 from conversation_controller import GlobalRightCtrlHook, VoiceConversationController  # noqa: E402
 from desktop_pet import DesktopPetWindow  # noqa: E402
 from desktop_pet_config import DesktopPetSettingsStore  # noqa: E402
+from maintenance import clear_generated_audio, format_bytes  # noqa: E402
 
 VENV_SCRIPTS = LOCAL_API_DIR / ".venv" / "Scripts"
 SERVER_PYTHON = VENV_SCRIPTS / "python.exe"
 SERVER_SCRIPT = LOCAL_API_DIR / "server.py"
 PREFLIGHT_SCRIPT = LOCAL_API_DIR / "scripts" / "preflight_irodori.py"
 SETUP_SCRIPT = APP_ROOT / "setup-voice-env.cmd"
+UNINSTALL_SCRIPT = APP_ROOT / "scripts" / "uninstall-local-voice-bridge.ps1"
 APP_NAME = "Local Voice Bridge"
 LEGACY_APP_NAME = "ChatGPT Local Voice Bridge"
 LAUNCHER_EXE = APP_ROOT / "LocalVoiceBridge.exe"
@@ -59,6 +62,8 @@ LOG_DIR = LOCAL_API_DIR / "logs"
 CONTROLLER_LOG = LOG_DIR / "controller.log"
 SERVER_LOG = LOG_DIR / "server.log"
 AUDIO_DIR = RUNTIME_DIR / "audio"
+INSTANCE_STATE_PATH = RUNTIME_DIR / "server-instance.json"
+INSTALLATION_ID = hashlib.sha256(str(APP_ROOT).casefold().encode("utf-8")).hexdigest()[:20]
 REFERENCE_DIR = LOCAL_API_DIR / "reference" / "voices"
 PET_ROOT = APP_ROOT / "extension" / "assets" / "pet"
 DESKTOP_PET_SETTINGS = RUNTIME_DIR / "desktop-pet-settings.json"
@@ -119,6 +124,50 @@ def port_is_open(timeout: float = 0.3) -> bool:
             return True
     except OSError:
         return False
+
+
+def load_server_instance_state(path: Path = INSTANCE_STATE_PATH) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def same_installation_health(payload: Any) -> bool:
+    return isinstance(payload, dict) and str(payload.get("instanceId") or "") == INSTALLATION_ID
+
+
+def request_same_installation_shutdown(payload: Any, timeout: float = 8.0) -> bool:
+    if not same_installation_health(payload):
+        return False
+    state = load_server_instance_state()
+    if str(state.get("instanceId") or "") != INSTALLATION_ID:
+        return False
+    control_nonce = str(state.get("shutdownToken") or "").strip()
+    if not control_nonce:
+        return False
+    request = urllib.request.Request(
+        "http://127.0.0.1:8717/v1/admin/shutdown",
+        data=b"{}",
+        headers={
+            "Content-Type": "application/json",
+            "X-Local-Voice-Token": control_nonce,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2.0) as response:
+            if response.status != 200:
+                return False
+    except (OSError, urllib.error.URLError):
+        return False
+    deadline = time.monotonic() + max(0.5, timeout)
+    while time.monotonic() < deadline:
+        if not port_is_open():
+            return True
+        time.sleep(0.1)
+    return not port_is_open()
 
 
 def server_command(python_executable: Path = SERVER_PYTHON) -> list[str]:
@@ -296,6 +345,14 @@ def acquire_single_instance() -> bool:
     _MUTEX_HANDLE = handle
     return True
 
+def release_single_instance() -> None:
+    global _MUTEX_HANDLE
+    handle = _MUTEX_HANDLE
+    _MUTEX_HANDLE = None
+    if IS_WINDOWS and handle:
+        _close_windows_handle(handle)
+
+
 
 def create_qt_application(argv: Sequence[str] | None = None) -> QApplication:
     existing = QApplication.instance()
@@ -419,6 +476,7 @@ class VoiceBridgeController:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
+
                 text=True,
                 encoding="utf-8",
                 errors="replace",
@@ -491,14 +549,17 @@ class VoiceBridgeController:
         if self._stop_event.is_set():
             return
         LOG_DIR.mkdir(parents=True, exist_ok=True)
-        self._server_log_handle = SERVER_LOG.open("a", encoding="utf-8")
+        environment = os.environ.copy()
+        environment["LOCAL_VOICE_SERVER_LOG"] = str(SERVER_LOG)
         try:
             self._process = subprocess.Popen(
                 server_command(),
                 cwd=LOCAL_API_DIR,
                 stdin=subprocess.DEVNULL,
-                stdout=self._server_log_handle,
-                stderr=subprocess.STDOUT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=environment,
+
                 creationflags=CREATE_NO_WINDOW,
             )
         except OSError as exc:
@@ -570,6 +631,35 @@ class VoiceBridgeController:
             return
         threading.Thread(target=self._restart_owned_server, name="voice-bridge-restart", daemon=True).start()
 
+    def prepare_application_restart(self) -> bool:
+        with self._operation_lock:
+            if self._process is not None:
+                return True
+            healthy, payload = probe_health()
+            if not healthy:
+                return True
+            if not same_installation_health(payload):
+                LOGGER.warning("Refusing to stop a compatible server from another installation")
+                return False
+            self.set_status("Stopping existing service")
+            stopped = request_same_installation_shutdown(payload)
+            if not stopped:
+                self.set_status("Restart blocked")
+                LOGGER.error("Could not stop the existing same-installation server")
+                return False
+            self._last_start_attempt = 0.0
+            return True
+
+    def clear_generated_audio_files(self):
+        result = clear_generated_audio(AUDIO_DIR)
+        LOGGER.info(
+            "Cleared generated audio: deleted=%s bytes=%s failed=%s",
+            result.deleted_files,
+            result.deleted_bytes,
+            result.failed_files,
+        )
+        return result
+
     def open_controller_log(self, *_: Any) -> None:
         configure_logging()
         open_path(CONTROLLER_LOG)
@@ -621,6 +711,8 @@ class VoiceBridgeQtRuntime(QObject):
         self.controller = controller or VoiceBridgeController()
         self._shutdown_started = False
         self._setup_after_exit = False
+        self._restart_after_exit = False
+        self._uninstall_after_exit = False
         self.status_relay = StatusRelay(self)
         self.status_relay.status_changed.connect(self._apply_status)
 
@@ -671,11 +763,13 @@ class VoiceBridgeQtRuntime(QObject):
         self.menu.addSeparator()
 
         restart_action = self.menu.addAction("Restart Voice Bridge")
-        restart_action.triggered.connect(self.controller.restart_async)
+        restart_action.triggered.connect(self.restart_application)
         controller_log_action = self.menu.addAction("Open controller log")
         controller_log_action.triggered.connect(self.controller.open_controller_log)
         audio_action = self.menu.addAction("Open generated audio folder")
         audio_action.triggered.connect(self.controller.open_audio_folder)
+        clear_audio_action = self.menu.addAction("Clear generated audio...")
+        clear_audio_action.triggered.connect(self.clear_generated_audio)
         reference_action = self.menu.addAction("Open reference voices folder")
         reference_action.triggered.connect(self.controller.open_reference_folder)
 
@@ -686,6 +780,8 @@ class VoiceBridgeQtRuntime(QObject):
         self.menu.addAction(self.startup_action)
         setup_action = self.menu.addAction("Exit and run environment setup")
         setup_action.triggered.connect(self.exit_and_run_setup)
+        uninstall_action = self.menu.addAction("Uninstall Local Voice Bridge...")
+        uninstall_action.triggered.connect(self.uninstall_application)
         self.menu.addSeparator()
         exit_action = self.menu.addAction("Exit")
         exit_action.triggered.connect(self.shutdown)
@@ -731,7 +827,7 @@ class VoiceBridgeQtRuntime(QObject):
             self.voice_conversation.configure(
                 enabled=bool(settings.get("micConversationEnabled")),
                 stt_model=str(settings.get("sttModel") or "small"),
-                cancel_grace_ms=int(settings.get("cancelGraceMs") or 700),
+                cancel_grace_ms=int(settings.get("cancelGraceMs", 700)),
             )
             reconcile = getattr(self.voice_conversation, "reconcile_reported_state", None)
             if callable(reconcile):
@@ -754,6 +850,40 @@ class VoiceBridgeQtRuntime(QObject):
             self.startup_action.setChecked(is_startup_enabled())
             self.startup_action.blockSignals(False)
 
+    def clear_generated_audio(self, *_: Any) -> None:
+        answer = QMessageBox.question(
+            None,
+            APP_NAME,
+            "生成済み音声を削除します。参照音声と設定は削除されません。続行しますか？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        result = self.controller.clear_generated_audio_files()
+        show_message(
+            APP_NAME,
+            f"生成音声を {result.deleted_files} 件、{format_bytes(result.deleted_bytes)} 削除しました。"
+            + (f"\n削除できなかったファイル: {result.failed_files} 件" if result.failed_files else ""),
+        )
+
+    def uninstall_application(self, *_: Any) -> None:
+        if not IS_WINDOWS or not UNINSTALL_SCRIPT.is_file():
+            show_message(APP_NAME, "アンインストールスクリプトが見つかりません。", error=True)
+            return
+        answer = QMessageBox.question(
+            None,
+            APP_NAME,
+            "自動起動とスタートメニュー登録を解除し、生成音声とログを削除します。\n"
+            "参照音声、設定、モデル、リポジトリ本体は残ります。続行しますか？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._uninstall_after_exit = True
+        self.shutdown()
+
     def exit_and_run_setup(self) -> None:
         if not IS_WINDOWS or not SETUP_SCRIPT.is_file():
             show_message(
@@ -764,6 +894,51 @@ class VoiceBridgeQtRuntime(QObject):
             return
         self._setup_after_exit = True
         self.shutdown()
+
+    def restart_application(self, *_: Any) -> None:
+        if not IS_WINDOWS or not LAUNCHER_EXE.is_file():
+            show_message(
+                APP_NAME,
+                "LocalVoiceBridge.exe が見つかりません。",
+                error=True,
+            )
+            return
+        if not self.controller.prepare_application_restart():
+            show_message(
+                APP_NAME,
+                "既存の音声APIを安全に停止できなかったため、再起動を中止しました。controller.logを確認してください。",
+                error=True,
+            )
+            return
+        self._restart_after_exit = True
+        self.shutdown()
+
+    def _launch_application_after_exit(self) -> None:
+        release_single_instance()
+        creationflags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+        subprocess.Popen(
+            [str(LAUNCHER_EXE)],
+            cwd=APP_ROOT,
+            creationflags=creationflags,
+        )
+
+    def _launch_uninstall(self) -> None:
+        creationflags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+        subprocess.Popen(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-WindowStyle",
+                "Hidden",
+                "-File",
+                str(UNINSTALL_SCRIPT),
+                "-RemoveGeneratedData",
+            ],
+            cwd=APP_ROOT,
+            creationflags=creationflags,
+        )
 
     def _launch_setup(self) -> None:
         command = f'timeout /t 2 /nobreak >nul & call "{SETUP_SCRIPT}"'
@@ -789,8 +964,12 @@ class VoiceBridgeQtRuntime(QObject):
         self.tray_icon.setContextMenu(None)
         self.menu.close()
         self.tray_icon.deleteLater()
-        if self._setup_after_exit:
+        if self._uninstall_after_exit:
+            self._launch_uninstall()
+        elif self._setup_after_exit:
             self._launch_setup()
+        elif self._restart_after_exit:
+            self._launch_application_after_exit()
         self.app.quit()
 
 

@@ -155,7 +155,7 @@ async function launchContext() {
 }
 
 async function configureWorker(worker, values = {}) {
-  await expect.poll(async () => worker.evaluate(async () => (await chrome.storage.local.get('settingsVersion')).settingsVersion)).toBe(9);
+  await expect.poll(async () => worker.evaluate(async () => (await chrome.storage.local.get('settingsVersion')).settingsVersion)).toBe(10);
   await worker.evaluate(async ({ apiUrl, healthUrl, overrides }) => {
     await chrome.storage.local.set({
       apiUrl,
@@ -468,11 +468,17 @@ test('microphone transcript supports Esc cancellation, 0.7 second auto-send, and
     await expect(page.locator('#prompt-textarea')).toBeVisible();
     await waitForControlReady(1);
 
+    const extensionId = new URL(worker.url()).host;
+    const optionsPage = await context.newPage();
+    await optionsPage.goto(`chrome-extension://${extensionId}/options.html`);
+    await optionsPage.locator('#stt-model').selectOption('small');
+    await optionsPage.locator('#cancel-grace-seconds').fill('1.2');
+    await optionsPage.locator('button[type="submit"]').click();
+    await expect(optionsPage.locator('#save-status')).toHaveText('設定を保存しました');
+    await optionsPage.close();
     await updateControlSettings({
       enabled: true,
       micConversationEnabled: true,
-      sttModel: 'small',
-      cancelGraceMs: 1200,
       voiceVolume: 0,
       referenceVoice: '',
     });

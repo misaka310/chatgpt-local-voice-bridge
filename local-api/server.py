@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
 import json
 import mimetypes
 import os
+import secrets
 import sys
 import threading
 import uuid
@@ -22,8 +24,15 @@ os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 from control_state import ControlStateStore
 from desktop_pet_config import discover_available_pets
 from irodori_engine import IrodoriError, cache_hint, synthesize_irodori_direct
+from maintenance import audio_retention_policy, prune_generated_audio
+from server_logging import configure_server_process_logging
 
 ROOT = Path(__file__).resolve().parent
+APP_ROOT = ROOT.parent
+INSTANCE_ID = hashlib.sha256(str(APP_ROOT).casefold().encode("utf-8")).hexdigest()[:20]
+INSTANCE_STATE_PATH = Path(
+    os.environ.get("LOCAL_VOICE_INSTANCE_STATE") or ROOT / "runtime" / "server-instance.json"
+).expanduser().resolve()
 DESKTOP_PET_SETTINGS_PATH = Path(
     os.environ.get("LOCAL_VOICE_DESKTOP_PET_SETTINGS") or ROOT / "runtime" / "desktop-pet-settings.json"
 ).expanduser().resolve()
@@ -42,6 +51,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "port": 8717,
     "publicBaseUrl": "",
     "audioOutputDir": "./runtime/audio",
+    "audioRetention": {
+        "maxFiles": 1000,
+        "maxBytes": 1073741824,
+        "maxAgeDays": 14,
+    },
     "defaultModel": "irodori-v3",
     "models": {"irodori-v3": {"label": "Irodori v3 direct", "runtime": "irodori_direct", "hfCheckpoint": "Aratako/Irodori-TTS-500M-v3"}},
     "referenceVoicesDir": "./reference/voices",
@@ -60,6 +74,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "decodeMode": "sequential",
         "contextKvCache": True,
         "releaseUnusedCudaCache": True,
+        "seed": 10,
     },
 }
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -163,6 +178,42 @@ def resolve_path(value: Any) -> Path:
 
 def output_dir(config: dict[str, Any]) -> Path:
     return resolve_path(config.get("audioOutputDir", "./runtime/audio"))
+
+
+def prune_audio(config: dict[str, Any], preserve: tuple[Path, ...] = ()):
+    policy = audio_retention_policy(config)
+    return prune_generated_audio(
+        output_dir(config),
+        max_files=policy["maxFiles"],
+        max_bytes=policy["maxBytes"],
+        max_age_days=policy["maxAgeDays"],
+        preserve=preserve,
+    )
+
+
+def write_instance_state(token: str, path: Path = INSTANCE_STATE_PATH) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    payload = {
+        "version": 1,
+        "pid": os.getpid(),
+        "instanceId": INSTANCE_ID,
+        "shutdownToken": token,
+    }
+    try:
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def remove_instance_state(token: str, path: Path = INSTANCE_STATE_PATH) -> None:
+    try:
+        payload = load_json(path)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return
+    if isinstance(payload, dict) and secrets.compare_digest(str(payload.get("shutdownToken") or ""), token):
+        path.unlink(missing_ok=True)
 
 
 def reference_voices_dir(config: dict[str, Any]) -> Path:
@@ -350,6 +401,8 @@ class Handler(BaseHTTPRequestHandler):
                     "availableReferenceVoices": reference_voice_list(config),
                     "audioOutputDir": "local-api/runtime/audio",
                     "cacheHint": cache_hint(),
+                    "instanceId": INSTANCE_ID,
+                    "audioRetention": audio_retention_policy(config),
                     "pathsExposed": False,
                 }
                 json_response(self, HTTPStatus.OK, payload)
@@ -369,6 +422,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if path == "/v1/admin/shutdown":
+            expected = str(getattr(self.server, "shutdown_token", "") or "")
+            supplied = str(self.headers.get("X-Local-Voice-Token") or "")
+            if not expected or not secrets.compare_digest(supplied, expected):
+                json_response(self, HTTPStatus.FORBIDDEN, {"ok": False, "error": "forbidden"})
+                return
+            json_response(self, HTTPStatus.OK, {"ok": True, "stopping": True})
+            threading.Thread(target=self.server.shutdown, name="local-voice-http-shutdown", daemon=True).start()
+            return
         if path == "/v1/control-panel/settings":
             try:
                 payload = request_json(self)
@@ -449,6 +511,12 @@ class Handler(BaseHTTPRequestHandler):
                 reference_voice=voice_id or None,
                 voice_prompt=voice_prompt,
             )
+            cleanup = prune_audio(config, preserve=(source_file,))
+            if cleanup.deleted_files:
+                print(
+                    f"[maintenance] removed {cleanup.deleted_files} generated audio files "
+                    f"({cleanup.deleted_bytes} bytes); remaining={cleanup.remaining_files} files/{cleanup.remaining_bytes} bytes"
+                )
             audio_url = f"{str(config.get('publicBaseUrl')).rstrip('/')}/audio/{source_file.name}"
             json_response(self, HTTPStatus.OK, {"ok": True, "engine": "irodori_direct", "runtime": "irodori_direct", "model": model, "voiceId": voice_id, "voiceProfile": model, "referenceVoice": voice_id, "usedReferenceAudio": used_reference_audio, "requestId": request_id, "audioUrl": audio_url, "textLength": len(text)})
         except (BridgeError, IrodoriError) as exc:
@@ -472,17 +540,30 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        sys.stderr.write("[%s] %s\n" % (self.log_date_time_string(), fmt % args))
+        try:
+            status = int(args[1]) if len(args) > 1 else 0
+        except (TypeError, ValueError):
+            status = 0
+        if status >= 400:
+            sys.stderr.write("[%s] %s\n" % (self.log_date_time_string(), fmt % args))
 
 
 def main() -> int:
+    configure_server_process_logging()
+    control_nonce = uuid.uuid4().hex
     try:
         config = load_config()
         output_dir(config).mkdir(parents=True, exist_ok=True)
         reference_voices_dir(config).mkdir(parents=True, exist_ok=True)
+        cleanup = prune_audio(config)
     except Exception as exc:
         print(f"[FATAL] {exc}", file=sys.stderr)
         return 2
+    if cleanup.deleted_files:
+        print(
+            f"[maintenance] removed {cleanup.deleted_files} generated audio files "
+            f"({cleanup.deleted_bytes} bytes); remaining={cleanup.remaining_files} files/{cleanup.remaining_bytes} bytes"
+        )
     host = str(config.get("host", "127.0.0.1"))
     port = int(config.get("port", 8717))
     print(f"Local Voice Bridge listening on http://{host}:{port}")
@@ -490,11 +571,22 @@ def main() -> int:
     print("model=irodori-v3")
     print(f"cacheHint={cache_hint()}")
     httpd = ThreadingHTTPServer((host, port), Handler)
+    setattr(httpd, "shutdown_token", control_nonce)
+    try:
+        write_instance_state(control_nonce)
+    except Exception as exc:
+        httpd.server_close()
+        print(f"[FATAL] could not write server instance state: {exc}", file=sys.stderr)
+        return 2
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\nbye")
-        return 0
+        pass
+    finally:
+        httpd.server_close()
+        remove_instance_state(control_nonce)
+    return 0
 
 
 if __name__ == "__main__":

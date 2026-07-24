@@ -14,13 +14,17 @@
 
 - `Status: ...`: APIの現在状態
 - `Show Local Voice panel` / `Hide Local Voice panel`: Windows小窓を開閉
-- `Restart Voice Bridge`: この通知領域アプリが起動したAPIだけを再起動
+- `Restart Voice Bridge`: 通知領域アプリ、小窓、デスクトップペット、ローカルAPIをまとめて再起動し、更新済みコードを読み直す
 - `Open controller log`: `local-api/logs/controller.log`を開く
 - `Open generated audio folder`: 生成された音声フォルダを開く
+- `Clear generated audio...`: 参照音声と設定を残したまま、生成済み音声だけを確認後に削除する
 - `Open reference voices folder`: 参照音声フォルダを開く
 - `Start with Windows`: 現在のユーザーのWindowsログイン時自動起動を切り替える
 - `Exit and run environment setup`: APIを停止し、セットアップを表示付きで再実行する
+- `Uninstall Local Voice Bridge...`: 自動起動とスタートメニュー登録を解除し、生成音声とログを削除する。参照音声、設定、モデル、リポジトリ本体は残す
 - `Exit`: 通知領域アプリ、Windows小窓、デスクトップペット、このアプリが所有するAPIを終了する
+
+生成音声は起動時と生成後に自動整理します。初期値は最新1,000件、合計1GB、14日以内で、いずれかを超える古い音声から削除します。サーバーログとコントローラーログは各2MB、バックアップ2世代までです。
 
 ペットの種類選択、位置初期化、常に手前の切り替えは通知領域にはありません。
 
@@ -67,7 +71,7 @@ Chrome / Brave内にはLocal Voice操作パネルを表示しません。Autoの
 - `Starting`: API起動中
 - `Checking environment`: CUDAとIrodoriの事前確認中
 - `Ready`: 通知領域アプリが起動したAPIが正常
-- `Ready (existing)`: 別の方法で起動済みの互換APIへ接続中
+- `Ready (existing)`: 別の方法で起動済みの互換APIへ接続中。同じリポジトリ配置のAPIなら`Restart Voice Bridge`で安全に停止して更新版へ切り替える。別配置のAPIは停止しない
 - `Environment missing`: `.venv`またはサーバーファイルがない
 - `CUDA or model unavailable`: CUDA、依存関係、モデルの事前確認に失敗
 - `Port 8717 in use`: 別サービスが同じポートを使用中

@@ -40,6 +40,14 @@ class FakeCuda:
 
 
 class IrodoriCudaCacheTests(unittest.TestCase):
+    def test_sampling_seed_is_stable_by_default(self):
+        self.assertEqual(engine._sampling_seed(None), 10)
+        self.assertEqual(engine._sampling_seed("invalid"), 10)
+        self.assertEqual(engine._sampling_seed(42), 42)
+
+    def test_sampling_seed_is_random_only_when_explicitly_requested(self):
+        self.assertIsNone(engine._sampling_seed("random"))
+
     def test_releases_unused_cache_for_cuda_runtime(self):
         fake_torch = types.ModuleType("torch")
         fake_torch.cuda = FakeCuda()

@@ -11,6 +11,8 @@ import tray_uia_smoke as smoke
 def find_qt_popup(_pid: int) -> smoke.WindowInfo | None:
     desktop = Desktop(backend="uia")
     for row in smoke.enum_top_windows():
+        if row.title != smoke.APP_NAME or "QWindowPopup" not in row.class_name:
+            continue
         if not smoke.USER32.IsWindowVisible(row.hwnd):
             continue
         try:

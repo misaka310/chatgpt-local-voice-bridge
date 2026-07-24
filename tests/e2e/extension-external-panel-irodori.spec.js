@@ -144,7 +144,7 @@ async function launchContext() {
 }
 
 async function configureExtension(worker) {
-  await expect.poll(async () => worker.evaluate(async () => (await chrome.storage.local.get('settingsVersion')).settingsVersion)).toBe(9);
+  await expect.poll(async () => worker.evaluate(async () => (await chrome.storage.local.get('settingsVersion')).settingsVersion)).toBe(10);
   await worker.evaluate(async ({ apiBase }) => {
     await chrome.storage.local.set({
       apiUrl: `${apiBase}/v1/speak`,

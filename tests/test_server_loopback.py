@@ -9,6 +9,7 @@ import tempfile
 import threading
 import types
 import unittest
+import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -266,6 +267,42 @@ class LoopbackConfigTests(unittest.TestCase):
                 else:
                     os.environ["LOCAL_VOICE_DESKTOP_PET_SETTINGS"] = previous_path
 
+
+    def test_admin_shutdown_requires_the_per_process_nonce(self):
+        control_nonce = server.uuid.uuid4().hex
+        httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        setattr(httpd, "shutdown_token", control_nonce)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{httpd.server_port}"
+        try:
+            unauthorized = urllib.request.Request(
+                f"{base}/v1/admin/shutdown",
+                data=b"{}",
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(unauthorized, timeout=5)
+            self.assertEqual(error.exception.code, 403)
+            self.assertTrue(thread.is_alive())
+
+            authorized = urllib.request.Request(
+                f"{base}/v1/admin/shutdown",
+                data=b"{}",
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Local-Voice-Token": control_nonce,
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(authorized, timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            self.assertTrue(payload["ok"])
+            thread.join(timeout=5)
+            self.assertFalse(thread.is_alive())
+        finally:
+            httpd.server_close()
 
     def test_control_panel_endpoints_share_settings_commands_and_extension_state(self):
         with tempfile.TemporaryDirectory() as temp_dir:

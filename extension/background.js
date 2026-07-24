@@ -1,4 +1,4 @@
-const SETTINGS_VERSION = 9;
+const SETTINGS_VERSION = 10;
 const DEFAULT_SETTINGS = {
   settingsVersion: SETTINGS_VERSION,
   enabled: false,
@@ -42,6 +42,7 @@ let lastComposerFocusedTabId = null;
 let activeConversationTargetTabId = null;
 let conversationPhase = 'off';
 const conversationSessionTargets = new Map();
+const conversationSessionTargetLocations = new Map();
 
 function normalizeModel(_value) {
   return DEFAULT_SETTINGS.voiceProfile;
@@ -53,8 +54,27 @@ function normalizeStoredReference(value) {
   return normalized;
 }
 function storedReferenceVoice(raw) {
-  if (raw && Object.prototype.hasOwnProperty.call(raw, 'voiceId')) return normalizeStoredReference(raw.voiceId);
+  const voiceId = normalizeStoredReference(raw && raw.voiceId);
+  if (voiceId) return voiceId;
   return normalizeStoredReference(raw && raw.referenceVoice);
+}
+
+function clampInteger(value, fallback, minimum, maximum) {
+  if (value === '' || value === null || value === undefined) return fallback;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(maximum, Math.max(minimum, Math.round(number)));
+}
+
+function normalizeSttModel(value) {
+  const normalized = String(value || '').trim();
+  return ['small', 'medium', 'large-v3-turbo'].includes(normalized)
+    ? normalized
+    : DEFAULT_SETTINGS.sttModel;
+}
+
+function normalizeCancelGraceMs(value) {
+  return clampInteger(value, DEFAULT_SETTINGS.cancelGraceMs, 0, 5000);
 }
 
 function sanitizeSettings(raw = {}) {
@@ -67,6 +87,10 @@ function sanitizeSettings(raw = {}) {
     voiceProfile: normalizeModel(raw.model || raw.voiceProfile),
     referenceVoice: storedReferenceVoice(raw),
     voicePrompt: '',
+    previewMaxLines: clampInteger(raw.previewMaxLines, DEFAULT_SETTINGS.previewMaxLines, 1, 20),
+    previewMaxChars: clampInteger(raw.previewMaxChars, DEFAULT_SETTINGS.previewMaxChars, 40, 1000),
+    sttModel: normalizeSttModel(raw.sttModel),
+    cancelGraceMs: normalizeCancelGraceMs(raw.cancelGraceMs),
   };
   for (const key of LEGACY_BROWSER_UI_STORAGE_KEYS) delete sanitized[key];
   return sanitized;
@@ -104,6 +128,7 @@ function ensureOwner() {
     lastComposerFocusedTabId = null;
     activeConversationTargetTabId = null;
     conversationSessionTargets.clear();
+    conversationSessionTargetLocations.clear();
     return;
   }
   if (!uiOwnerTabId || !tabs.has(uiOwnerTabId)) uiOwnerTabId = ids[0];
@@ -117,6 +142,87 @@ function preferredConversationTarget() {
   if (lastComposerFocusedTabId && tabs.has(lastComposerFocusedTabId)) return lastComposerFocusedTabId;
   if (selectedTabId && tabs.has(selectedTabId)) return selectedTabId;
   return uiOwnerTabId && tabs.has(uiOwnerTabId) ? uiOwnerTabId : null;
+}
+
+async function conversationTargetStatus(tabId) {
+  try {
+    const response = await chrome.tabs.sendMessage(tabId, { type: 'conversation-target-status' });
+    if (!response || response.ok !== true) return { tabId, ok: false, composerAvailable: false, composerFocused: false };
+    return {
+      tabId,
+      ok: true,
+      composerAvailable: Boolean(response.composerAvailable),
+      composerFocused: Boolean(response.composerFocused),
+      documentFocused: Boolean(response.documentFocused),
+      visible: Boolean(response.visible),
+      url: String(response.url || ''),
+    };
+  } catch (_error) {
+    return { tabId, ok: false, composerAvailable: false, composerFocused: false };
+  }
+}
+
+async function captureConversationTarget() {
+  ensureOwner();
+  const tabIds = Array.from(tabs.keys());
+  if (!tabIds.length) return null;
+  const statuses = await Promise.all(tabIds.map((tabId) => conversationTargetStatus(tabId)));
+  const byTabId = new Map(statuses.map((status) => [status.tabId, status]));
+  const focused = statuses.filter((status) => status.ok && status.composerFocused);
+  if (focused.length) {
+    const preferredFocused = [lastComposerFocusedTabId, selectedTabId, uiOwnerTabId]
+      .map((tabId) => focused.find((status) => status.tabId === tabId))
+      .find(Boolean);
+    return preferredFocused || focused[0];
+  }
+  const candidates = [lastComposerFocusedTabId, selectedTabId, uiOwnerTabId, ...tabIds];
+  for (const tabId of candidates) {
+    const status = byTabId.get(tabId);
+    if (status && status.ok && status.composerAvailable) return status;
+  }
+  return null;
+}
+
+function conversationLocationKey(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  try {
+    const url = new URL(raw);
+    return `${url.origin}${url.pathname}`;
+  } catch (_error) {
+    return raw.split(/[?#]/, 1)[0];
+  }
+}
+
+function retryableTranscriptFailure(reason) {
+  return ['composer-not-found', 'composer-state-not-updated', 'prompt-input-core-unavailable', 'message-delivery-failed']
+    .includes(String(reason || ''));
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function deliverVoiceTranscript(targetTabId, payload, settings) {
+  let lastReason = 'message-delivery-failed';
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const response = await chrome.tabs.sendMessage(targetTabId, { type: 'voice-transcript', payload });
+      if (response && response.ok === true) return { ok: true };
+      lastReason = String(response && (response.reason || response.error) || 'message-delivery-failed');
+    } catch (_error) {
+      lastReason = 'message-delivery-failed';
+    }
+    if (!retryableTranscriptFailure(lastReason) || attempt === 2) break;
+    await delay(50 * (attempt + 1));
+  }
+  await postConversationState({
+    phase: 'error',
+    statusText: '音声入力をChatGPT入力欄へ反映できませんでした',
+    sttModel: settings.sttModel || 'small',
+    error: lastReason,
+  }).catch(() => {});
+  return { ok: false, reason: lastReason };
 }
 
 function shouldQueueAutoFromTab(tabId) {
@@ -194,22 +300,6 @@ function normalizeReferenceVoice(value) {
   const normalized = String(value ?? '').trim();
   if (!normalized || ['none', 'qwen3', 'qwen'].includes(normalized.toLowerCase())) return '';
   return normalized;
-}
-
-function resolveReferenceVoice(explicitValue, fallbackValue = '') {
-  if (explicitValue !== undefined && explicitValue !== null) return normalizeReferenceVoice(explicitValue);
-  return normalizeReferenceVoice(fallbackValue);
-}
-
-function referenceVoiceFromPayload(payload) {
-  if (!payload || typeof payload !== 'object') return undefined;
-  if (Object.prototype.hasOwnProperty.call(payload, 'voiceId')) {
-    return normalizeStoredReference(payload.voiceId);
-  }
-  if (Object.prototype.hasOwnProperty.call(payload, 'referenceVoice')) {
-    return normalizeStoredReference(payload.referenceVoice);
-  }
-  return undefined;
 }
 
 async function speak(text, requestId, voiceProfile, referenceVoice, voicePrompt) {
@@ -354,32 +444,46 @@ async function postConversationState(payload) {
 async function applyExternalSettings(payload, settingsRevision) {
   const remote = payload && typeof payload === 'object' ? payload : {};
   const current = await getSettings();
-  const referenceVoice = normalizeStoredReference(remote.referenceVoice);
-  const sttModel = ['small', 'medium', 'large-v3-turbo'].includes(String(remote.sttModel || ''))
-    ? String(remote.sttModel)
-    : String(current.sttModel || 'small');
-  const cancelGraceMs = Math.max(0, Math.min(5000, Math.round(Number(remote.cancelGraceMs ?? current.cancelGraceMs) || 0)));
+  const hasReference = Object.prototype.hasOwnProperty.call(remote, 'voiceId')
+    || Object.prototype.hasOwnProperty.call(remote, 'referenceVoice');
+  const referenceVoice = hasReference ? storedReferenceVoice(remote) : normalizeStoredReference(current.referenceVoice);
   const next = {
-    enabled: Boolean(remote.enabled),
-    voiceVolume: Math.min(1, Math.max(0, Number(remote.voiceVolume ?? current.voiceVolume) || 0)),
+    enabled: Object.prototype.hasOwnProperty.call(remote, 'enabled')
+      ? Boolean(remote.enabled)
+      : Boolean(current.enabled),
+    voiceVolume: Object.prototype.hasOwnProperty.call(remote, 'voiceVolume')
+      ? Math.min(1, Math.max(0, Number(remote.voiceVolume) || 0))
+      : Number(current.voiceVolume),
     voiceId: referenceVoice,
     referenceVoice,
-    micConversationEnabled: Boolean(remote.micConversationEnabled),
-    sttModel,
-    cancelGraceMs,
+    micConversationEnabled: Object.prototype.hasOwnProperty.call(remote, 'micConversationEnabled')
+      ? Boolean(remote.micConversationEnabled)
+      : Boolean(current.micConversationEnabled),
   };
   const changedReference = normalizeStoredReference(current.referenceVoice) !== referenceVoice;
   const changed = Boolean(current.enabled) !== next.enabled
     || Number(current.voiceVolume) !== next.voiceVolume
     || changedReference
     || normalizeStoredReference(current.voiceId) !== referenceVoice
-    || Boolean(current.micConversationEnabled) !== next.micConversationEnabled
-    || String(current.sttModel || 'small') !== next.sttModel
-    || Number(current.cancelGraceMs ?? 700) !== next.cancelGraceMs;
+    || Boolean(current.micConversationEnabled) !== next.micConversationEnabled;
   if (changed) await chrome.storage.local.set(next);
   if (changedReference) await syncDesktopPetSelection(referenceVoice || 'placeholder');
   lastExternalSettingsRevision = Number(settingsRevision ?? lastExternalSettingsRevision);
-  return next;
+  return sanitizeSettings({ ...current, ...next });
+}
+
+async function pushOptionSettings(settings = null) {
+  const current = settings || await getSettings();
+  const payload = await controlPanelRequest(current, '/v1/control-panel/settings', {
+    method: 'POST',
+    body: {
+      sttModel: normalizeSttModel(current.sttModel),
+      cancelGraceMs: normalizeCancelGraceMs(current.cancelGraceMs),
+    },
+  });
+  const revision = Number(payload.settingsRevision);
+  if (Number.isFinite(revision)) lastExternalSettingsRevision = revision;
+  return payload;
 }
 
 function externalStateSnapshot() {
@@ -419,14 +523,33 @@ async function syncExternalControlPanel() {
         },
       });
     }
+    let effectiveSettings = localSettings;
     if (payload.settings && Number(payload.settingsRevision) !== lastExternalSettingsRevision) {
-      await applyExternalSettings(payload.settings, payload.settingsRevision);
+      effectiveSettings = await applyExternalSettings(payload.settings, payload.settingsRevision);
+    } else if (payload.settings) {
+      effectiveSettings = {
+        ...localSettings,
+        ...payload.settings,
+        referenceVoice: normalizeStoredReference(
+          Object.prototype.hasOwnProperty.call(payload.settings, 'referenceVoice')
+            ? payload.settings.referenceVoice
+            : localSettings.referenceVoice,
+        ),
+      };
+    }
+    effectiveSettings = sanitizeSettings({
+      ...effectiveSettings,
+      sttModel: localSettings.sttModel,
+      cancelGraceMs: localSettings.cancelGraceMs,
+    });
+    if (payload.settings && (normalizeSttModel(payload.settings.sttModel) !== effectiveSettings.sttModel
+      || normalizeCancelGraceMs(payload.settings.cancelGraceMs) !== effectiveSettings.cancelGraceMs)) {
+      await pushOptionSettings(effectiveSettings);
     }
     const conversation = payload.conversation && typeof payload.conversation === 'object' ? payload.conversation : {};
     conversationPhase = String(conversation.phase || conversationPhase || 'off');
     const commands = Array.isArray(payload.commands) ? payload.commands : [];
-    const commandSettings = payload.settings || localSettings;
-    const referenceVoice = normalizeStoredReference(commandSettings.referenceVoice);
+    const referenceVoice = normalizeStoredReference(effectiveSettings.referenceVoice);
     for (const item of commands.sort((a, b) => Number(a.id || 0) - Number(b.id || 0))) {
       const commandId = Number(item.id || 0);
       if (!commandId || commandId <= lastExternalCommandId) continue;
@@ -442,27 +565,55 @@ async function syncExternalControlPanel() {
       const eventPayload = item.payload && typeof item.payload === 'object' ? item.payload : {};
       const sessionId = Number(eventPayload.sessionId || 0);
       if (type === 'cancel_pending') {
-        const targetTabId = preferredConversationTarget();
-        if (sessionId && targetTabId) conversationSessionTargets.set(sessionId, targetTabId);
+        const target = await captureConversationTarget();
+        const targetTabId = target ? target.tabId : null;
+        if (sessionId) {
+          conversationSessionTargets.set(sessionId, targetTabId || 0);
+          conversationSessionTargetLocations.set(sessionId, conversationLocationKey(target && target.url));
+        }
         activeConversationTargetTabId = targetTabId;
         await Promise.all(Array.from(tabs.keys()).map((tabId) => (
           chrome.tabs.sendMessage(tabId, { type: 'cancel-voice-send', payload: eventPayload }).catch(() => {})
         )));
       } else if (type === 'transcript') {
-        const targetTabId = conversationSessionTargets.get(sessionId)
-          || activeConversationTargetTabId
-          || preferredConversationTarget();
+        const hasSessionTarget = Boolean(sessionId && conversationSessionTargets.has(sessionId));
+        let targetTabId = hasSessionTarget
+          ? conversationSessionTargets.get(sessionId)
+          : activeConversationTargetTabId;
+
+        if (!hasSessionTarget && !targetTabId) {
+          const fallbackTarget = await captureConversationTarget();
+          targetTabId = fallbackTarget ? fallbackTarget.tabId : null;
+        }
+        const expectedLocation = hasSessionTarget
+          ? String(conversationSessionTargetLocations.get(sessionId) || '')
+          : '';
         if (targetTabId && tabs.has(targetTabId)) {
           activeConversationTargetTabId = targetTabId;
-          await chrome.tabs.sendMessage(targetTabId, { type: 'voice-transcript', payload: eventPayload }).catch(() => {});
+          const currentTarget = expectedLocation ? await conversationTargetStatus(targetTabId) : null;
+          if (expectedLocation && (!currentTarget || !currentTarget.ok
+            || conversationLocationKey(currentTarget.url) !== expectedLocation)) {
+            await postConversationState({
+              phase: 'error',
+              statusText: '録音開始後にChatGPTのページが変わったため送信しませんでした',
+              sttModel: effectiveSettings.sttModel || 'small',
+              error: 'conversation-target-page-changed',
+            }).catch(() => {});
+          } else {
+            await deliverVoiceTranscript(targetTabId, eventPayload, effectiveSettings);
+          }
         } else {
           await postConversationState({
             phase: 'error',
             statusText: '音声入力先のChatGPTタブを確認できませんでした',
-            sttModel: commandSettings.sttModel || 'small',
+            sttModel: effectiveSettings.sttModel || 'small',
             error: 'conversation-target-not-found',
           }).catch(() => {});
         }
+      }
+      if (type === 'transcript' && sessionId) {
+        conversationSessionTargets.delete(sessionId);
+        conversationSessionTargetLocations.delete(sessionId);
       }
       lastExternalConversationEventId = eventId;
     }
@@ -566,7 +717,7 @@ function selectedTarget(senderTabId) {
   return Array.from(tabs.keys())[0] || null;
 }
 
-function queueCommand(cmd, senderTabId, params = {}) {
+function queueCommand(cmd, senderTabId, _params = {}) {
   const tabId = selectedTarget(senderTabId);
   if (!tabId || !tabs.has(tabId)) {
     setStatus('No ChatGPT tab selected', 'warn');
@@ -603,7 +754,7 @@ function queueCommand(cmd, senderTabId, params = {}) {
     chunkCount: message.chunks.length,
     text,
     voiceProfile: DEFAULT_SETTINGS.voiceProfile,
-    referenceVoice: referenceVoiceFromPayload(params),
+    referenceVoice: undefined,
     voicePrompt: '',
   });
   setStatus(`${cmd === 'regen' ? 'Regen' : 'Next'} chunk ${chunkIndex + 1}/${message.chunks.length}`, 'info');
@@ -717,7 +868,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   if (lastComposerFocusedTabId === tabId) lastComposerFocusedTabId = null;
   if (activeConversationTargetTabId === tabId) activeConversationTargetTabId = null;
   for (const [sessionId, targetTabId] of conversationSessionTargets.entries()) {
-    if (targetTabId === tabId) conversationSessionTargets.delete(sessionId);
+    if (targetTabId === tabId) conversationSessionTargets.set(sessionId, 0);
   }
   if (ownedCurrentPlayback) abandonCurrentPlayback('Playback tab closed; skipped', 'warn');
   else broadcastState();
@@ -731,7 +882,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (lastComposerFocusedTabId === tabId) lastComposerFocusedTabId = null;
   if (activeConversationTargetTabId === tabId) activeConversationTargetTabId = null;
   for (const [sessionId, targetTabId] of conversationSessionTargets.entries()) {
-    if (targetTabId === tabId) conversationSessionTargets.delete(sessionId);
+    if (targetTabId === tabId) conversationSessionTargets.set(sessionId, 0);
   }
   if (ownedCurrentPlayback) abandonCurrentPlayback('Playback tab reloaded; skipped', 'warn');
   else broadcastState();
@@ -800,7 +951,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             info.lastAutoQueueSignature = autoQueueSignature;
             info.lastReadIndex = autoText ? 0 : -1;
             if (autoText && shouldQueueAutoFromTab(senderTabId)) {
-              enqueue({ mode: 'auto', reason: 'auto', tabId: senderTabId, tabTitle: info.title, messageKey, chunkIndex: 0, chunkCount: chunks.length, text: autoText, voiceProfile: DEFAULT_SETTINGS.voiceProfile, referenceVoice: referenceVoiceFromPayload(message), voicePrompt: '' });
+              enqueue({ mode: 'auto', reason: 'auto', tabId: senderTabId, tabTitle: info.title, messageKey, chunkIndex: 0, chunkCount: chunks.length, text: autoText, voiceProfile: DEFAULT_SETTINGS.voiceProfile, referenceVoice: undefined, voicePrompt: '' });
               void playNext();
             } else if (autoText) {
               setStatus('音声入力中のため別の返答は読み上げませんでした', 'info');
@@ -846,6 +997,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'desktop-pet-selection') {
     syncDesktopPetSelection(message.petId)
+      .then((payload) => sendResponse({ ok: true, payload }))
+      .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
+    return true;
+  }
+
+  if (message.type === 'options-settings-updated') {
+    getSettings()
+      .then((settings) => pushOptionSettings(settings))
       .then((payload) => sendResponse({ ok: true, payload }))
       .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
     return true;

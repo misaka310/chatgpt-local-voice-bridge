@@ -18,6 +18,8 @@ const TEST_MODULES = [
   'tests.test_tray_controller',
   'tests.test_tray_controller_processes',
   'tests.test_tray_qt_runtime',
+  'tests.test_windows_gui_smoke_script',
+  'tests.test_windows_process_identity',
 ];
 
 function pythonCandidates() {
@@ -37,19 +39,61 @@ function isLocalPath(command) {
   return path.isAbsolute(command) || command.includes(path.sep);
 }
 
-for (const command of pythonCandidates()) {
-  if (isLocalPath(command) && (!fs.existsSync(command) || !fs.statSync(command).isFile())) continue;
-  const result = spawnSync(command, ['-m', 'unittest', ...TEST_MODULES], {
+function resolvePython() {
+  for (const command of pythonCandidates()) {
+    if (isLocalPath(command) && (!fs.existsSync(command) || !fs.statSync(command).isFile())) continue;
+    const probe = spawnSync(command, ['--version'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      shell: false,
+      timeout: 10000,
+    });
+    if (!probe.error && probe.status === 0) return command;
+    if (probe.error?.code === 'ENOENT') continue;
+    if (probe.error) {
+      console.error(`Could not start Python candidate ${command}: ${probe.error.message}`);
+      process.exit(1);
+    }
+  }
+  return null;
+}
+
+const python = resolvePython();
+if (!python) {
+  console.error('Python was not found. Run setup-voice-env.cmd or install Python 3.11.');
+  process.exit(1);
+}
+
+const timeoutMs = Number.parseInt(process.env.PYTHON_TEST_TIMEOUT_MS || '120000', 10);
+if (!Number.isFinite(timeoutMs) || timeoutMs < 1000) {
+  console.error(`Invalid PYTHON_TEST_TIMEOUT_MS: ${process.env.PYTHON_TEST_TIMEOUT_MS}`);
+  process.exit(1);
+}
+
+for (const moduleName of TEST_MODULES) {
+  const startedAt = Date.now();
+  console.log(`[python-tests] START ${moduleName}`);
+  const result = spawnSync(python, ['-m', 'unittest', '-v', moduleName], {
     cwd: ROOT,
     stdio: 'inherit',
     shell: false,
+    timeout: timeoutMs,
   });
-  if (!result.error) process.exit(result.status ?? 1);
-  if (result.error.code !== 'ENOENT') {
-    console.error(result.error.message);
+  if (result.error) {
+    const elapsedSeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+    if (result.error.code === 'ETIMEDOUT') {
+      console.error(`[python-tests] TIMEOUT ${moduleName} after ${elapsedSeconds}s`);
+    } else {
+      console.error(`[python-tests] ERROR ${moduleName}: ${result.error.message}`);
+    }
     process.exit(1);
   }
+  if ((result.status ?? 1) !== 0) {
+    console.error(`[python-tests] FAIL ${moduleName} (exit=${result.status ?? 1})`);
+    process.exit(result.status ?? 1);
+  }
+  const elapsedSeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+  console.log(`[python-tests] PASS ${moduleName} (${elapsedSeconds}s)`);
 }
 
-console.error('Python was not found. Run setup-voice-env.cmd or install Python 3.11.');
-process.exit(1);
+console.log(`[python-tests] PASS ${TEST_MODULES.length} modules`);

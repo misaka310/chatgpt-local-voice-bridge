@@ -104,28 +104,101 @@
       : { ok: false, reason: 'composer-clear-failed' };
   }
 
-  function findComposer(documentObject) {
-    if (!documentObject || typeof documentObject.querySelector !== 'function') return null;
-    for (const selector of COMPOSER_SELECTORS) {
-      const element = documentObject.querySelector(selector);
-      if (element && !element.disabled) return element;
+  function isElementHidden(element) {
+    if (!element) return true;
+    if (element.isConnected === false || element.hidden === true || element.inert === true) return true;
+    if (typeof element.getAttribute === 'function') {
+      if (String(element.getAttribute('aria-hidden') || '').toLowerCase() === 'true') return true;
+      const style = String(element.getAttribute('style') || '').replace(/\s+/g, '').toLowerCase();
+      if (style.includes('display:none') || style.includes('visibility:hidden')) return true;
     }
-    return null;
+    const view = element.ownerDocument && element.ownerDocument.defaultView;
+    if (view && typeof view.getComputedStyle === 'function') {
+      const computed = view.getComputedStyle(element);
+      if (computed && (computed.display === 'none' || computed.visibility === 'hidden')) return true;
+    }
+    if (typeof element.closest === 'function') {
+      const hiddenAncestor = element.closest('[hidden], [inert], [aria-hidden="true"]');
+      if (hiddenAncestor) return true;
+    }
+    return false;
+  }
+
+  function isComposerUsable(element) {
+    if (!element || element.disabled || element.readOnly || isElementHidden(element)) return false;
+    if (typeof element.getAttribute === 'function') {
+      if (String(element.getAttribute('aria-disabled') || '').toLowerCase() === 'true') return false;
+      if (String(element.getAttribute('contenteditable') || '').toLowerCase() === 'false') return false;
+    }
+    return true;
+  }
+
+  function matchingElements(documentObject, selectors) {
+    const matches = [];
+    const seen = new Set();
+    for (const selector of selectors) {
+      let elements = [];
+      if (typeof documentObject.querySelectorAll === 'function') {
+        elements = Array.from(documentObject.querySelectorAll(selector) || []);
+      } else if (typeof documentObject.querySelector === 'function') {
+        const element = documentObject.querySelector(selector);
+        if (element) elements = [element];
+      }
+      for (const element of elements) {
+        if (!element || seen.has(element)) continue;
+        seen.add(element);
+        matches.push(element);
+      }
+    }
+    return matches;
+  }
+
+  function containsTarget(element, target) {
+    return Boolean(element && target && (
+      element === target
+      || (typeof element.contains === 'function' && element.contains(target))
+    ));
+  }
+
+  function findComposer(documentObject, preferredTarget = null) {
+    if (!documentObject || (typeof documentObject.querySelector !== 'function'
+      && typeof documentObject.querySelectorAll !== 'function')) return null;
+    const composers = matchingElements(documentObject, COMPOSER_SELECTORS).filter(isComposerUsable);
+    if (!composers.length) return null;
+    if (preferredTarget) {
+      const preferred = composers.find((element) => containsTarget(element, preferredTarget));
+      if (preferred) return preferred;
+    }
+    const activeElement = documentObject.activeElement || null;
+    if (activeElement) {
+      const active = composers.find((element) => containsTarget(element, activeElement));
+      if (active) return active;
+    }
+    return composers[0];
+  }
+
+  function isComposerTarget(documentObject, target) {
+    const composer = findComposer(documentObject, target);
+    return Boolean(composer && containsTarget(composer, target));
   }
 
   function isButtonEnabled(button) {
-    if (!button || button.disabled) return false;
+    if (!button || button.disabled || isElementHidden(button)) return false;
     const ariaDisabled = typeof button.getAttribute === 'function' ? button.getAttribute('aria-disabled') : null;
     return String(ariaDisabled || '').toLowerCase() !== 'true';
   }
 
-  function findSendButton(documentObject) {
-    if (!documentObject || typeof documentObject.querySelector !== 'function') return null;
-    for (const selector of SEND_SELECTORS) {
-      const button = documentObject.querySelector(selector);
-      if (isButtonEnabled(button)) return button;
+  function findSendButton(documentObject, composer = null) {
+    if (!documentObject || (typeof documentObject.querySelector !== 'function'
+      && typeof documentObject.querySelectorAll !== 'function')) return null;
+    if (composer && typeof composer.closest === 'function') {
+      const form = composer.closest('form');
+      if (form) {
+        const scopedButton = matchingElements(form, SEND_SELECTORS).find(isButtonEnabled);
+        if (scopedButton) return scopedButton;
+      }
     }
-    return null;
+    return matchingElements(documentObject, SEND_SELECTORS).find(isButtonEnabled) || null;
   }
 
   function createPendingSendController(environment = {}) {
@@ -184,7 +257,7 @@
         emit('error', '入力欄が変更されたため自動送信しませんでした', 'composer-changed');
         return { ok: false, reason: 'composer-changed' };
       }
-      const button = findSendButton(documentObject);
+      const button = findSendButton(documentObject, item.composer);
       if (!button) {
         finishPending(item);
         emit('error', 'ChatGPTの送信ボタンを確認できませんでした', 'send-button-not-ready');
@@ -259,6 +332,7 @@
     insertComposerText,
     clearInsertedText,
     findComposer,
+    isComposerTarget,
     findSendButton,
     createPendingSendController,
   };

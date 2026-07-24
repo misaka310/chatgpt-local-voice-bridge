@@ -11,7 +11,6 @@ from PySide6.QtGui import QCloseEvent, QMouseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
-    QDoubleSpinBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -253,19 +252,7 @@ class LocalVoiceControlPanel(QWidget):
         self.mic_button = QPushButton("マイク会話", card)
         self.mic_button.setCheckable(True)
         self.mic_button.clicked.connect(self._on_mic_clicked)
-        self.stt_model_combo = QComboBox(card)
-        for model_id, label in (("small", "STT small"), ("medium", "STT medium"), ("large-v3-turbo", "STT turbo")):
-            self.stt_model_combo.addItem(label, model_id)
-        self.stt_model_combo.currentIndexChanged.connect(self._on_stt_model_changed)
-        self.cancel_grace_spin = QDoubleSpinBox(card)
-        self.cancel_grace_spin.setRange(0.0, 5.0)
-        self.cancel_grace_spin.setSingleStep(0.1)
-        self.cancel_grace_spin.setDecimals(1)
-        self.cancel_grace_spin.setSuffix("s")
-        self.cancel_grace_spin.valueChanged.connect(self._on_cancel_grace_changed)
-        mic_row.addWidget(self.mic_button)
-        mic_row.addWidget(self.stt_model_combo, 1)
-        mic_row.addWidget(self.cancel_grace_spin)
+        mic_row.addWidget(self.mic_button, 1)
         card_layout.addLayout(mic_row)
 
         self.mic_detail_label = QLabel("右Ctrl＋＼（右Shift左）長押しで録音", card)
@@ -348,9 +335,6 @@ class LocalVoiceControlPanel(QWidget):
             self.volume_value.setText(f"{self.volume_slider.value()}%")
             self.auto_button.setChecked(bool(settings.get("enabled")))
             self.mic_button.setChecked(bool(settings.get("micConversationEnabled")))
-            model_index = self.stt_model_combo.findData(str(settings.get("sttModel") or "small"))
-            self.stt_model_combo.setCurrentIndex(max(0, model_index))
-            self.cancel_grace_spin.setValue(max(0.0, float(settings.get("cancelGraceMs", 700)) / 1000.0))
         finally:
             self._updating_controls = False
 
@@ -372,8 +356,6 @@ class LocalVoiceControlPanel(QWidget):
         mic_enabled = bool(settings.get("micConversationEnabled"))
         stt_installed = bool(components.get("sttInstalled"))
         self.mic_button.setEnabled(stt_installed)
-        self.stt_model_combo.setEnabled(stt_installed)
-        self.cancel_grace_spin.setEnabled(stt_installed)
         self.mic_button.setText("マイク会話" if stt_installed else "マイク会話（追加セットアップ）")
         if not stt_installed:
             self.mic_detail_label.setText("通知領域の環境セットアップから「読み上げ + マイク会話」を追加してください")
@@ -461,16 +443,6 @@ class LocalVoiceControlPanel(QWidget):
         if checked:
             payload["enabled"] = True
         self._update_settings(payload)
-
-    def _on_stt_model_changed(self, _index: int) -> None:
-        if self._updating_controls:
-            return
-        self._update_settings({"sttModel": str(self.stt_model_combo.currentData() or "small")})
-
-    def _on_cancel_grace_changed(self, value: float) -> None:
-        if self._updating_controls:
-            return
-        self._update_settings({"cancelGraceMs": int(round(float(value) * 1000))})
 
     def _on_volume_changed(self, value: int) -> None:
         self.volume_value.setText(f"{int(value)}%")

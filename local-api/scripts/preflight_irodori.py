@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from ffmpeg_env import configure_ffmpeg_dll_path
+from scripts.audit_runtime_dependencies import audit_pip_check, audit_versions
 
 DEFAULT_MODEL = "Aratako/Irodori-TTS-500M-v3"
 DEFAULT_CODEC = "Aratako/Semantic-DACVAE-Japanese-32dim"
@@ -83,6 +84,13 @@ def main() -> int:
 
     if not security_baselines_ok():
         return 6
+
+    dependency_errors = audit_versions() + audit_pip_check()
+    if dependency_errors:
+        for error in dependency_errors:
+            print(f"[ng] dependency audit: {error}", file=sys.stderr)
+        return 7
+    print("[ok] dependency audit complete")
 
     ffmpeg_bin = configure_ffmpeg_dll_path()
     if ffmpeg_bin:

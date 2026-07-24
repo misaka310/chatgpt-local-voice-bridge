@@ -10,7 +10,7 @@ const steps = [
   [node, ['scripts/run-public-check.js']],
   [node, ['scripts/run-python-tests.js']],
   [node, ['scripts/run-background-core-tests.js']],
-  [node, ['--test', 'tests/background-reference-queue.test.js', 'tests/background-external-panel.test.js']],
+  [node, ['--test', 'tests/background-reference-queue.test.js', 'tests/background-external-panel.test.js', 'tests/options-page.test.js']],
   [node, ['scripts/run-mock-e2e.js']],
 ];
 
@@ -24,7 +24,10 @@ for (const [command, args] of steps) {
     console.error(result.error.message);
     process.exit(1);
   }
-  if ((result.status ?? 1) !== 0) process.exit(result.status ?? 1);
+  if ((result.status ?? 1) !== 0) {
+    console.error(`CI step failed (${result.status ?? 1}): ${command} ${args.join(' ')}`);
+    process.exit(result.status ?? 1);
+  }
 }
 
 console.log('Local Voice Bridge CI: PASS');

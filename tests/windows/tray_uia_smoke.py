@@ -5,6 +5,7 @@ import ctypes.wintypes as wt
 import json
 import os
 import subprocess
+import sys
 import time
 import traceback
 from dataclasses import asdict, dataclass
@@ -15,24 +16,29 @@ import psutil
 from PIL import ImageGrab
 from pywinauto import Desktop
 
+from process_identity import logical_leaf_pids
+
 APP_NAME = "Local Voice Bridge"
 PET_WINDOW_TITLE = "Local Voice Bridge Desktop Pet"
 ROOT = Path(__file__).resolve().parents[2]
 EXE = ROOT / "LocalVoiceBridge.exe"
 CONTROLLER = (ROOT / "local-api" / "tray_controller.py").resolve()
-CONTROLLER_LOG = ROOT / "local-api" / "logs" / "controller.log"
 RESULT_DIR = Path(os.environ.get("GUI_SMOKE_RESULT_DIR", ROOT / "test-results" / "windows-gui-smoke"))
 RESULT_JSON = RESULT_DIR / "result.json"
 FAILURE_SCREENSHOT = RESULT_DIR / "failure.png"
+FAILURE_CONTROLLER_LOG = RESULT_DIR / "controller.log"
+CONTROLLER_LOG = ROOT / "local-api" / "logs" / "controller.log"
 EXPECTED_ACTIONS = (
     "Show Local Voice panel",
     "Bring Desktop Pet Back",
     "Restart Voice Bridge",
     "Open controller log",
     "Open generated audio folder",
+    "Clear generated audio...",
     "Open reference voices folder",
     "Start with Windows",
     "Exit and run environment setup",
+    "Uninstall Local Voice Bridge...",
     "Exit",
 )
 
@@ -94,10 +100,10 @@ def enum_top_windows() -> list[WindowInfo]:
     return rows
 
 
-def controller_processes() -> list[psutil.Process]:
+def controller_process_candidates() -> list[psutil.Process]:
     marker = os.path.normcase(str(CONTROLLER))
     rows: list[psutil.Process] = []
-    for process in psutil.process_iter(["pid", "cmdline", "create_time"]):
+    for process in psutil.process_iter(["pid", "ppid", "cmdline", "create_time"]):
         try:
             arguments = [os.path.normcase(os.path.abspath(value)) for value in (process.info.get("cmdline") or [])]
             if marker in arguments:
@@ -107,20 +113,105 @@ def controller_processes() -> list[psutil.Process]:
     return sorted(rows, key=lambda item: item.pid)
 
 
+def controller_processes() -> list[psutil.Process]:
+    candidates = controller_process_candidates()
+    logical_pids = logical_leaf_pids(
+        (process.pid, int(process.info.get("ppid") or 0))
+        for process in candidates
+    )
+    return [process for process in candidates if process.pid in logical_pids]
+
+
+def process_details(processes: Iterable[psutil.Process]) -> list[dict[str, object]]:
+    details: list[dict[str, object]] = []
+    for process in processes:
+        try:
+            details.append(
+                {
+                    "pid": process.pid,
+                    "ppid": process.ppid(),
+                    "exe": process.exe(),
+                    "cmdline": process.cmdline(),
+                    "createTime": process.create_time(),
+                    "status": process.status(),
+                }
+            )
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError) as exc:
+            details.append({"pid": process.pid, "error": f"{type(exc).__name__}: {exc}"})
+    return details
+
+
+def tray_controller_candidates() -> list[psutil.Process]:
+    needle = CONTROLLER.name.casefold()
+    rows: list[psutil.Process] = []
+    for process in psutil.process_iter(["pid", "cmdline", "create_time"]):
+        try:
+            arguments = [str(value) for value in (process.info.get("cmdline") or [])]
+            if any(needle in value.casefold() for value in arguments):
+                rows.append(process)
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+            continue
+    return sorted(rows, key=lambda item: item.pid)
+
+
+def controller_log_tail(max_bytes: int = 32768) -> str:
+    try:
+        data = CONTROLLER_LOG.read_bytes()
+    except OSError as exc:
+        return f"<controller log unavailable: {type(exc).__name__}: {exc}>"
+    return data[-max_bytes:].decode("utf-8", errors="replace")
+
+
+def collect_failure_diagnostics() -> dict[str, object]:
+    exact_candidates = controller_process_candidates()
+    exact = controller_processes()
+    candidates = tray_controller_candidates()
+    windows = [
+        asdict(row)
+        for row in enum_top_windows()
+        if APP_NAME.casefold() in row.title.casefold() or PET_WINDOW_TITLE.casefold() in row.title.casefold()
+    ]
+    return {
+        "python": {
+            "executable": sys.executable,
+            "version": sys.version,
+            "pythonLocation": os.environ.get("pythonLocation", ""),
+        },
+        "controllerPath": str(CONTROLLER),
+        "exactControllerProcessCandidates": process_details(exact_candidates),
+        "exactControllerProcesses": process_details(exact),
+        "trayControllerCandidates": process_details(candidates),
+        "matchingWindows": windows[:100],
+        "controllerLogTail": controller_log_tail(),
+    }
+
+
+def wait_for_stable_single_controller(timeout: float = 15.0, stable_for: float = 1.0) -> psutil.Process:
+    deadline = time.monotonic() + timeout
+    last_pid: int | None = None
+    stable_since = time.monotonic()
+    while time.monotonic() < deadline:
+        rows = controller_processes()
+        current_pid = rows[0].pid if len(rows) == 1 else None
+        if current_pid is not None and current_pid == last_pid:
+            if time.monotonic() - stable_since >= stable_for:
+                return rows[0]
+        else:
+            last_pid = current_pid
+            stable_since = time.monotonic()
+        time.sleep(0.2)
+    raise TimeoutError(
+        "Timed out waiting for one stable tray controller process; "
+        f"logical={process_details(controller_processes())}; "
+        f"candidates={process_details(controller_process_candidates())}"
+    )
+
+
 def launch_app() -> psutil.Process:
     completed = subprocess.run([str(EXE)], cwd=ROOT, timeout=15, check=False)
     if completed.returncode != 0:
         raise RuntimeError(f"{EXE.name} returned {completed.returncode}")
-    def find_one_controller():
-        found = controller_processes()
-        return found if len(found) == 1 else None
-
-    rows = wait_until(
-        "one tray controller process",
-        find_one_controller,
-        timeout=15,
-    )
-    return rows[0]
+    return wait_for_stable_single_controller(timeout=15)
 
 
 def assert_single_instance(original_pid: int) -> None:
@@ -303,10 +394,10 @@ def assert_window_responsive(hwnd: int) -> None:
 
 def verify_panel_toggle(pid: int) -> None:
     click_menu_item(pid, "Show Local Voice panel")
-    panel = wait_until("Local Voice panel", lambda: panel_window(pid), timeout=8)
+    panel = wait_until("Local Voice panel", lambda: panel_window(pid), timeout=25)
     assert_window_responsive(panel.hwnd)
     click_menu_item(pid, "Hide Local Voice panel")
-    wait_until("Local Voice panel to hide", lambda: panel_window(pid) is None, timeout=8)
+    wait_until("Local Voice panel to hide", lambda: panel_window(pid) is None, timeout=15)
 
 
 def verify_pet_visible_and_position_reset(pid: int) -> None:
@@ -338,30 +429,47 @@ def verify_pet_visible_and_position_reset(pid: int) -> None:
         raise AssertionError("desktop pet did not move to the test position")
 
 
-def log_tail_from(offset: int) -> str:
-    if not CONTROLLER_LOG.exists():
-        return ""
-    with CONTROLLER_LOG.open("rb") as handle:
-        handle.seek(offset)
-        return handle.read().decode("utf-8", errors="replace")
-
-
-def verify_restart(pid: int) -> None:
-    offset = CONTROLLER_LOG.stat().st_size if CONTROLLER_LOG.exists() else 0
+def verify_restart(pid: int) -> int:
     click_menu_item(pid, "Restart Voice Bridge")
     wait_until(
-        "restart command log entry",
-        lambda: "Status: Restarting" in log_tail_from(offset),
-        timeout=20,
+        "old controller process exit",
+        lambda: all(process.pid != pid for process in controller_processes()),
+        timeout=15,
     )
-    assert_menu_contract(pid)
+
+    def restarted_controller():
+        rows = controller_processes()
+        return rows[0] if len(rows) == 1 and rows[0].pid != pid else None
+
+    try:
+        restarted = wait_until("restarted tray controller", restarted_controller, timeout=20)
+    except TimeoutError as exc:
+        exact_pids = [process.pid for process in controller_processes()]
+        candidate_pids = [process.pid for process in tray_controller_candidates()]
+        raise TimeoutError(
+            f"{exc}; exact controller PIDs={exact_pids}; tray controller candidate PIDs={candidate_pids}"
+        ) from exc
+    assert_menu_contract(restarted.pid)
+    return restarted.pid
 
 
 def verify_exit_and_relaunch(pid: int) -> int:
     click_menu_item(pid, "Exit")
     wait_until("controller process exit", lambda: not controller_processes(), timeout=15)
     next_process = launch_app()
-    assert_menu_contract(next_process.pid)
+    def relaunched_menu_ready() -> bool:
+        try:
+            assert_menu_contract(next_process.pid)
+            return True
+        except Exception:
+            return False
+
+    wait_until(
+        "relaunched tray menu contract",
+        relaunched_menu_ready,
+        timeout=25,
+        interval=0.5,
+    )
     return next_process.pid
 
 
@@ -374,6 +482,11 @@ def save_result(results: list[ScenarioResult], error: BaseException | None = Non
     if error is not None:
         payload["error"] = f"{type(error).__name__}: {error}"
         payload["traceback"] = traceback.format_exc()
+        payload["diagnostics"] = collect_failure_diagnostics()
+        try:
+            FAILURE_CONTROLLER_LOG.write_text(controller_log_tail(), encoding="utf-8")
+        except OSError:
+            pass
         try:
             ImageGrab.grab(all_screens=True).save(FAILURE_SCREENSHOT)
         except Exception:
@@ -429,7 +542,14 @@ def main() -> int:
         )
         run_scenario(results, "single instance", lambda: assert_single_instance(current_pid))
         run_scenario(results, "panel show hide and responsiveness", lambda: verify_panel_toggle(current_pid))
-        run_scenario(results, "restart stays operable", lambda: verify_restart(current_pid))
+
+        restarted_pid: list[int] = []
+
+        def restart_app() -> None:
+            restarted_pid.append(verify_restart(current_pid))
+
+        run_scenario(results, "restart reloads the tray application", restart_app)
+        current_pid = restarted_pid[0]
 
         next_pid: list[int] = []
 

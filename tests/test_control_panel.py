@@ -93,8 +93,8 @@ class ControlPanelQtTests(unittest.TestCase):
             self.assertEqual(panel.volume_slider.value(), 40)
             self.assertTrue(panel.auto_button.isChecked())
             self.assertTrue(panel.mic_button.isChecked())
-            self.assertEqual(panel.stt_model_combo.currentData(), "medium")
-            self.assertEqual(panel.cancel_grace_spin.value(), 0.9)
+            self.assertFalse(hasattr(panel, "stt_model_combo"))
+            self.assertFalse(hasattr(panel, "cancel_grace_spin"))
             self.assertIn("録音中", panel.status_label.text())
             self.assertIn("CUDA", panel.mic_detail_label.text())
             self.assertEqual(panel.current_text_label.toolTip(), "全タブから届いた返答です。")
@@ -117,8 +117,6 @@ class ControlPanelQtTests(unittest.TestCase):
 
             panel.auto_button.click()
             self.assertFalse(panel.mic_button.isChecked())
-            panel.stt_model_combo.setCurrentIndex(panel.stt_model_combo.findData("small"))
-            panel.cancel_grace_spin.setValue(0.7)
             panel.volume_slider.setValue(25)
             panel.reference_combo.setCurrentIndex(0)
             panel.next_button.click()
@@ -130,8 +128,6 @@ class ControlPanelQtTests(unittest.TestCase):
                 {"enabled": False, "micConversationEnabled": False},
                 client.settings_calls,
             )
-            self.assertIn({"sttModel": "small"}, client.settings_calls)
-            self.assertIn({"cancelGraceMs": 700}, client.settings_calls)
             self.assertIn({"voiceVolume": 0.25}, client.settings_calls)
             self.assertIn({"referenceVoice": ""}, client.settings_calls)
             self.assertEqual(client.commands, ["next", "regen", "replay"])
@@ -157,8 +153,6 @@ class ControlPanelQtTests(unittest.TestCase):
             self.app.processEvents()
 
             self.assertFalse(panel.mic_button.isEnabled())
-            self.assertFalse(panel.stt_model_combo.isEnabled())
-            self.assertFalse(panel.cancel_grace_spin.isEnabled())
             self.assertIn("追加セットアップ", panel.mic_button.text())
             self.assertIn("読み上げ + マイク会話", panel.mic_detail_label.text())
             panel.shutdown()

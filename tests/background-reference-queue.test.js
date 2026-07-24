@@ -32,6 +32,7 @@ function createHarness(harnessOptions = {}) {
     voiceProfile: 'irodori-v3',
     voiceId: 'sample',
     referenceVoice: 'sample',
+    ...(harnessOptions.initialStorage || {}),
   };
   let runtimeListener = null;
   let tabRemovedListener = null;
@@ -203,7 +204,7 @@ test('continuous queue keeps the selected reference voice when one tab omits leg
   assert.deepEqual(harness.posts.map((body) => body.voiceId), ['sample', 'sample']);
 });
 
-test('an explicit empty reference voice remains Ref=none instead of falling back', async () => {
+test('stale empty content settings cannot override the selected reference voice', async () => {
   const harness = createHarness();
   harness.send({ type: 'register-tab', title: 'Tab A' }, 101, 'Tab A');
   harness.send({
@@ -217,26 +218,26 @@ test('an explicit empty reference voice remains Ref=none instead of falling back
   }, 101, 'Tab A');
 
   await waitFor(() => harness.posts.length === 1);
-  assert.equal(harness.posts[0].referenceVoice, '');
-  assert.equal(harness.posts[0].voiceId, '');
+  assert.equal(harness.posts[0].referenceVoice, 'sample');
+  assert.equal(harness.posts[0].voiceId, 'sample');
 });
 
-test('an explicit empty voiceId wins over a stale referenceVoice value', async () => {
-  const harness = createHarness();
+test('a legacy valid referenceVoice survives an empty default voiceId during migration', async () => {
+  const harness = createHarness({ initialStorage: { voiceId: '', referenceVoice: 'sample' } });
   harness.send({ type: 'register-tab', title: 'Tab A' }, 101, 'Tab A');
   harness.send({
     type: 'report-chunks',
-    messageKey: 'reply-mixed-none',
-    chunks: ['参照音声なしを優先します。'],
-    autoPreview: '参照音声なしを優先します。',
+    messageKey: 'reply-migrated-reference',
+    chunks: ['保存済み参照音声を維持します。'],
+    autoPreview: '保存済み参照音声を維持します。',
     isAuto: true,
     voiceId: '',
-    referenceVoice: 'sample',
+    referenceVoice: '',
   }, 101, 'Tab A');
 
   await waitFor(() => harness.posts.length === 1);
-  assert.equal(harness.posts[0].referenceVoice, '');
-  assert.equal(harness.posts[0].voiceId, '');
+  assert.equal(harness.posts[0].referenceVoice, 'sample');
+  assert.equal(harness.posts[0].voiceId, 'sample');
 });
 
 test('Next and Regen use the saved reference voice when legacy fields are omitted', async () => {

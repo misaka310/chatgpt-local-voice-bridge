@@ -12,48 +12,96 @@ $requirements = Join-Path $repoRoot 'tests\windows\requirements-gui-smoke.txt'
 $smokeScript = Join-Path $repoRoot 'tests\windows\hosted_tray_uia_smoke.py'
 $launcher = Join-Path $repoRoot 'LocalVoiceBridge.exe'
 
+function Invoke-Process {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$FailureMessage
+    )
+    $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -WorkingDirectory $repoRoot -Wait -PassThru -NoNewWindow
+    if ($process.ExitCode -ne 0) {
+        throw "$FailureMessage (exit=$($process.ExitCode))"
+    }
+}
+
+function Get-PythonVersion {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath
+    )
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $FilePath
+    $startInfo.Arguments = '-c "import platform; print(platform.python_version())"'
+    $startInfo.WorkingDirectory = $repoRoot
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+
+    $process = [System.Diagnostics.Process]::Start($startInfo)
+    $standardOutput = $process.StandardOutput.ReadToEnd()
+    $standardError = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+    if ($process.ExitCode -ne 0) {
+        throw "Could not read the GUI smoke Python version from $FilePath (exit=$($process.ExitCode)): $standardError"
+    }
+    $version = $standardOutput.Trim()
+    if ([string]::IsNullOrWhiteSpace($version)) {
+        throw "GUI smoke Python returned an empty version string: $FilePath"
+    }
+    return $version
+}
+
 if (-not [Environment]::UserInteractive) {
     throw 'Windows GUI smoke requires a logged-in interactive desktop session.'
 }
 
 if (-not (Test-Path $python)) {
-    $py = Get-Command py.exe -ErrorAction SilentlyContinue
-    if ($null -ne $py) {
-        & $py.Source -3 -m venv $venvRoot
-    } else {
-        $systemPython = Get-Command python.exe -ErrorAction Stop
-        & $systemPython.Source -m venv $venvRoot
+    $configuredPython = $null
+    if (-not [string]::IsNullOrWhiteSpace($env:pythonLocation)) {
+        $candidate = Join-Path $env:pythonLocation 'python.exe'
+        if (Test-Path $candidate -PathType Leaf) {
+            $configuredPython = $candidate
+        }
     }
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to create GUI smoke virtual environment: $venvRoot"
+
+    if ($null -ne $configuredPython) {
+        Invoke-Process -FilePath $configuredPython -Arguments @('-m', 'venv', $venvRoot) -FailureMessage "Failed to create GUI smoke virtual environment: $venvRoot"
+    }
+    else {
+        $systemPython = Get-Command python.exe -ErrorAction SilentlyContinue
+        if ($null -ne $systemPython) {
+            Invoke-Process -FilePath $systemPython.Source -Arguments @('-m', 'venv', $venvRoot) -FailureMessage "Failed to create GUI smoke virtual environment: $venvRoot"
+        }
+        else {
+            $py = Get-Command py.exe -ErrorAction Stop
+            Invoke-Process -FilePath $py.Source -Arguments @('-3.11', '-m', 'venv', $venvRoot) -FailureMessage "Failed to create GUI smoke virtual environment: $venvRoot"
+        }
     }
 }
 
+$venvVersion = Get-PythonVersion -FilePath $python
+Write-Host "[gui-smoke] Python $venvVersion at $python"
+if (-not [string]::IsNullOrWhiteSpace($env:pythonLocation) -and -not $venvVersion.StartsWith('3.11.')) {
+    throw "GitHub Actions configured Python 3.11, but the GUI smoke virtual environment uses $venvVersion. Delete $venvRoot and recreate it with the configured interpreter."
+}
+
 if (-not $SkipDependencyInstall) {
-    & $python -m pip install --disable-pip-version-check --upgrade pip
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Failed to update pip for the GUI smoke environment.'
-    }
-    & $python -m pip install --disable-pip-version-check -r $requirements
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Failed to install Windows GUI smoke dependencies.'
-    }
+    Invoke-Process -FilePath $python -Arguments @('-m', 'pip', 'install', '--disable-pip-version-check', '--upgrade', 'pip') -FailureMessage 'Failed to update pip for the GUI smoke environment.'
+    Invoke-Process -FilePath $python -Arguments @('-m', 'pip', 'install', '--disable-pip-version-check', '-r', $requirements) -FailureMessage 'Failed to install Windows GUI smoke dependencies.'
 }
 
 Push-Location $repoRoot
 try {
-    & npm run build:launcher
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $launcher)) {
+    $node = (Get-Command node.exe -ErrorAction Stop).Source
+    Invoke-Process -FilePath $node -Arguments @((Join-Path $repoRoot 'scripts\run-launcher-build.js')) -FailureMessage 'LocalVoiceBridge.exe could not be built.'
+    if (-not (Test-Path $launcher -PathType Leaf)) {
         throw 'LocalVoiceBridge.exe could not be built.'
     }
 
-    & $launcher --self-test
-    if ($LASTEXITCODE -ne 0) {
-        throw 'LocalVoiceBridge.exe self-test failed.'
-    }
-
-    & $python $smokeScript
-    exit $LASTEXITCODE
-} finally {
+    Invoke-Process -FilePath $launcher -Arguments @('--self-test') -FailureMessage 'LocalVoiceBridge.exe self-test failed.'
+    $smoke = Start-Process -FilePath $python -ArgumentList @($smokeScript) -WorkingDirectory $repoRoot -Wait -PassThru -NoNewWindow
+    exit $smoke.ExitCode
+}
+finally {
     Pop-Location
 }

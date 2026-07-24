@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local Voice Bridge 設定</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main class="page-shell">
+    <header class="hero">
+      <img class="app-icon" src="assets/icons/icon48.png" alt="">
+      <div>
+        <p class="eyebrow">Local Voice Bridge</p>
+        <h1>読み上げと文字起こしの設定</h1>
+        <p class="lead">小型パネルには日常操作だけを残し、詳細設定をここで管理します。</p>
+      </div>
+    </header>
+
+    <form id="settings-form" class="settings-card" novalidate>
+      <section class="settings-section" aria-labelledby="reading-heading">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">読み上げ範囲</p>
+            <h2 id="reading-heading">1回に読む文章量</h2>
+          </div>
+          <p>行数または文字数のうち、先に到達した上限が使われます。</p>
+        </div>
+
+        <div class="field-grid">
+          <label class="field" for="preview-max-lines">
+            <span class="field-label">最大行数</span>
+            <input id="preview-max-lines" name="previewMaxLines" type="number" min="1" max="20" step="1" inputmode="numeric">
+            <span class="field-help">1〜20行。初期値は2行です。</span>
+          </label>
+
+          <label class="field" for="preview-max-chars">
+            <span class="field-label">最大文字数</span>
+            <input id="preview-max-chars" name="previewMaxChars" type="number" min="40" max="1000" step="10" inputmode="numeric">
+            <span class="field-help">40〜1000文字。初期値は80文字です。</span>
+          </label>
+        </div>
+        <p class="section-note">Autoの冒頭読み上げと、Nextで進む1チャンクの区切りに適用されます。変更後に検出した返答から有効です。</p>
+      </section>
+
+      <section class="settings-section" aria-labelledby="stt-heading">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">文字起こし</p>
+            <h2 id="stt-heading">マイク入力の詳細</h2>
+          </div>
+          <p>マイク会話のオン・オフ操作は、これまでどおり小型パネルに残ります。</p>
+        </div>
+
+        <div class="field-grid">
+          <label class="field" for="stt-model">
+            <span class="field-label">文字起こしモデル</span>
+            <select id="stt-model" name="sttModel">
+              <option value="small">Small — 軽量</option>
+              <option value="medium">Medium — 精度重視</option>
+              <option value="large-v3-turbo">Large v3 Turbo — 高精度・高速</option>
+            </select>
+            <span class="field-help">大きいモデルほどGPUメモリと初回読み込み時間を多く使います。</span>
+          </label>
+
+          <label class="field" for="cancel-grace-seconds">
+            <span class="field-label">送信前の猶予</span>
+            <div class="input-with-unit">
+              <input id="cancel-grace-seconds" name="cancelGraceSeconds" type="number" min="0" max="5" step="0.1" inputmode="decimal">
+              <span>秒</span>
+            </div>
+            <span class="field-help">文字起こし後、Escで送信を取り消せる時間です。</span>
+          </label>
+        </div>
+      </section>
+
+      <footer class="form-actions">
+        <p id="save-status" class="save-status" role="status" aria-live="polite"></p>
+        <div class="button-row">
+          <button id="reset-button" class="button secondary" type="button">初期値に戻す</button>
+          <button class="button primary" type="submit">保存</button>
+        </div>
+      </footer>
+    </form>
+  </main>
+  <script src="options.js"></script>
+</body>
+</html>

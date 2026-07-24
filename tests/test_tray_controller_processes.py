@@ -43,6 +43,18 @@ class TrayControllerProcessTests(unittest.TestCase):
         self.assertEqual(tray._MUTEX_HANDLE, 456)
         close_handle.assert_not_called()
 
+    def test_windows_mutex_release_closes_handle_once(self) -> None:
+        tray._MUTEX_HANDLE = 789
+        with (
+            mock.patch.object(tray, "IS_WINDOWS", True),
+            mock.patch.object(tray, "_close_windows_handle") as close_handle,
+        ):
+            tray.release_single_instance()
+            tray.release_single_instance()
+
+        self.assertIsNone(tray._MUTEX_HANDLE)
+        close_handle.assert_called_once_with(789)
+
     def test_duplicate_launch_exits_without_blocking_message(self) -> None:
         with (
             mock.patch.object(tray, "IS_WINDOWS", True),
@@ -80,6 +92,28 @@ class TrayControllerProcessTests(unittest.TestCase):
 
         process.terminate.assert_called_once_with()
         process.wait.assert_called_once_with(timeout=5)
+
+
+    def test_restart_stops_only_a_same_installation_existing_server(self) -> None:
+        controller = tray.VoiceBridgeController()
+        payload = {"ok": True, "instanceId": tray.INSTALLATION_ID}
+        with (
+            mock.patch.object(tray, "probe_health", return_value=(True, payload)),
+            mock.patch.object(tray, "request_same_installation_shutdown", return_value=True) as shutdown,
+        ):
+            self.assertTrue(controller.prepare_application_restart())
+        shutdown.assert_called_once_with(payload)
+        self.assertEqual(controller.status, "Stopping existing service")
+
+    def test_restart_refuses_a_different_installation(self) -> None:
+        controller = tray.VoiceBridgeController()
+        payload = {"ok": True, "instanceId": "another-installation"}
+        with (
+            mock.patch.object(tray, "probe_health", return_value=(True, payload)),
+            mock.patch.object(tray, "request_same_installation_shutdown") as shutdown,
+        ):
+            self.assertFalse(controller.prepare_application_restart())
+        shutdown.assert_not_called()
 
 
 if __name__ == "__main__":
