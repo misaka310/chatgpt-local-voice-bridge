@@ -48,7 +48,10 @@ function createHarness({ initialized = true } = {}) {
   const conversationStatePosts = [];
   const settingsPosts = [];
   const sentMessages = [];
+  const tabMessageResponders = new Map();
   let runtimeListener = null;
+  let tabsRemovedListener = null;
+  let tabsUpdatedListener = null;
   let control = {
     ok: true,
     initialized,
@@ -87,11 +90,16 @@ function createHarness({ initialized = true } = {}) {
       onMessage: { addListener(listener) { runtimeListener = listener; } },
     },
     tabs: {
-      onRemoved: { addListener() {} },
+      onRemoved: { addListener(listener) { tabsRemovedListener = listener; } },
       onActivated: { addListener() {} },
-      onUpdated: { addListener() {} },
+      onUpdated: { addListener(listener) { tabsUpdatedListener = listener; } },
       async sendMessage(tabId, message) {
         sentMessages.push({ tabId, message });
+        const responder = tabMessageResponders.get(tabId);
+        if (responder) return responder(message);
+        if (message.type === 'conversation-target-status') {
+          return { ok: true, composerAvailable: true, composerFocused: false, documentFocused: false, visible: false };
+        }
         return { ok: true };
       },
     },
@@ -114,12 +122,13 @@ function createHarness({ initialized = true } = {}) {
         initialized: true,
         settingsRevision: control.settingsRevision + 1,
         settings: {
-          enabled: Boolean(body.enabled),
-          voiceVolume: Number(body.voiceVolume),
-          referenceVoice: String(body.referenceVoice || ''),
-          micConversationEnabled: Boolean(body.micConversationEnabled),
-          sttModel: String(body.sttModel || 'small'),
-          cancelGraceMs: Number(body.cancelGraceMs ?? 700),
+          ...control.settings,
+          ...(Object.prototype.hasOwnProperty.call(body, 'enabled') ? { enabled: Boolean(body.enabled) } : {}),
+          ...(Object.prototype.hasOwnProperty.call(body, 'voiceVolume') ? { voiceVolume: Number(body.voiceVolume) } : {}),
+          ...(Object.prototype.hasOwnProperty.call(body, 'referenceVoice') ? { referenceVoice: String(body.referenceVoice || '') } : {}),
+          ...(Object.prototype.hasOwnProperty.call(body, 'micConversationEnabled') ? { micConversationEnabled: Boolean(body.micConversationEnabled) } : {}),
+          ...(Object.prototype.hasOwnProperty.call(body, 'sttModel') ? { sttModel: String(body.sttModel || 'small') } : {}),
+          ...(Object.prototype.hasOwnProperty.call(body, 'cancelGraceMs') ? { cancelGraceMs: Number(body.cancelGraceMs ?? 700) } : {}),
         },
       };
       return response(control);
@@ -185,6 +194,9 @@ function createHarness({ initialized = true } = {}) {
   return {
     control: () => control,
     setControl(next) { control = { ...control, ...next }; },
+    setTabResponder(tabId, responder) { tabMessageResponders.set(tabId, responder); },
+    removeTab(tabId) { tabsRemovedListener(tabId); },
+    reloadTab(tabId) { tabsUpdatedListener(tabId, { status: 'loading' }); },
     conversationStatePosts,
     petPosts,
     sentMessages,
@@ -217,8 +229,8 @@ test('external panel poll applies settings, executes each command once, and post
   assert.equal(harness.storage.voiceId, 'asuka');
   assert.equal(harness.storage.referenceVoice, 'asuka');
   assert.equal(harness.storage.micConversationEnabled, true);
-  assert.equal(harness.storage.sttModel, 'medium');
-  assert.equal(harness.storage.cancelGraceMs, 900);
+  assert.equal(harness.storage.sttModel, 'small');
+  assert.equal(harness.storage.cancelGraceMs, 700);
   assert.deepEqual(harness.petPosts.at(-1), { petId: 'asuka' });
   assert.equal(harness.speakPosts[0].text, '最初のチャンクです。');
   assert.equal(harness.speakPosts[0].referenceVoice, 'asuka');
@@ -329,6 +341,135 @@ test('conversation transcript stays on the tab whose composer was focused when r
   assert.deepEqual(new Set(cancels.map(({ tabId }) => tabId)), new Set([101, 202]));
 });
 
+test('recording start prefers the composer that is actually focused over stale tab history', async () => {
+  const harness = createHarness();
+  harness.send({ type: 'register-tab', title: 'Tab A' }, 101, 'Tab A');
+  harness.send({ type: 'register-tab', title: 'Tab B', claimOwner: true }, 202, 'Tab B');
+  harness.send({ type: 'composer-focused' }, 101, 'Tab A');
+  harness.setTabResponder(101, (message) => {
+    if (message.type === 'conversation-target-status') {
+      return { ok: true, composerAvailable: false, composerFocused: false, documentFocused: false, visible: false };
+    }
+    return { ok: true };
+  });
+  harness.setTabResponder(202, (message) => {
+    if (message.type === 'conversation-target-status') {
+      return { ok: true, composerAvailable: true, composerFocused: true, documentFocused: true, visible: true };
+    }
+    return { ok: true };
+  });
+  harness.setControl({
+    commands: [],
+    conversationEvents: [
+      { id: 1, type: 'cancel_pending', payload: { sessionId: 10 } },
+      { id: 2, type: 'transcript', payload: { sessionId: 10, text: '現在の入力欄へ送る', cancelGraceMs: 700 } },
+    ],
+  });
+
+  await harness.sendAsync({ type: 'external-control-poll' }, 202, 'Tab B');
+
+  const transcripts = harness.sentMessages.filter(({ message }) => message.type === 'voice-transcript');
+  assert.deepEqual(transcripts.map(({ tabId }) => tabId), [202]);
+});
+
+test('transcript insertion retries only on the captured tab after a transient composer failure', async () => {
+  const harness = createHarness();
+  harness.send({ type: 'register-tab', title: 'Tab A' }, 101, 'Tab A');
+  let transcriptAttempts = 0;
+  harness.setTabResponder(101, (message) => {
+    if (message.type === 'conversation-target-status') {
+      return { ok: true, composerAvailable: true, composerFocused: true, documentFocused: true, visible: true };
+    }
+    if (message.type === 'voice-transcript') {
+      transcriptAttempts += 1;
+      return transcriptAttempts === 1
+        ? { ok: false, reason: 'composer-not-found' }
+        : { ok: true };
+    }
+    return { ok: true };
+  });
+  harness.setControl({
+    commands: [],
+    conversationEvents: [
+      { id: 1, type: 'cancel_pending', payload: { sessionId: 11 } },
+      { id: 2, type: 'transcript', payload: { sessionId: 11, text: '再試行する音声入力', cancelGraceMs: 700 } },
+    ],
+  });
+
+  await harness.sendAsync({ type: 'external-control-poll' }, 101, 'Tab A');
+
+  const transcripts = harness.sentMessages.filter(({ message }) => message.type === 'voice-transcript');
+  assert.equal(transcriptAttempts, 2);
+  assert.deepEqual(transcripts.map(({ tabId }) => tabId), [101, 101]);
+  assert.equal(harness.conversationStatePosts.some((post) => post.phase === 'error'), false);
+});
+
+test('failed transcript insertion never falls through to another ChatGPT tab', async () => {
+  const harness = createHarness();
+  harness.send({ type: 'register-tab', title: 'Tab A' }, 101, 'Tab A');
+  harness.send({ type: 'register-tab', title: 'Tab B', claimOwner: true }, 202, 'Tab B');
+  harness.setTabResponder(101, (message) => {
+    if (message.type === 'conversation-target-status') {
+      return { ok: true, composerAvailable: true, composerFocused: true, documentFocused: true, visible: true };
+    }
+    if (message.type === 'voice-transcript') return { ok: false, reason: 'composer-not-found' };
+    return { ok: true };
+  });
+  harness.setTabResponder(202, (message) => {
+    if (message.type === 'conversation-target-status') {
+      return { ok: true, composerAvailable: true, composerFocused: false, documentFocused: false, visible: false };
+    }
+    return { ok: true };
+  });
+  harness.setControl({
+    commands: [],
+    conversationEvents: [
+      { id: 1, type: 'cancel_pending', payload: { sessionId: 12 } },
+      { id: 2, type: 'transcript', payload: { sessionId: 12, text: '別タブへ送らない', cancelGraceMs: 700 } },
+    ],
+  });
+
+  await harness.sendAsync({ type: 'external-control-poll' }, 202, 'Tab B');
+
+  const transcripts = harness.sentMessages.filter(({ message }) => message.type === 'voice-transcript');
+  assert.deepEqual(transcripts.map(({ tabId }) => tabId), [101, 101, 101]);
+  assert.equal(harness.conversationStatePosts.at(-1).phase, 'error');
+  assert.equal(harness.conversationStatePosts.at(-1).error, 'composer-not-found');
+});
+
+for (const [label, invalidateTarget] of [
+  ['closed', (harness) => harness.removeTab(101)],
+  ['reloaded', (harness) => harness.reloadTab(101)],
+]) {
+  test(`captured microphone target is not replaced after the tab is ${label}`, async () => {
+    const harness = createHarness();
+    harness.send({ type: 'register-tab', title: 'Tab A' }, 101, 'Tab A');
+    harness.send({ type: 'register-tab', title: 'Tab B', claimOwner: true }, 202, 'Tab B');
+    harness.send({ type: 'composer-focused' }, 101, 'Tab A');
+    harness.setControl({
+      commands: [],
+      conversationEvents: [
+        { id: 1, type: 'cancel_pending', payload: { sessionId: 13 } },
+      ],
+    });
+    await harness.sendAsync({ type: 'external-control-poll' }, 202, 'Tab B');
+
+    invalidateTarget(harness);
+    harness.setControl({
+      commands: [],
+      conversationEvents: [
+        { id: 2, type: 'transcript', payload: { sessionId: 13, text: '代替タブへ送らない', cancelGraceMs: 700 } },
+      ],
+    });
+    await harness.sendAsync({ type: 'external-control-poll' }, 202, 'Tab B');
+
+    const transcripts = harness.sentMessages.filter(({ message }) => message.type === 'voice-transcript');
+    assert.equal(transcripts.length, 0);
+    assert.equal(harness.conversationStatePosts.at(-1).phase, 'error');
+    assert.equal(harness.conversationStatePosts.at(-1).error, 'conversation-target-not-found');
+  });
+}
+
 test('assistant replies are not auto-queued while microphone transcription is active', async () => {
   const harness = createHarness();
   harness.send({ type: 'register-tab', title: 'Tab A' }, 101, 'Tab A');
@@ -375,4 +516,20 @@ test('content conversation state is posted to the loopback service without trans
     sttModel: 'small',
     error: '',
   });
+});
+
+test('options page pushes STT model and send grace to the local runtime', async () => {
+  const harness = createHarness();
+  harness.storage.sttModel = 'large-v3-turbo';
+  harness.storage.cancelGraceMs = 1500;
+
+  const result = await harness.sendAsync({ type: 'options-settings-updated' });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(harness.settingsPosts.at(-1), {
+    sttModel: 'large-v3-turbo',
+    cancelGraceMs: 1500,
+  });
+  assert.equal(harness.control().settings.sttModel, 'large-v3-turbo');
+  assert.equal(harness.control().settings.cancelGraceMs, 1500);
 });

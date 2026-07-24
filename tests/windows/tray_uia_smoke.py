@@ -20,7 +20,6 @@ PET_WINDOW_TITLE = "Local Voice Bridge Desktop Pet"
 ROOT = Path(__file__).resolve().parents[2]
 EXE = ROOT / "LocalVoiceBridge.exe"
 CONTROLLER = (ROOT / "local-api" / "tray_controller.py").resolve()
-CONTROLLER_LOG = ROOT / "local-api" / "logs" / "controller.log"
 RESULT_DIR = Path(os.environ.get("GUI_SMOKE_RESULT_DIR", ROOT / "test-results" / "windows-gui-smoke"))
 RESULT_JSON = RESULT_DIR / "result.json"
 FAILURE_SCREENSHOT = RESULT_DIR / "failure.png"
@@ -30,9 +29,11 @@ EXPECTED_ACTIONS = (
     "Restart Voice Bridge",
     "Open controller log",
     "Open generated audio folder",
+    "Clear generated audio...",
     "Open reference voices folder",
     "Start with Windows",
     "Exit and run environment setup",
+    "Uninstall Local Voice Bridge...",
     "Exit",
 )
 
@@ -338,30 +339,40 @@ def verify_pet_visible_and_position_reset(pid: int) -> None:
         raise AssertionError("desktop pet did not move to the test position")
 
 
-def log_tail_from(offset: int) -> str:
-    if not CONTROLLER_LOG.exists():
-        return ""
-    with CONTROLLER_LOG.open("rb") as handle:
-        handle.seek(offset)
-        return handle.read().decode("utf-8", errors="replace")
-
-
-def verify_restart(pid: int) -> None:
-    offset = CONTROLLER_LOG.stat().st_size if CONTROLLER_LOG.exists() else 0
+def verify_restart(pid: int) -> int:
     click_menu_item(pid, "Restart Voice Bridge")
     wait_until(
-        "restart command log entry",
-        lambda: "Status: Restarting" in log_tail_from(offset),
-        timeout=20,
+        "old controller process exit",
+        lambda: all(process.pid != pid for process in controller_processes()),
+        timeout=15,
     )
-    assert_menu_contract(pid)
+
+    def restarted_controller():
+        rows = controller_processes()
+        return rows[0] if len(rows) == 1 and rows[0].pid != pid else None
+
+    restarted = wait_until("restarted tray controller", restarted_controller, timeout=20)
+    assert_menu_contract(restarted.pid)
+    return restarted.pid
 
 
 def verify_exit_and_relaunch(pid: int) -> int:
     click_menu_item(pid, "Exit")
     wait_until("controller process exit", lambda: not controller_processes(), timeout=15)
     next_process = launch_app()
-    assert_menu_contract(next_process.pid)
+    def relaunched_menu_ready() -> bool:
+        try:
+            assert_menu_contract(next_process.pid)
+            return True
+        except Exception:
+            return False
+
+    wait_until(
+        "relaunched tray menu contract",
+        relaunched_menu_ready,
+        timeout=25,
+        interval=0.5,
+    )
     return next_process.pid
 
 
@@ -429,7 +440,14 @@ def main() -> int:
         )
         run_scenario(results, "single instance", lambda: assert_single_instance(current_pid))
         run_scenario(results, "panel show hide and responsiveness", lambda: verify_panel_toggle(current_pid))
-        run_scenario(results, "restart stays operable", lambda: verify_restart(current_pid))
+
+        restarted_pid: list[int] = []
+
+        def restart_app() -> None:
+            restarted_pid.append(verify_restart(current_pid))
+
+        run_scenario(results, "restart reloads the tray application", restart_app)
+        current_pid = restarted_pid[0]
 
         next_pid: list[int] = []
 

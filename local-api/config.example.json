@@ -4,6 +4,11 @@
   "port": 8717,
   "publicBaseUrl": "http://127.0.0.1:8717",
   "audioOutputDir": "./runtime/audio",
+  "audioRetention": {
+    "maxFiles": 1000,
+    "maxBytes": 1073741824,
+    "maxAgeDays": 14
+  },
   "allowedOrigins": ["https://chatgpt.com", "https://chat.openai.com"],
   "defaultModel": "irodori-v3",
   "models": {
@@ -28,6 +33,7 @@
     "durationScale": 1.0,
     "decodeMode": "sequential",
     "contextKvCache": true,
-    "releaseUnusedCudaCache": true
+    "releaseUnusedCudaCache": true,
+    "seed": 10
   }
 }

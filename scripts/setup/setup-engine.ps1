@@ -286,11 +286,11 @@ try {
     }
 
     Invoke-SetupStage -Id "torch" -Name "CUDA版PyTorch・TorchAudioの導入" -Code "LVB-SETUP-040" -Verify { Test-PythonImport "import torch, torchaudio" } -Action {
-        Invoke-Native -FilePath $python -Arguments @("-m", "pip", "install", "--upgrade", "torch", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cu128") -FailureMessage "CUDA版PyTorchの導入に失敗しました。"
+        Invoke-Native -FilePath $python -Arguments @("-m", "pip", "install", "--upgrade", "torch==2.11.0", "torchaudio==2.11.0", "--index-url", "https://download.pytorch.org/whl/cu128") -FailureMessage "CUDA版PyTorchの導入に失敗しました。"
     }
 
     Invoke-SetupStage -Id "torchcodec" -Name "TorchCodecの導入" -Code "LVB-SETUP-050" -Verify { Test-PythonImport "import torchcodec" } -Action {
-        Invoke-Native -FilePath $python -Arguments @("-m", "pip", "install", "--upgrade", "torchcodec") -FailureMessage "TorchCodecの導入に失敗しました。"
+        Invoke-Native -FilePath $python -Arguments @("-m", "pip", "install", "--upgrade", "torchcodec==0.14.0") -FailureMessage "TorchCodecの導入に失敗しました。"
     }
 
     Invoke-SetupStage -Id "ffmpeg" -Name "共有FFmpegランタイムの取得" -Code "LVB-SETUP-060" -Verify { Test-Path -LiteralPath (Join-Path $localApi "runtime\ffmpeg-shared\bin") -PathType Container } -Action {
@@ -307,6 +307,10 @@ try {
 
     Invoke-SetupStage -Id "irodori" -Name "Irodoriランタイムの導入" -Code "LVB-SETUP-090" -Verify { Test-PythonImport "import irodori" } -Action {
         Invoke-Native -FilePath $python -Arguments @("-m", "pip", "install", "--upgrade", "--no-deps", "-r", (Join-Path $localApi "requirements-irodori.txt")) -FailureMessage "Irodoriランタイムの導入に失敗しました。"
+    }
+
+    Invoke-SetupStage -Id "dependency-audit" -Name "依存バージョンとGitコミットの確認" -Code "LVB-SETUP-095" -AlwaysRun -Action {
+        Invoke-Native -FilePath $python -Arguments @((Join-Path $localApi "scripts\audit_runtime_dependencies.py")) -FailureMessage "依存関係の整合性確認に失敗しました。"
     }
 
     Invoke-SetupStage -Id "runtime-check" -Name "CUDA・音声ランタイムの確認" -Code "LVB-SETUP-100" -AlwaysRun -Action {

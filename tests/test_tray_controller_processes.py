@@ -82,5 +82,27 @@ class TrayControllerProcessTests(unittest.TestCase):
         process.wait.assert_called_once_with(timeout=5)
 
 
+    def test_restart_stops_only_a_same_installation_existing_server(self) -> None:
+        controller = tray.VoiceBridgeController()
+        payload = {"ok": True, "instanceId": tray.INSTALLATION_ID}
+        with (
+            mock.patch.object(tray, "probe_health", return_value=(True, payload)),
+            mock.patch.object(tray, "request_same_installation_shutdown", return_value=True) as shutdown,
+        ):
+            self.assertTrue(controller.prepare_application_restart())
+        shutdown.assert_called_once_with(payload)
+        self.assertEqual(controller.status, "Stopping existing service")
+
+    def test_restart_refuses_a_different_installation(self) -> None:
+        controller = tray.VoiceBridgeController()
+        payload = {"ok": True, "instanceId": "another-installation"}
+        with (
+            mock.patch.object(tray, "probe_health", return_value=(True, payload)),
+            mock.patch.object(tray, "request_same_installation_shutdown") as shutdown,
+        ):
+            self.assertFalse(controller.prepare_application_restart())
+        shutdown.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

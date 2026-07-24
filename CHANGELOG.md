@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Bounded generated audio to the newest 1,000 files, 1 GiB, and 14 days, pruning the oldest files at startup and after synthesis while preserving the current response.
+- Rotated both controller and server logs at 2 MiB with two backups and suppressed routine successful HTTP access logs.
+- Made full application restart safely stop a residual API only when it belongs to the same repository installation, using a local per-process control token.
+- Added tray actions to clear generated audio and uninstall Windows startup/shortcuts while preserving reference voices, settings, models, and the repository.
+- Added a strict runtime dependency audit with verified versions and pinned Irodori, DAC-VAE, and SilentCipher Git commits.
+- Fixed the Windows GUI smoke runner and verified launcher, tray menu, desktop pet recovery, single-instance behavior, panel responsiveness, full restart, exit, and relaunch.
+
+- Added the standard Chrome / Brave options page for configurable reading limits, STT model, and pre-send cancellation grace, while keeping microphone enablement and playback controls in the compact Windows panel.
+- Changed `Restart Voice Bridge` to restart the tray application itself, so updated panel code is reloaded instead of leaving the old single-instance process in memory.
 - Pinned `transformers` to the security-fixed 5.5.0 release, pinned `huggingface-hub` to the verified 1.23.0 release, and pinned the verified Irodori source commit.
 - Made Irodori v3 direct the supported local TTS path while preserving the preview-only Auto UX.
 - Kept Auto from reading replies that were already visible before it was enabled.

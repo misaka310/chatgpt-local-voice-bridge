@@ -16,6 +16,9 @@ class IrodoriError(RuntimeError):
     pass
 
 
+DEFAULT_SAMPLING_SEED = 10
+
+
 def _release_unused_cuda_cache(runtime: Any) -> None:
     devices = (
         getattr(runtime, "model_device", ""),
@@ -49,6 +52,15 @@ def _bool(value: Any, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _sampling_seed(value: Any) -> int | None:
+    if isinstance(value, str) and value.strip().lower() == "random":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_SAMPLING_SEED
 
 
 def _pick_precision(torch: Any, device: str, configured: str) -> str:
@@ -172,6 +184,7 @@ def synthesize_irodori_direct(
         cfg_max_t=float(cfg.get("cfgMaxT", 1.0)),
         context_kv_cache=_bool(cfg.get("contextKvCache"), True),
         trim_tail=_bool(cfg.get("trimTail"), True),
+        seed=_sampling_seed(cfg.get("seed", DEFAULT_SAMPLING_SEED)),
     )
     result = None
     try:

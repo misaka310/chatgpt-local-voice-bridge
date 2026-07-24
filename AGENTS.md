@@ -11,7 +11,7 @@ Current public UX contract:
 - Detect a new assistant response in ChatGPT.
 - Send only the beginning preview to the local TTS API.
 - Auto playback must not read the full assistant response.
-- Auto playback preview limit is max 2 lines / 80 characters.
+- Auto playback preview limit defaults to max 2 lines / 80 characters and may be changed only through the extension options page.
 - Auto should normally call `/v1/speak` once per new assistant response.
 - Auto must not split the full assistant response into chunks and play all chunks.
 - `Next`, `Replay`, and `Regen` behavior must follow the existing behavior unless the user explicitly requests a change.
@@ -55,6 +55,9 @@ These protections are allowed and should be preserved unless the user asks other
 - Stale reference voices such as `qwen3`, `qwen`, `none`, and empty strings normalize to `referenceVoice=""` unless the user selects an existing reference voice.
 - Empty Ref must not fall back to stale storage values.
 - `run-voice-stack.cmd` should detect an existing `8717` listener and stop with a clear PID/tasklist message rather than silently starting against the wrong process.
+- Generated audio must remain bounded. Keep the default retention at newest 1,000 files, 1 GiB, and 14 days unless the user explicitly requests a product change.
+- Controller and server logs must use bounded rotation. Do not restore unbounded append-only server logging.
+- Full restart may stop an existing API only after proving it belongs to the same repository installation; never kill an arbitrary process merely because it owns port 8717.
 
 ## Public release tree rule
 

@@ -1,5 +1,5 @@
 (() => {
-  const SETTINGS_VERSION = 9;
+  const SETTINGS_VERSION = 10;
   const DEFAULT_SETTINGS = {
     settingsVersion: SETTINGS_VERSION,
     enabled: false,
@@ -183,8 +183,27 @@
     return normalized;
   }
   function storedReferenceVoice(raw) {
-    if (raw && Object.prototype.hasOwnProperty.call(raw, 'voiceId')) return normalizeReferenceVoice(raw.voiceId);
+    const voiceId = normalizeReferenceVoice(raw && raw.voiceId);
+    if (voiceId) return voiceId;
     return normalizeReferenceVoice(raw && raw.referenceVoice);
+  }
+
+  function clampInteger(value, fallback, minimum, maximum) {
+    if (value === '' || value === null || value === undefined) return fallback;
+    const number = Number(value);
+    if (!Number.isFinite(number)) return fallback;
+    return Math.min(maximum, Math.max(minimum, Math.round(number)));
+  }
+
+  function normalizeSttModel(value) {
+    const normalized = String(value || '').trim();
+    return ['small', 'medium', 'large-v3-turbo'].includes(normalized)
+      ? normalized
+      : DEFAULT_SETTINGS.sttModel;
+  }
+
+  function normalizeCancelGraceMs(value) {
+    return clampInteger(value, DEFAULT_SETTINGS.cancelGraceMs, 0, 5000);
   }
 
   async function sanitizeStoredSettings(raw) {
@@ -197,6 +216,10 @@
       voiceProfile: DEFAULT_SETTINGS.voiceProfile,
       referenceVoice: storedReferenceVoice(raw),
       voicePrompt: '',
+      previewMaxLines: clampInteger(raw.previewMaxLines, DEFAULT_SETTINGS.previewMaxLines, 1, 20),
+      previewMaxChars: clampInteger(raw.previewMaxChars, DEFAULT_SETTINGS.previewMaxChars, 40, 1000),
+      sttModel: normalizeSttModel(raw.sttModel),
+      cancelGraceMs: normalizeCancelGraceMs(raw.cancelGraceMs),
     };
     for (const key of LEGACY_BROWSER_UI_STORAGE_KEYS) delete next[key];
     if (globalThis.chrome && chrome.storage && chrome.storage.local) {
@@ -715,11 +738,31 @@
 
   function reportComposerFocus(target = document.activeElement) {
     const api = globalThis.LocalVoicePromptInput;
-    if (!api || typeof api.findComposer !== 'function') return;
-    const composer = api.findComposer(document);
-    if (!composer || !target) return;
-    if (target !== composer && !(typeof composer.contains === 'function' && composer.contains(target))) return;
+    if (!api || typeof api.findComposer !== 'function' || !target) return;
+    const composer = api.findComposer(document, target);
+    if (!composer) return;
+    if (typeof api.isComposerTarget === 'function' ? !api.isComposerTarget(document, target) : (target !== composer && !(typeof composer.contains === 'function' && composer.contains(target)))) return;
     chrome.runtime.sendMessage({ type: 'composer-focused', title: getPlainDocumentTitle() }).catch(() => {});
+  }
+
+  function conversationTargetStatus() {
+    const api = globalThis.LocalVoicePromptInput;
+    if (!api || typeof api.findComposer !== 'function') return { ok: false, reason: 'prompt-input-core-unavailable' };
+    const activeElement = document.activeElement || null;
+    const composer = api.findComposer(document, activeElement);
+    const composerFocused = Boolean(composer && activeElement && (typeof api.isComposerTarget === 'function'
+      ? api.isComposerTarget(document, activeElement)
+      : activeElement === composer || (typeof composer.contains === 'function' && composer.contains(activeElement))));
+    const documentFocused = typeof document.hasFocus === 'function' ? document.hasFocus() : true;
+    const visible = document.visibilityState !== 'hidden';
+    return {
+      ok: true,
+      composerAvailable: Boolean(composer),
+      composerFocused: Boolean(composerFocused && documentFocused && visible),
+      documentFocused: Boolean(documentFocused),
+      visible,
+      url: location.href,
+    };
   }
 
   function ensurePendingSendController() {
@@ -761,6 +804,10 @@
   function registerMessageListener() {
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (!message || typeof message.type !== 'string') return false;
+      if (message.type === 'conversation-target-status') {
+        sendResponse(conversationTargetStatus());
+        return false;
+      }
       if (message.type === 'tab-activated') {
         clearCompletionMarker();
         return false;

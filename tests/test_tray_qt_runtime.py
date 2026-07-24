@@ -7,6 +7,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Callable
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -41,6 +42,12 @@ class FakeController:
     def restart_async(self, *_: object) -> None:
         self.restart_count += 1
 
+    def prepare_application_restart(self) -> bool:
+        return True
+
+    def clear_generated_audio_files(self):
+        return SimpleNamespace(deleted_files=0, deleted_bytes=0, failed_files=0)
+
     def open_controller_log(self, *_: object) -> None:
         return None
 
@@ -62,7 +69,8 @@ class FakeController:
 
 
 class FakeControlClient:
-    def __init__(self) -> None:
+    def __init__(self, *, cancel_grace_ms: int = 700) -> None:
+        self.cancel_grace_ms = cancel_grace_ms
         self.settings_calls: list[dict[str, object]] = []
         self.commands: list[str] = []
 
@@ -76,7 +84,7 @@ class FakeControlClient:
                 "referenceVoice": "",
                 "micConversationEnabled": True,
                 "sttModel": "small",
-                "cancelGraceMs": 700,
+                "cancelGraceMs": self.cancel_grace_ms,
             },
             "referenceVoices": [{"id": "", "label": "none"}],
             "extension": {
@@ -201,13 +209,14 @@ class TrayQtRuntimeTests(unittest.TestCase):
         *,
         conversation_controller: FakeConversationController | None = None,
         keyboard_hook: FakeKeyboardHook | None = None,
+        control_panel_client: FakeControlClient | None = None,
     ) -> tray.VoiceBridgeQtRuntime:
         return tray.VoiceBridgeQtRuntime(
             self.app,
             controller=controller or FakeController(),
             pet_root=self._create_pet_root(temp_dir),
             settings_path=Path(temp_dir) / "settings.json",
-            control_panel_client=FakeControlClient(),
+            control_panel_client=control_panel_client or FakeControlClient(),
             panel_state_path=Path(temp_dir) / "panel-window.json",
             conversation_controller=conversation_controller or FakeConversationController(),
             keyboard_hook=keyboard_hook or FakeKeyboardHook(),
@@ -253,6 +262,22 @@ class TrayQtRuntimeTests(unittest.TestCase):
             self.assertNotIn("使用するペット", action_texts)
             self.assertNotIn("ペットを常に手前に表示", action_texts)
             runtime.shutdown()
+
+    def test_restart_action_relaunches_the_entire_tray_application(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime = self._create_runtime(temp_dir)
+            launches: list[bool] = []
+            runtime._launch_application_after_exit = lambda: launches.append(True)  # type: ignore[method-assign]
+            restart_action = next(
+                action for action in runtime.menu.actions() if action.text() == "Restart Voice Bridge"
+            )
+
+            restart_action.trigger()
+            self.app.processEvents()
+
+            self.assertTrue(runtime._shutdown_started)
+            self.assertTrue(runtime._restart_after_exit)
+            self.assertEqual(launches, [True])
 
     def test_pet_return_action_restores_and_shows_the_desktop_pet(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -345,6 +370,22 @@ class TrayQtRuntimeTests(unittest.TestCase):
             runtime.shutdown()
             self.assertEqual(hook.stop_count, 1)
             self.assertEqual(conversation.shutdown_count, 1)
+
+    def test_zero_cancel_grace_is_not_replaced_by_the_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conversation = FakeConversationController()
+            runtime = self._create_runtime(
+                temp_dir,
+                conversation_controller=conversation,
+                control_panel_client=FakeControlClient(cancel_grace_ms=0),
+            )
+            runtime.sync_conversation_settings()
+
+            self.assertIn(
+                {"enabled": True, "sttModel": "small", "cancelGraceMs": 0},
+                conversation.configurations,
+            )
+            runtime.shutdown()
 
     def test_shutdown_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
