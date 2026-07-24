@@ -16,6 +16,8 @@ import psutil
 from PIL import ImageGrab
 from pywinauto import Desktop
 
+from process_identity import logical_leaf_pids
+
 APP_NAME = "Local Voice Bridge"
 PET_WINDOW_TITLE = "Local Voice Bridge Desktop Pet"
 ROOT = Path(__file__).resolve().parents[2]
@@ -98,10 +100,10 @@ def enum_top_windows() -> list[WindowInfo]:
     return rows
 
 
-def controller_processes() -> list[psutil.Process]:
+def controller_process_candidates() -> list[psutil.Process]:
     marker = os.path.normcase(str(CONTROLLER))
     rows: list[psutil.Process] = []
-    for process in psutil.process_iter(["pid", "cmdline", "create_time"]):
+    for process in psutil.process_iter(["pid", "ppid", "cmdline", "create_time"]):
         try:
             arguments = [os.path.normcase(os.path.abspath(value)) for value in (process.info.get("cmdline") or [])]
             if marker in arguments:
@@ -109,6 +111,15 @@ def controller_processes() -> list[psutil.Process]:
         except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
             continue
     return sorted(rows, key=lambda item: item.pid)
+
+
+def controller_processes() -> list[psutil.Process]:
+    candidates = controller_process_candidates()
+    logical_pids = logical_leaf_pids(
+        (process.pid, int(process.info.get("ppid") or 0))
+        for process in candidates
+    )
+    return [process for process in candidates if process.pid in logical_pids]
 
 
 def process_details(processes: Iterable[psutil.Process]) -> list[dict[str, object]]:
@@ -152,6 +163,7 @@ def controller_log_tail(max_bytes: int = 32768) -> str:
 
 
 def collect_failure_diagnostics() -> dict[str, object]:
+    exact_candidates = controller_process_candidates()
     exact = controller_processes()
     candidates = tray_controller_candidates()
     windows = [
@@ -166,6 +178,7 @@ def collect_failure_diagnostics() -> dict[str, object]:
             "pythonLocation": os.environ.get("pythonLocation", ""),
         },
         "controllerPath": str(CONTROLLER),
+        "exactControllerProcessCandidates": process_details(exact_candidates),
         "exactControllerProcesses": process_details(exact),
         "trayControllerCandidates": process_details(candidates),
         "matchingWindows": windows[:100],
