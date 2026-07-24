@@ -267,18 +267,20 @@ class TrayQtRuntimeTests(unittest.TestCase):
             runtime.shutdown()
 
     def test_restart_action_relaunches_the_entire_tray_application(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            runtime = self._create_runtime(temp_dir)
-            launches: list[bool] = []
-            quit_calls: list[bool] = []
-            runtime._launch_application_after_exit = lambda: launches.append(True)  # type: ignore[method-assign]
-            runtime.app = SimpleNamespace(quit=lambda: quit_calls.append(True))
+        runtime = tray.VoiceBridgeQtRuntime.__new__(tray.VoiceBridgeQtRuntime)
+        runtime.controller = SimpleNamespace(prepare_application_restart=lambda: True)
+        runtime._restart_after_exit = False
+        shutdown_calls: list[bool] = []
+        runtime.shutdown = lambda: shutdown_calls.append(True)  # type: ignore[method-assign]
+
+        with (
+            mock.patch.object(tray, "IS_WINDOWS", True),
+            mock.patch.object(tray, "LAUNCHER_EXE", SimpleNamespace(is_file=lambda: True)),
+        ):
             runtime.restart_application()
 
-            self.assertTrue(runtime._shutdown_started)
-            self.assertTrue(runtime._restart_after_exit)
-            self.assertEqual(launches, [True])
-            self.assertEqual(quit_calls, [True])
+        self.assertTrue(runtime._restart_after_exit)
+        self.assertEqual(shutdown_calls, [True])
 
     def test_restart_launch_uses_the_supported_launcher_after_releasing_mutex(self) -> None:
         runtime = tray.VoiceBridgeQtRuntime.__new__(tray.VoiceBridgeQtRuntime)
