@@ -24,19 +24,65 @@ function Invoke-Process {
     }
 }
 
+function Get-PythonVersion {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath
+    )
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $FilePath
+    $startInfo.Arguments = '-c "import platform; print(platform.python_version())"'
+    $startInfo.WorkingDirectory = $repoRoot
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+
+    $process = [System.Diagnostics.Process]::Start($startInfo)
+    $standardOutput = $process.StandardOutput.ReadToEnd()
+    $standardError = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+    if ($process.ExitCode -ne 0) {
+        throw "Could not read the GUI smoke Python version from $FilePath (exit=$($process.ExitCode)): $standardError"
+    }
+    $version = $standardOutput.Trim()
+    if ([string]::IsNullOrWhiteSpace($version)) {
+        throw "GUI smoke Python returned an empty version string: $FilePath"
+    }
+    return $version
+}
+
 if (-not [Environment]::UserInteractive) {
     throw 'Windows GUI smoke requires a logged-in interactive desktop session.'
 }
 
 if (-not (Test-Path $python)) {
-    $py = Get-Command py.exe -ErrorAction SilentlyContinue
-    if ($null -ne $py) {
-        Invoke-Process -FilePath $py.Source -Arguments @('-3', '-m', 'venv', $venvRoot) -FailureMessage "Failed to create GUI smoke virtual environment: $venvRoot"
+    $configuredPython = $null
+    if (-not [string]::IsNullOrWhiteSpace($env:pythonLocation)) {
+        $candidate = Join-Path $env:pythonLocation 'python.exe'
+        if (Test-Path $candidate -PathType Leaf) {
+            $configuredPython = $candidate
+        }
+    }
+
+    if ($null -ne $configuredPython) {
+        Invoke-Process -FilePath $configuredPython -Arguments @('-m', 'venv', $venvRoot) -FailureMessage "Failed to create GUI smoke virtual environment: $venvRoot"
     }
     else {
-        $systemPython = Get-Command python.exe -ErrorAction Stop
-        Invoke-Process -FilePath $systemPython.Source -Arguments @('-m', 'venv', $venvRoot) -FailureMessage "Failed to create GUI smoke virtual environment: $venvRoot"
+        $systemPython = Get-Command python.exe -ErrorAction SilentlyContinue
+        if ($null -ne $systemPython) {
+            Invoke-Process -FilePath $systemPython.Source -Arguments @('-m', 'venv', $venvRoot) -FailureMessage "Failed to create GUI smoke virtual environment: $venvRoot"
+        }
+        else {
+            $py = Get-Command py.exe -ErrorAction Stop
+            Invoke-Process -FilePath $py.Source -Arguments @('-3.11', '-m', 'venv', $venvRoot) -FailureMessage "Failed to create GUI smoke virtual environment: $venvRoot"
+        }
     }
+}
+
+$venvVersion = Get-PythonVersion -FilePath $python
+Write-Host "[gui-smoke] Python $venvVersion at $python"
+if (-not [string]::IsNullOrWhiteSpace($env:pythonLocation) -and -not $venvVersion.StartsWith('3.11.')) {
+    throw "GitHub Actions configured Python 3.11, but the GUI smoke virtual environment uses $venvVersion. Delete $venvRoot and recreate it with the configured interpreter."
 }
 
 if (-not $SkipDependencyInstall) {

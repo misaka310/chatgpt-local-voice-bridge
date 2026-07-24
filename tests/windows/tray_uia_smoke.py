@@ -5,6 +5,7 @@ import ctypes.wintypes as wt
 import json
 import os
 import subprocess
+import sys
 import time
 import traceback
 from dataclasses import asdict, dataclass
@@ -23,6 +24,8 @@ CONTROLLER = (ROOT / "local-api" / "tray_controller.py").resolve()
 RESULT_DIR = Path(os.environ.get("GUI_SMOKE_RESULT_DIR", ROOT / "test-results" / "windows-gui-smoke"))
 RESULT_JSON = RESULT_DIR / "result.json"
 FAILURE_SCREENSHOT = RESULT_DIR / "failure.png"
+FAILURE_CONTROLLER_LOG = RESULT_DIR / "controller.log"
+CONTROLLER_LOG = ROOT / "local-api" / "logs" / "controller.log"
 EXPECTED_ACTIONS = (
     "Show Local Voice panel",
     "Bring Desktop Pet Back",
@@ -106,6 +109,68 @@ def controller_processes() -> list[psutil.Process]:
         except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
             continue
     return sorted(rows, key=lambda item: item.pid)
+
+
+def process_details(processes: Iterable[psutil.Process]) -> list[dict[str, object]]:
+    details: list[dict[str, object]] = []
+    for process in processes:
+        try:
+            details.append(
+                {
+                    "pid": process.pid,
+                    "ppid": process.ppid(),
+                    "exe": process.exe(),
+                    "cmdline": process.cmdline(),
+                    "createTime": process.create_time(),
+                    "status": process.status(),
+                }
+            )
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError) as exc:
+            details.append({"pid": process.pid, "error": f"{type(exc).__name__}: {exc}"})
+    return details
+
+
+def tray_controller_candidates() -> list[psutil.Process]:
+    needle = CONTROLLER.name.casefold()
+    rows: list[psutil.Process] = []
+    for process in psutil.process_iter(["pid", "cmdline", "create_time"]):
+        try:
+            arguments = [str(value) for value in (process.info.get("cmdline") or [])]
+            if any(needle in value.casefold() for value in arguments):
+                rows.append(process)
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+            continue
+    return sorted(rows, key=lambda item: item.pid)
+
+
+def controller_log_tail(max_bytes: int = 32768) -> str:
+    try:
+        data = CONTROLLER_LOG.read_bytes()
+    except OSError as exc:
+        return f"<controller log unavailable: {type(exc).__name__}: {exc}>"
+    return data[-max_bytes:].decode("utf-8", errors="replace")
+
+
+def collect_failure_diagnostics() -> dict[str, object]:
+    exact = controller_processes()
+    candidates = tray_controller_candidates()
+    windows = [
+        asdict(row)
+        for row in enum_top_windows()
+        if APP_NAME.casefold() in row.title.casefold() or PET_WINDOW_TITLE.casefold() in row.title.casefold()
+    ]
+    return {
+        "python": {
+            "executable": sys.executable,
+            "version": sys.version,
+            "pythonLocation": os.environ.get("pythonLocation", ""),
+        },
+        "controllerPath": str(CONTROLLER),
+        "exactControllerProcesses": process_details(exact),
+        "trayControllerCandidates": process_details(candidates),
+        "matchingWindows": windows[:100],
+        "controllerLogTail": controller_log_tail(),
+    }
 
 
 def launch_app() -> psutil.Process:
@@ -351,7 +416,14 @@ def verify_restart(pid: int) -> int:
         rows = controller_processes()
         return rows[0] if len(rows) == 1 and rows[0].pid != pid else None
 
-    restarted = wait_until("restarted tray controller", restarted_controller, timeout=20)
+    try:
+        restarted = wait_until("restarted tray controller", restarted_controller, timeout=20)
+    except TimeoutError as exc:
+        exact_pids = [process.pid for process in controller_processes()]
+        candidate_pids = [process.pid for process in tray_controller_candidates()]
+        raise TimeoutError(
+            f"{exc}; exact controller PIDs={exact_pids}; tray controller candidate PIDs={candidate_pids}"
+        ) from exc
     assert_menu_contract(restarted.pid)
     return restarted.pid
 
@@ -385,6 +457,11 @@ def save_result(results: list[ScenarioResult], error: BaseException | None = Non
     if error is not None:
         payload["error"] = f"{type(error).__name__}: {error}"
         payload["traceback"] = traceback.format_exc()
+        payload["diagnostics"] = collect_failure_diagnostics()
+        try:
+            FAILURE_CONTROLLER_LOG.write_text(controller_log_tail(), encoding="utf-8")
+        except OSError:
+            pass
         try:
             ImageGrab.grab(all_screens=True).save(FAILURE_SCREENSHOT)
         except Exception:

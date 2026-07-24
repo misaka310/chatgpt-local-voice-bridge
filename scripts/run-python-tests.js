@@ -18,6 +18,7 @@ const TEST_MODULES = [
   'tests.test_tray_controller',
   'tests.test_tray_controller_processes',
   'tests.test_tray_qt_runtime',
+  'tests.test_windows_gui_smoke_script',
 ];
 
 function pythonCandidates() {
