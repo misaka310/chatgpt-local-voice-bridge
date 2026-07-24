@@ -43,6 +43,18 @@ class TrayControllerProcessTests(unittest.TestCase):
         self.assertEqual(tray._MUTEX_HANDLE, 456)
         close_handle.assert_not_called()
 
+    def test_windows_mutex_release_closes_handle_once(self) -> None:
+        tray._MUTEX_HANDLE = 789
+        with (
+            mock.patch.object(tray, "IS_WINDOWS", True),
+            mock.patch.object(tray, "_close_windows_handle") as close_handle,
+        ):
+            tray.release_single_instance()
+            tray.release_single_instance()
+
+        self.assertIsNone(tray._MUTEX_HANDLE)
+        close_handle.assert_called_once_with(789)
+
     def test_duplicate_launch_exits_without_blocking_message(self) -> None:
         with (
             mock.patch.object(tray, "IS_WINDOWS", True),
