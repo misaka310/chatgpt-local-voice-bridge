@@ -268,7 +268,9 @@ class TrayQtRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             runtime = self._create_runtime(temp_dir)
             launches: list[bool] = []
+            quit_calls: list[bool] = []
             runtime._launch_application_after_exit = lambda: launches.append(True)  # type: ignore[method-assign]
+            runtime.app = SimpleNamespace(quit=lambda: quit_calls.append(True))
             restart_action = next(
                 action for action in runtime.menu.actions() if action.text() == "Restart Voice Bridge"
             )
@@ -279,6 +281,7 @@ class TrayQtRuntimeTests(unittest.TestCase):
             self.assertTrue(runtime._shutdown_started)
             self.assertTrue(runtime._restart_after_exit)
             self.assertEqual(launches, [True])
+            self.assertEqual(quit_calls, [True])
 
     def test_restart_launch_uses_the_supported_launcher_after_releasing_mutex(self) -> None:
         runtime = tray.VoiceBridgeQtRuntime.__new__(tray.VoiceBridgeQtRuntime)
