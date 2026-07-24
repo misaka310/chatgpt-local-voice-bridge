@@ -15,6 +15,8 @@ jobs:
   tray-ui-smoke:
     runs-on: windows-latest
     timeout-minutes: 30
+    env:
+      LOCAL_VOICE_GUI_RUNNER: github-hosted-windows-latest
 
     steps:
       - name: Checkout
