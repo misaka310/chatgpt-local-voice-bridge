@@ -907,10 +907,31 @@ class VoiceBridgeQtRuntime(QObject):
 
     def _launch_application_after_exit(self) -> None:
         creationflags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
-        helper = (
-            "import subprocess, time; "
-            "time.sleep(2.0); "
-            f"subprocess.Popen([{str(LAUNCHER_EXE)!r}], cwd={str(APP_ROOT)!r}, creationflags={creationflags})"
+        old_pid = os.getpid()
+        helper = "\n".join(
+            [
+                "import ctypes",
+                "import subprocess",
+                "import time",
+                "kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)",
+                "open_process = kernel32.OpenProcess",
+                "open_process.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]",
+                "open_process.restype = ctypes.c_void_p",
+                "wait_for_single_object = kernel32.WaitForSingleObject",
+                "wait_for_single_object.argtypes = [ctypes.c_void_p, ctypes.c_uint32]",
+                "wait_for_single_object.restype = ctypes.c_uint32",
+                "close_handle = kernel32.CloseHandle",
+                "close_handle.argtypes = [ctypes.c_void_p]",
+                "close_handle.restype = ctypes.c_int",
+                f"handle = open_process(0x00100000, 0, {old_pid})",
+                "if handle:",
+                "    wait_for_single_object(handle, 15000)",
+                "    close_handle(handle)",
+                "else:",
+                "    time.sleep(3.0)",
+                "time.sleep(0.5)",
+                f"subprocess.Popen([{str(LAUNCHER_EXE)!r}], cwd={str(APP_ROOT)!r}, creationflags={creationflags})",
+            ]
         )
         subprocess.Popen(
             [sys.executable, "-c", helper],
