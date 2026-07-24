@@ -186,20 +186,32 @@ def collect_failure_diagnostics() -> dict[str, object]:
     }
 
 
+def wait_for_stable_single_controller(timeout: float = 15.0, stable_for: float = 1.0) -> psutil.Process:
+    deadline = time.monotonic() + timeout
+    last_pid: int | None = None
+    stable_since = time.monotonic()
+    while time.monotonic() < deadline:
+        rows = controller_processes()
+        current_pid = rows[0].pid if len(rows) == 1 else None
+        if current_pid is not None and current_pid == last_pid:
+            if time.monotonic() - stable_since >= stable_for:
+                return rows[0]
+        else:
+            last_pid = current_pid
+            stable_since = time.monotonic()
+        time.sleep(0.2)
+    raise TimeoutError(
+        "Timed out waiting for one stable tray controller process; "
+        f"logical={process_details(controller_processes())}; "
+        f"candidates={process_details(controller_process_candidates())}"
+    )
+
+
 def launch_app() -> psutil.Process:
     completed = subprocess.run([str(EXE)], cwd=ROOT, timeout=15, check=False)
     if completed.returncode != 0:
         raise RuntimeError(f"{EXE.name} returned {completed.returncode}")
-    def find_one_controller():
-        found = controller_processes()
-        return found if len(found) == 1 else None
-
-    rows = wait_until(
-        "one tray controller process",
-        find_one_controller,
-        timeout=15,
-    )
-    return rows[0]
+    return wait_for_stable_single_controller(timeout=15)
 
 
 def assert_single_instance(original_pid: int) -> None:
