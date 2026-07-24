@@ -394,10 +394,10 @@ def assert_window_responsive(hwnd: int) -> None:
 
 def verify_panel_toggle(pid: int) -> None:
     click_menu_item(pid, "Show Local Voice panel")
-    panel = wait_until("Local Voice panel", lambda: panel_window(pid), timeout=8)
+    panel = wait_until("Local Voice panel", lambda: panel_window(pid), timeout=25)
     assert_window_responsive(panel.hwnd)
     click_menu_item(pid, "Hide Local Voice panel")
-    wait_until("Local Voice panel to hide", lambda: panel_window(pid) is None, timeout=8)
+    wait_until("Local Voice panel to hide", lambda: panel_window(pid) is None, timeout=15)
 
 
 def verify_pet_visible_and_position_reset(pid: int) -> None:

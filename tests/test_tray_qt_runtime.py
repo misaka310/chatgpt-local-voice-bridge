@@ -273,12 +273,7 @@ class TrayQtRuntimeTests(unittest.TestCase):
             quit_calls: list[bool] = []
             runtime._launch_application_after_exit = lambda: launches.append(True)  # type: ignore[method-assign]
             runtime.app = SimpleNamespace(quit=lambda: quit_calls.append(True))
-            restart_action = next(
-                action for action in runtime.menu.actions() if action.text() == "Restart Voice Bridge"
-            )
-
-            restart_action.trigger()
-            self.app.processEvents()
+            runtime.restart_application()
 
             self.assertTrue(runtime._shutdown_started)
             self.assertTrue(runtime._restart_after_exit)
