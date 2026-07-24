@@ -7,6 +7,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 from types import SimpleNamespace
 from typing import Callable
 
@@ -278,6 +279,23 @@ class TrayQtRuntimeTests(unittest.TestCase):
             self.assertTrue(runtime._shutdown_started)
             self.assertTrue(runtime._restart_after_exit)
             self.assertEqual(launches, [True])
+
+    def test_restart_launch_uses_the_supported_launcher_after_releasing_mutex(self) -> None:
+        runtime = tray.VoiceBridgeQtRuntime.__new__(tray.VoiceBridgeQtRuntime)
+        events: list[str] = []
+
+        with (
+            mock.patch.object(tray, "release_single_instance", side_effect=lambda: events.append("release")),
+            mock.patch.object(tray.subprocess, "Popen") as popen,
+        ):
+            runtime._launch_application_after_exit()
+
+        self.assertEqual(events, ["release"])
+        popen.assert_called_once_with(
+            [str(tray.LAUNCHER_EXE)],
+            cwd=tray.APP_ROOT,
+            creationflags=tray.CREATE_NO_WINDOW | tray.CREATE_NEW_PROCESS_GROUP,
+        )
 
     def test_pet_return_action_restores_and_shows_the_desktop_pet(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

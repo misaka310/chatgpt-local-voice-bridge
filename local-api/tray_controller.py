@@ -917,8 +917,8 @@ class VoiceBridgeQtRuntime(QObject):
         release_single_instance()
         creationflags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
         subprocess.Popen(
-            [sys.executable, str(Path(__file__).resolve())],
-            cwd=LOCAL_API_DIR,
+            [str(LAUNCHER_EXE)],
+            cwd=APP_ROOT,
             creationflags=creationflags,
         )
 
