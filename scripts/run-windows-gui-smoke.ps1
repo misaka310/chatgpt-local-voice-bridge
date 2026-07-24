@@ -5,6 +5,14 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+if (
+    $env:GITHUB_ACTIONS -ne 'true' -or
+    $env:RUNNER_OS -ne 'Windows' -or
+    $env:LOCAL_VOICE_GUI_RUNNER -ne 'github-hosted-windows-latest'
+) {
+    throw 'Windows GUI smoke must run only on GitHub-hosted windows-latest. Do not run it on the user''s everyday Windows desktop.'
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $venvRoot = Join-Path $repoRoot 'local-api\.venv'
 $python = Join-Path $venvRoot 'Scripts\python.exe'
