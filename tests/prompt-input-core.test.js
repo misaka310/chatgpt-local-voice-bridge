@@ -110,6 +110,20 @@ test('findComposer ignores stale hidden composers and keeps the active usable co
   assert.equal(promptInput.isComposerTarget(fixture.documentObject, fixture.hiddenComposer), false);
 });
 
+test('findComposer excludes computed-hidden and read-only composers', () => {
+  const fixture = createFixture();
+  fixture.hiddenComposer.hidden = false;
+  fixture.hiddenComposer.ownerDocument = {
+    defaultView: {
+      getComputedStyle() { return { display: 'none', visibility: 'visible' }; },
+    },
+  };
+  fixture.visibleComposer.readOnly = true;
+
+  assert.equal(promptInput.findComposer(fixture.documentObject), null);
+  assert.equal(promptInput.isComposerTarget(fixture.documentObject, fixture.visibleComposer), false);
+});
+
 test('pending voice send inserts into the selected composer and clicks its scoped send button', () => {
   const fixture = createFixture();
   const states = [];

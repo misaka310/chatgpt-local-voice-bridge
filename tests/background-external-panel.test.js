@@ -437,6 +437,61 @@ test('failed transcript insertion never falls through to another ChatGPT tab', a
   assert.equal(harness.conversationStatePosts.at(-1).error, 'composer-not-found');
 });
 
+test('captured microphone target is not reused after same-tab conversation navigation', async () => {
+  const harness = createHarness();
+  harness.send({ type: 'register-tab', title: 'Tab A' }, 101, 'Tab A');
+  harness.send({ type: 'register-tab', title: 'Tab B', claimOwner: true }, 202, 'Tab B');
+  harness.send({ type: 'composer-focused' }, 101, 'Tab A');
+  let targetUrl = 'https://chatgpt.com/c/original';
+  harness.setTabResponder(101, (message) => {
+    if (message.type === 'conversation-target-status') {
+      return {
+        ok: true,
+        composerAvailable: true,
+        composerFocused: true,
+        documentFocused: true,
+        visible: true,
+        url: targetUrl,
+      };
+    }
+    return { ok: true };
+  });
+  harness.setTabResponder(202, (message) => {
+    if (message.type === 'conversation-target-status') {
+      return {
+        ok: true,
+        composerAvailable: true,
+        composerFocused: false,
+        documentFocused: false,
+        visible: false,
+        url: 'https://chatgpt.com/c/other',
+      };
+    }
+    return { ok: true };
+  });
+  harness.setControl({
+    commands: [],
+    conversationEvents: [
+      { id: 1, type: 'cancel_pending', payload: { sessionId: 14 } },
+    ],
+  });
+  await harness.sendAsync({ type: 'external-control-poll' }, 202, 'Tab B');
+
+  targetUrl = 'https://chatgpt.com/c/navigated';
+  harness.setControl({
+    commands: [],
+    conversationEvents: [
+      { id: 2, type: 'transcript', payload: { sessionId: 14, text: '移動後の会話へ送らない', cancelGraceMs: 700 } },
+    ],
+  });
+  await harness.sendAsync({ type: 'external-control-poll' }, 202, 'Tab B');
+
+  const transcripts = harness.sentMessages.filter(({ message }) => message.type === 'voice-transcript');
+  assert.equal(transcripts.length, 0);
+  assert.equal(harness.conversationStatePosts.at(-1).phase, 'error');
+  assert.equal(harness.conversationStatePosts.at(-1).error, 'conversation-target-page-changed');
+});
+
 for (const [label, invalidateTarget] of [
   ['closed', (harness) => harness.removeTab(101)],
   ['reloaded', (harness) => harness.reloadTab(101)],

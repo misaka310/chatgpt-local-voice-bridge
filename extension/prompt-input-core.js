@@ -112,6 +112,11 @@
       const style = String(element.getAttribute('style') || '').replace(/\s+/g, '').toLowerCase();
       if (style.includes('display:none') || style.includes('visibility:hidden')) return true;
     }
+    const view = element.ownerDocument && element.ownerDocument.defaultView;
+    if (view && typeof view.getComputedStyle === 'function') {
+      const computed = view.getComputedStyle(element);
+      if (computed && (computed.display === 'none' || computed.visibility === 'hidden')) return true;
+    }
     if (typeof element.closest === 'function') {
       const hiddenAncestor = element.closest('[hidden], [inert], [aria-hidden="true"]');
       if (hiddenAncestor) return true;
@@ -120,7 +125,7 @@
   }
 
   function isComposerUsable(element) {
-    if (!element || element.disabled || isElementHidden(element)) return false;
+    if (!element || element.disabled || element.readOnly || isElementHidden(element)) return false;
     if (typeof element.getAttribute === 'function') {
       if (String(element.getAttribute('aria-disabled') || '').toLowerCase() === 'true') return false;
       if (String(element.getAttribute('contenteditable') || '').toLowerCase() === 'false') return false;
@@ -188,11 +193,9 @@
       && typeof documentObject.querySelectorAll !== 'function')) return null;
     if (composer && typeof composer.closest === 'function') {
       const form = composer.closest('form');
-      if (form && typeof form.querySelector === 'function') {
-        for (const selector of SEND_SELECTORS) {
-          const scopedButton = form.querySelector(selector);
-          if (isButtonEnabled(scopedButton)) return scopedButton;
-        }
+      if (form) {
+        const scopedButton = matchingElements(form, SEND_SELECTORS).find(isButtonEnabled);
+        if (scopedButton) return scopedButton;
       }
     }
     return matchingElements(documentObject, SEND_SELECTORS).find(isButtonEnabled) || null;

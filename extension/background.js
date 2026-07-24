@@ -178,9 +178,20 @@ async function captureConversationTarget() {
   const candidates = [lastComposerFocusedTabId, selectedTabId, uiOwnerTabId, ...tabIds];
   for (const tabId of candidates) {
     const status = byTabId.get(tabId);
-    if (status && status.ok && status.composerAvailable) return tabId;
+    if (status && status.ok && status.composerAvailable) return status;
   }
   return null;
+}
+
+function conversationLocationKey(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  try {
+    const url = new URL(raw);
+    return `${url.origin}${url.pathname}`;
+  } catch (_error) {
+    return raw.split(/[?#]/, 1)[0];
+  }
 }
 
 function retryableTranscriptFailure(reason) {
@@ -554,21 +565,43 @@ async function syncExternalControlPanel() {
       const eventPayload = item.payload && typeof item.payload === 'object' ? item.payload : {};
       const sessionId = Number(eventPayload.sessionId || 0);
       if (type === 'cancel_pending') {
-        const targetTabId = await captureConversationTarget();
-        if (sessionId) conversationSessionTargets.set(sessionId, targetTabId || 0);
+        const target = await captureConversationTarget();
+        const targetTabId = target ? target.tabId : null;
+        if (sessionId) {
+          conversationSessionTargets.set(sessionId, targetTabId || 0);
+          conversationSessionTargetLocations.set(sessionId, conversationLocationKey(target && target.url));
+        }
         activeConversationTargetTabId = targetTabId;
         await Promise.all(Array.from(tabs.keys()).map((tabId) => (
           chrome.tabs.sendMessage(tabId, { type: 'cancel-voice-send', payload: eventPayload }).catch(() => {})
         )));
       } else if (type === 'transcript') {
         const hasSessionTarget = Boolean(sessionId && conversationSessionTargets.has(sessionId));
-        const targetTabId = hasSessionTarget
+        let targetTabId = hasSessionTarget
           ? conversationSessionTargets.get(sessionId)
-          : activeConversationTargetTabId || await captureConversationTarget();
+          : activeConversationTargetTabId;
 
+        if (!hasSessionTarget && !targetTabId) {
+          const fallbackTarget = await captureConversationTarget();
+          targetTabId = fallbackTarget ? fallbackTarget.tabId : null;
+        }
+        const expectedLocation = hasSessionTarget
+          ? String(conversationSessionTargetLocations.get(sessionId) || '')
+          : '';
         if (targetTabId && tabs.has(targetTabId)) {
           activeConversationTargetTabId = targetTabId;
-          await deliverVoiceTranscript(targetTabId, eventPayload, effectiveSettings);
+          const currentTarget = expectedLocation ? await conversationTargetStatus(targetTabId) : null;
+          if (expectedLocation && (!currentTarget || !currentTarget.ok
+            || conversationLocationKey(currentTarget.url) !== expectedLocation)) {
+            await postConversationState({
+              phase: 'error',
+              statusText: '録音開始後にChatGPTのページが変わったため送信しませんでした',
+              sttModel: effectiveSettings.sttModel || 'small',
+              error: 'conversation-target-page-changed',
+            }).catch(() => {});
+          } else {
+            await deliverVoiceTranscript(targetTabId, eventPayload, effectiveSettings);
+          }
         } else {
           await postConversationState({
             phase: 'error',
@@ -578,7 +611,10 @@ async function syncExternalControlPanel() {
           }).catch(() => {});
         }
       }
-      if (type === 'transcript' && sessionId) conversationSessionTargets.delete(sessionId);
+      if (type === 'transcript' && sessionId) {
+        conversationSessionTargets.delete(sessionId);
+        conversationSessionTargetLocations.delete(sessionId);
+      }
       lastExternalConversationEventId = eventId;
     }
     const state = externalStateSnapshot();
