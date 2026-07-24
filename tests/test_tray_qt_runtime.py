@@ -361,6 +361,7 @@ class TrayQtRuntimeTests(unittest.TestCase):
                 start_monitor=False,
                 show_tray=False,
             )
+            runtime.app = SimpleNamespace(quit=lambda: None)
             self.assertEqual(runtime.pet.current_pet.selection_id, "placeholder")
             settings_path.write_text(
                 json.dumps({"version": 1, "selectedPetId": "misaka", "visible": True}),
