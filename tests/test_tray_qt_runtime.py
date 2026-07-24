@@ -212,7 +212,7 @@ class TrayQtRuntimeTests(unittest.TestCase):
         keyboard_hook: FakeKeyboardHook | None = None,
         control_panel_client: FakeControlClient | None = None,
     ) -> tray.VoiceBridgeQtRuntime:
-        return tray.VoiceBridgeQtRuntime(
+        runtime = tray.VoiceBridgeQtRuntime(
             self.app,
             controller=controller or FakeController(),
             pet_root=self._create_pet_root(temp_dir),
@@ -225,6 +225,8 @@ class TrayQtRuntimeTests(unittest.TestCase):
             start_monitor=True,
             show_tray=False,
         )
+        runtime.app = SimpleNamespace(quit=lambda: None)
+        return runtime
 
     def test_runtime_initializes_status_after_actions_exist(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
